@@ -1,0 +1,10 @@
+{
+  "name": "velocity-lobby",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test.js",
+    "dev": "node dev-server.js",
+    "deploy": "wrangler deploy"
+  }
+}

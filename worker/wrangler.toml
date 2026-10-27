@@ -1,0 +1,11 @@
+name = "velocity-lobby"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+
+[[durable_objects.bindings]]
+name = "LOBBY"
+class_name = "Lobby"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Lobby"]

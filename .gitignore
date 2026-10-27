@@ -1,0 +1,16 @@
+# binaires et fichiers produits par build.bat / les tests
+velocity.exe
+*.obj
+*.pdb
+*.ilk
+test.txt
+*.bmp
+*.png
+host.txt
+client.txt
+cfg_test.ini
+# reglages personnels du joueur
+velocity.ini
+# worker (Node)
+node_modules/
+.wrangler/
