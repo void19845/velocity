@@ -303,6 +303,30 @@ enum { TK_NONE, TK_MUZZLE, TK_HAND, TK_ENEMY, TK_PLAYER, TK_COIN, TK_POINT };   
 enum { LS_IDLE, LS_THRUST, LS_COUCH };
 /* --- fin Lance --- */
 
+/* --- Ventouse : mines collantes, detonation a distance (deux commandes : toutes, ou la plus ancienne) --- */
+#define MINE_SPEED         24.0f   /* vitesse de lancer, ajoutee a la vitesse du joueur */
+#define MINE_GRAVITY       16.0f   /* comme les pieces */
+#define MINE_CD            0.55f   /* entre deux lancers */
+#define MINE_MAX_ACTIVE    2       /* la 3e fait sauter la plus ancienne */
+#define MINE_FLY_LIFE      3.0f    /* une mine qui ne colle a rien explose en l'air */
+#define MINE_FUSE          3.0f    /* explosion automatique, comptee depuis le collage */
+#define MINE_ARM_FLY       0.10f   /* detonation possible apres 0,1 s de vol */
+#define MINE_ARM_PLAYER    0.6f    /* collee sur un joueur : temps laisse pour parer */
+#define MINE_RADIUS        4.0f
+#define MINE_DMG           90.0f   /* PvE au centre, 30 % au bord */
+#define MINE_KNOCK         15.0f   /* recul (roquette : 13) */
+#define MINE_BOOST_MULT    1.5f    /* rail ou piece sur une mine */
+#define MINE_BOOST_RADIUS  5.0f
+#define MINE_HIT_R         0.45f   /* rayon de touche d'une mine (rail, plomb, arc) */
+#define MINE_STICK_GROW    0.15f   /* AABB des joueurs et rayon des drones agrandis pour coller */
+#define MINE_SKIN          0.06f   /* decollement de la surface */
+#define MINE_BEEP_SLOW     0.5f    /* intervalle du bip au collage */
+#define MINE_BEEP_FAST     0.08f   /* intervalle du bip juste avant l'explosion */
+enum { MS_NONE, MS_FLY, MS_WORLD, MS_ENEMY, MS_PLAYER };
+enum { MINE_EV_THROW, MINE_EV_WORLD, MINE_EV_PLAYER, MINE_EV_BOOM, MINE_EV_TORN, MINE_EV_CANCEL };   /* EV_MINE.sub */
+enum { MX_REMOTE, MX_FUSE, MX_THIRD, MX_SHOT, MX_FLY, MX_COUNT };   /* origine des explosions (journal) */
+/* --- fin Ventouse --- */
+
 /* Axe tir : chaque touche successive augmente degats et cadence, un tir rate remet a zero */
 #define STREAK_MAX        8
 #define STREAK_DMG        0.15f   /* +15% de degats par touche */
@@ -340,9 +364,9 @@ static const AmmoDef ammoDef[WP_COUNT] = {
     { "TESLA",     60, 100, 2.5f, 0.60f, 0.70f, 1.00f },  /* 1 point = 0,4 de batterie */
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
-static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 0, 1 };   /* chaque arme codee passe sa case a 1 */
+static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 1, 1 };   /* chaque arme codee passe sa case a 1 */
 static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 0, 0, 0 };
-static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
+static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, MINE_CD, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
 /* Audio : mini mixeur waveOut + sons synthetises                      */
@@ -359,6 +383,7 @@ enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_SAW_THROW, S_SAW_PLANT, S_SAW_HIT, S_SAW_CATCH, S_SAW_BOUNCE,   /* Scie */
        S_TESLA_LOOP, S_TESLA_ZAP,                         /* Tesla */
        S_LANCE_COUCH, S_LANCE_THRUST, S_LANCE_HIT, S_LANCE_CLASH,        /* Lance */
+       S_MINE_THROW, S_MINE_STICK, S_MINE_BEEP,           /* Ventouse */
        S_COUNT };
 typedef struct { short *data; int len; } Sound;
 /* loop : voix en boucle (Tesla), jamais volee par play ; fade : baisse de volume par echantillon (arret sans clic) */
@@ -790,6 +815,34 @@ static void make_sounds(void) {
     }
     sounds[S_LANCE_CLASH] = mksound(b, n);
     /* --- fin Lance --- */
+
+    /* --- Ventouse --- */
+    /* lancer : "thump", sinus qui descend de 180 Hz + bruit filtre */
+    b = sbuf(0.14f, &n); lp = 0; ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (180 - 600 * t) / SR;
+        lp += 0.1f * (noise() - lp);
+        b[i] = (sinf(ph * 2 * PI) * 0.6f + lp * 0.8f) * expf(-t * 30);
+    }
+    sounds[S_MINE_THROW] = mksound(b, n);
+    /* collage : "plop" de ventouse, sinus de 700 a 180 Hz + clic de bruit de 5 ms */
+    b = sbuf(0.08f, &n); ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (180 + 520 * expf(-t * 25)) / SR;
+        b[i] = sinf(ph * 2 * PI) * 0.5f * expf(-t * 40) + (t < 0.005f ? noise() * 0.4f : 0);
+    }
+    sounds[S_MINE_STICK] = mksound(b, n);
+    /* bip : carre a 1800 Hz, attaque et relache de 5 ms */
+    b = sbuf(0.05f, &n);
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        float env = fminf(1, fminf(t / 0.005f, (0.05f - t) / 0.005f));
+        b[i] = (sinf(t * 2 * PI * 1800) > 0 ? 1.0f : -1.0f) * 0.25f * fmaxf(env, 0);
+    }
+    sounds[S_MINE_BEEP] = mksound(b, n);
+    /* --- fin Ventouse --- */
 }
 
 static void audio_init(void) {
@@ -1045,7 +1098,8 @@ typedef struct { V3 pos, vel; float hp, fireT, t, flash; int type, alive; } Enem
 #define MAXE 64
 static Enemy E[MAXE];
 
-enum { PR_ROCKET, PR_ORB, PR_PARRIED, PR_SAW };
+enum { PR_ROCKET, PR_ORB, PR_PARRIED, PR_SAW,
+       PR_MINE };                                         /* Ventouse */
 
 /* Tesla : teslaT > 0 = relais actif (temps restant), prochaine impulsion du relais, joueur qui l'a active */
 typedef struct { V3 pos, vel; float life, spin; int alive, owner; unsigned int netId; float teslaT, teslaPulse; int teslaBy; } Coin;
@@ -1061,6 +1115,14 @@ typedef struct {
     float sawT, sawSpin, sawSync;
     V3 sawN, sawAxis;
     unsigned int sawCoins;
+    /* --- Ventouse (kind == PR_MINE, ou PR_PARRIED si renvoyee) : etat MS_* (0 = pas une mine), porteur (ennemi + 1
+     * ou joueur + 1), detonation demandee pendant l'armement (MX_* + 1), retombee d'un porteur (meche conservee),
+     * ordre de lancer, position relative au porteur (pieds / centre du drone), normale de la face, temps depuis le
+     * lancer ou le collage, armement restant (joueur), prochain bip --- */
+    int mineState, mineAttach, mineDet, mineFell;
+    unsigned int mineSeq;
+    V3 mineOfs, mineN;
+    float mineT, mineArmT, mineBeepT;
 } Proj;
 #define MAXPR 128
 static Proj PR[MAXPR];
@@ -1171,6 +1233,14 @@ static int saw_parry(Proj *p, V3 eye, V3 f, float range, float speedMult);
 static void saw_remove_owner(int id);
 /* Tesla : EV_TESLA (definie avec les autres net_fx_*) */
 static void net_fx_tesla(int sub, unsigned int netId, V3 pos, int actor, int target);
+/* --- Ventouse : definies apres la Scie (mines) et avec les autres net_fx_* (reseau) --- */
+static int mine_explode(Proj *p, int boosted, int byShot);
+static int mine_shootable(const Proj *p);
+static int mine_has_target(const Proj *p);
+static int mine_tear(Proj *p, V3 f);
+static void net_fx_mine(int sub, unsigned int netId, V3 a, V3 b, int target, float x);
+static void net_hit_id(int target, float dmg, V3 knock, int weapon, unsigned int netId);   /* net_hit + netId de l'objet */
+/* --- fin Ventouse --- */
 
 /* ------------------------------------------------------------------ */
 /* Entrees                                                             */
@@ -1184,16 +1254,21 @@ static unsigned char keys[K_COUNT], latch[K_COUNT];
 
 /* Actions du jeu, chacune liee a deux touches au plus (0 = aucune). Le jeu ne lit que les actions. */
 enum { A_FWD, A_BACK, A_LEFT, A_RIGHT, A_JUMP, A_CROUCH, A_DASH, A_FIRE, A_MELEE, A_HOOK, A_COIN,
-       A_WEAP1, A_WEAP2, A_SWAP, A_SCORES, A_COUNT };
+       A_WEAP1, A_WEAP2, A_SWAP, A_SCORES,
+       A_DETONATE_ALL, A_DETONATE_ONE,                    /* Ventouse : toutes mes mines / la plus ancienne */
+       A_COUNT };
 static const char *actId[A_COUNT] = { "avancer", "reculer", "gauche", "droite", "sauter", "accroupi", "dash", "tirer",
-                                      "epee", "grappin", "piece", "arme1", "arme2", "changer_arme", "scores" };
+                                      "epee", "grappin", "piece", "arme1", "arme2", "changer_arme", "scores",
+                                      "detoner_tout", "detoner_une" };
 static const char *actLabel[A_COUNT] = { "Avancer", "Reculer", "Gauche", "Droite", "Sauter (maintenir = bhop)",
                                          "S'accroupir / slide", "Dash", "Tirer", "Epee / parry", "Grappin (maintenir)",
-                                         "Lancer une piece", "Railgun", "Roquettes", "Changer d'arme", "Tableau des scores" };
+                                         "Lancer une piece", "Railgun", "Roquettes", "Changer d'arme", "Tableau des scores",
+                                         "Detoner toutes les mines", "Detoner la plus ancienne" };
 static const int bindDefault[A_COUNT][2] = {
     { 0x11, 0 }, { 0x1F, 0 }, { 0x1E, 0 }, { 0x20, 0 }, { 0x39, 0 }, { 0x1D, 0x2E }, { 0x2A, 0x12 },
     { K_LMB, 0 }, { K_RMB, 0x2F }, { 0x21, K_MMB }, { 0x22, K_X1 }, { 0x02, 0 }, { 0x03, 0 }, { K_WHEEL, 0 },
     { 0x0F, 0 },
+    { K_X2, 0x10 }, { 0x2D, 0 },                          /* Ventouse : pouce arriere + Q/A physique ; X */
 };
 static int binds[A_COUNT][2];
 static unsigned char act[A_COUNT], actP[A_COUNT];          /* tenu / appuye pendant ce tick */
@@ -1802,8 +1877,11 @@ static void damage_enemy(int i, float dmg, V3 knock) {
 }
 
 /* byPlayer : 0 = ennemi, 1 = joueur, 2 = joueur sans recul ni degat sur soi (projectile renvoye).
+ * knock : recul des joueurs (et de soi) au centre ; weapon : W_* des touches LAN ; skipEnemy / skipPlayer : cible deja
+ * servie (mine collee : degats garantis) ; netId : objet source, joint aux EV_HIT (arbitrage des mines).
  * Renvoie le nombre d'ennemis touches. */
-static int explode(V3 c, float radius, float dmg, int byPlayer) {
+static int explode_ex(V3 c, float radius, float dmg, int byPlayer, float knock, int weapon, int skipEnemy, int skipPlayer,
+                      unsigned int netId) {
     burst(c, v3(1.0f, 0.55f, 0.15f), 90, 14, 0.7f, 0.3f);
     burst(c, v3(1.0f, 0.9f, 0.5f), 30, 7, 0.35f, 0.5f);
     play(S_EXPLO, 0.9f, frange(0.9f, 1.1f));
@@ -1811,18 +1889,18 @@ static int explode(V3 c, float radius, float dmg, int byPlayer) {
     shake += fmaxf(0, 0.5f - dist * 0.02f);
     int hit = 0;
     for (int i = 0; i < MAXE; i++) {
-        if (!E[i].alive) continue;
+        if (!E[i].alive || i == skipEnemy) continue;
         V3 dv = vsub(E[i].pos, c);
         float d = vlen(dv), R = radius + enemy_radius(E[i].type);
         if (d < R) { float f = 1 - d / R; damage_enemy(i, dmg * (0.3f + 0.7f * f), vmul(vnorm(dv), 12 * f)); hit++; }
     }
     for (int i = 0; byPlayer && i < MAXP; i++) {         /* LAN : le tireur calcule le souffle sur les autres */
-        if (!np_target(i)) continue;
+        if (!np_target(i) || i == skipPlayer) continue;
         V3 dv = vsub(np_center(i), c);
         float d = vlen(dv), R = radius + 0.5f;
         if (d < R) {
             float f = 1 - d / R;
-            net_hit(i, dmg * (0.3f + 0.7f * f) * PVP_SCALE, vmul(vnorm(dv), ROCKET_KNOCK * f + 3), byPlayer == 2 ? W_PARRY : W_ROCKET);
+            net_hit_id(i, dmg * (0.3f + 0.7f * f) * PVP_SCALE, vmul(vnorm(dv), knock * f + 3), weapon, netId);
             hit++;
         }
     }
@@ -1830,12 +1908,16 @@ static int explode(V3 c, float radius, float dmg, int byPlayer) {
     if (!P.dead && dist < radius && byPlayer != 2) {
         float f = 1 - dist / radius;
         V3 dir = vnorm(vsub(pcenter(), c));
-        P.vel = vadd(P.vel, vmul(dir, ROCKET_KNOCK * f + 3));
+        P.vel = vadd(P.vel, vmul(dir, knock * f + 3));
         if (dir.y > 0.3f) P.grounded = 0;
-        if (byPlayer) damage_player(5 * f);
+        if (byPlayer && dmMode && netId) net_hit_id(myId, 5 * f, v3(0, 0, 0), W_SELF, netId);   /* annule avec la mine */
+        else if (byPlayer) damage_player(5 * f);
         else damage_player(30 * f);
     }
     return hit;
+}
+static int explode(V3 c, float radius, float dmg, int byPlayer) {
+    return explode_ex(c, radius, dmg, byPlayer, ROCKET_KNOCK, byPlayer == 2 ? W_PARRY : W_ROCKET, -1, -1, 0);
 }
 
 static float atten(V3 p) { return clampf(1.2f - vlen(vsub(p, P.pos)) / 60.0f, 0.1f, 1.0f); }
@@ -1964,7 +2046,11 @@ static int try_parry(void) {
             parried += saw_parry(p, eye, f, MELEE_RANGE + 1.5f, 1);
             continue;
         }
-        int foreignRocket = dmMode && (p->kind == PR_ROCKET || p->kind == PR_PARRIED) && p->owner != myId;
+        if (p->alive && p->kind == PR_MINE) {             /* --- Ventouse : collee sur moi = arrachee ; en vol = roquette --- */
+            if (mine_tear(p, f)) { parried++; continue; }
+            if (p->mineState != MS_FLY) continue;
+        }                                                 /* --- fin Ventouse --- */
+        int foreignRocket = dmMode && (p->kind == PR_ROCKET || p->kind == PR_PARRIED || p->kind == PR_MINE) && p->owner != myId;
         if (!p->alive || (p->kind != PR_ORB && !foreignRocket)) continue;
         V3 d = vsub(p->pos, eye);
         float dist = vlen(d), range = (MELEE_RANGE + 1.5f) * powf(PARRY_RANGE_SHRINK, (float)p->parries);
@@ -2552,6 +2638,27 @@ static int ricochet(int ci, float dmg, int depth) {
         return ricochet(next, dmg, depth + 1);   /* chaque piece remultiplie */
     }
 
+    {   /* --- Ventouse : une mine visible avec une cible a moins de 5 m passe avant les cibles directes (x1,5) --- */
+        int mi = -1;
+        float mb = COIN_SEEK_RANGE;
+        for (int i = 0; i < MAXPR; i++) {
+            float dm = vlen(vsub(PR[i].pos, o));
+            if (!mine_shootable(&PR[i]) || dm >= mb || !mine_has_target(&PR[i]) || !los(o, PR[i].pos)) continue;
+            mb = dm; mi = i;
+        }
+        if (mi >= 0) {
+            V3 at = PR[mi].pos;
+            int foreign = PR[mi].owner != myId;
+            add_beam(o, at, v3(1, 0.85f, 0.3f), 0.7f);
+            if (dmMode) net_fx_rail(o, at, 1);
+            int h = mine_explode(&PR[mi], 1, 1);
+            snprintf(popText, sizeof popText, foreign ? "MINE VOLEE !" : "RICOCHET MINE !");
+            popT = 1.0f;
+            if (botMode) netlog("ricochet sur une mine (%s), %d touche(s)", foreign ? "volee" : "a moi", h);
+            return h > 0;
+        }
+    }                                                     /* --- fin Ventouse --- */
+
     int te = -1, tp = -1;                                 /* 2. la cible visible la plus proche */
     best = COIN_SEEK_RANGE;
     for (int i = 0; i < MAXE; i++) {
@@ -2598,6 +2705,11 @@ static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut
         float t;
         if (CO[i].alive && ray_sphere(eye, d, CO[i].pos, COIN_RADIUS, tw, &t)) { tw = t; coinHit = i; }
     }
+    int mineHit = -1;                                     /* --- Ventouse : une mine (meme adverse) arrete le tir --- */
+    for (int i = 0; i < MAXPR; i++) {
+        float t;
+        if (mine_shootable(&PR[i]) && ray_sphere(eye, d, PR[i].pos, MINE_HIT_R, tw, &t)) { tw = t; mineHit = i; coinHit = -1; }
+    }
     for (int i = 0; i < MAXE; i++) {
         float t;
         if (E[i].alive && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type), tw, &t)) {
@@ -2620,6 +2732,14 @@ static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut
         hit |= ricochet(coinHit, dmg, 0);
         if (botMode) netlog("ricochet : chaine de %d, %s", lastChain, hit ? "touche" : "dans le vide");
     }
+    if (mineHit >= 0) {                                   /* rail : x1,5 ; Elan : x1 */
+        int foreign = PR[mineHit].owner != myId, boosted = w == W_RAIL;
+        int h = mine_explode(&PR[mineHit], boosted, 1);
+        hit |= h > 0;
+        snprintf(popText, sizeof popText, foreign ? "MINE VOLEE !" : boosted ? "MINE x1,5 !" : "MINE !");
+        popT = 1.0f;
+        if (botMode) netlog("tir dans une mine (%s), %d touche(s)", foreign ? "volee" : "a moi", h);
+    }                                                     /* --- fin Ventouse --- */
     *endOut = vadd(eye, vmul(d, tw)); *nOut = n;
     return hit;
 }
@@ -2830,6 +2950,7 @@ static void fire_shotgun(void) {
     unsigned int seed = sg_new_seed();
     static SgAcc A;
     int pellets = 0, burstList[SG_PELLETS], nBurst = 0, onWall[SG_PELLETS];
+    int mineList[SG_PELLETS], nMineHit = 0;               /* Ventouse : mines touchees (une explosion par mine) */
     memset(&A, 0, sizeof A);
     sg_pellet_dirs(d, half, seed, dir);
     for (int k = 0; k < SG_PELLETS; k++) {                /* le plomb s'arrete sur le plus proche : piece, drone ou joueur */
@@ -2846,6 +2967,10 @@ static void fire_shotgun(void) {
             np_aabb(i, 0.05f, &mn, &mx);
             if (ray_box(eye, dir[k], mn, mx, tw, &t, NULL) && t < tw) { tw = t; tp = i; te = ci = -1; }
         }
+        int mi = -1;                                      /* --- Ventouse : le plomb s'arrete sur une mine (x1) --- */
+        for (int i = 0; i < MAXPR; i++)
+            if (mine_shootable(&PR[i]) && ray_sphere(eye, dir[k], PR[i].pos, MINE_HIT_R, tw, &t)) { tw = t; te = tp = ci = -1; mi = i; }
+        if (mi >= 0) { mineList[nMineHit++] = mi; onWall[k] = 0; }   /* --- fin Ventouse --- */
         end[k] = vadd(eye, vmul(dir[k], tw));
         float dmg = SG_PELLET_DMG * sg_falloff(tw) * mult;
         if (te >= 0) {
@@ -2873,6 +2998,12 @@ static void fire_shotgun(void) {
         burst(at, v3(1, 0.45f, 0.2f), 12, 7, 0.3f, 0.1f);
         net_hit(i, A.p[i] * PVP_SCALE, vadd(A.kp[i], v3(0, 2, 0)), W_SHOTGUN);
     }
+    for (int b = 0; b < nMineHit; b++)                    /* --- Ventouse : chaque mine touchee explose une fois --- */
+        if (PR[mineList[b]].alive && PR[mineList[b]].kind == PR_MINE) {
+            int foreign = PR[mineList[b]].owner != myId;
+            if (mine_explode(&PR[mineList[b]], 0, 1)) A.burstHit = 1;
+            snprintf(popText, sizeof popText, foreign ? "MINE VOLEE !" : "MINE !"); popT = 1.0f;
+        }                                                 /* --- fin Ventouse --- */
     int hit = pellets >= SG_STREAK_MIN || A.burstHit;
     shot_result(hit);
     sgShots++; sgPelletSum += pellets; sgStreakShots += hit; sgBurstSum += sgBursts;
@@ -3081,6 +3212,15 @@ static void tesla_pulse(void) {
     P.fireCd = TESLA_PULSE;
     teslaPulses++; teslaArcPulses++;
     for (int k = 0; k < nc; k++) tesla_relay_start(coins[k]);
+    {                                                     /* --- Ventouse : l'arc fait exploser les mines qu'il traverse (x1) --- */
+        float reach = vlen(vsub(t[0].at, eye)), to;
+        for (int i = 0; i < MAXPR; i++)
+            if (mine_shootable(&PR[i]) && ray_sphere(eye, d, PR[i].pos, MINE_HIT_R + TESLA_AIM_PAD, reach, &to)) {
+                int foreign = PR[i].owner != myId;
+                mine_explode(&PR[i], 0, 1);
+                snprintf(popText, sizeof popText, foreign ? "MINE VOLEE !" : "MINE !"); popT = 1.0f;
+            }
+    }                                                     /* --- fin Ventouse --- */
     if (!dmMode) {                                        /* solo : l'arc grille les orbes des drones qu'il traverse */
         float reach = vlen(vsub(t[0].at, eye)), to;
         for (int i = 0; i < MAXPR; i++)
@@ -3535,11 +3675,256 @@ static void saw_tick(Proj *p, float dt) {
 }
 /* --- fin Scie ----------------------------------------------------------- */
 
+/* --- Ventouse : mines collantes ----------------------------------------- */
+/* Lancee (24 m/s + vitesse du joueur, gravite 16), elle colle au decor, a un drone ou a un joueur. 2 actives au plus
+ * (la 3e fait sauter la plus ancienne). Detonation a distance (toutes, ou la plus ancienne), sinon meche de 3 s depuis
+ * le collage. Sur un joueur : armement de 0,6 s (le temps de l'arracher par un parry), puis 60 PvP garantis. Un rail
+ * ou un ricochet la fait sauter x1,5, un plomb ou l'arc x1, meme celle d'un adversaire. Le poseur fait autorite sur
+ * ses mines ; celui qui la fait sauter d'un tir calcule les degats. L'hote arbitre le sort de chaque mine (hostMine). */
+static unsigned int mineCounter;
+static int mineThrows, mineStickW, mineStickP, mineStickE, mineTorn, mineBoom[MX_COUNT], mineDetAll, mineDetOne;   /* journal */
+static float mineArmedT;                                  /* somme des delais collage -> explosion (mines sur un joueur) */
+static int mineArmedN;
+
+static int mine_own(const Proj *p) { return p->alive && p->kind == PR_MINE && p->owner == myId; }
+static int mine_count(void) {                             /* mes mines actives (sans detonation en attente) */
+    int n = 0;
+    for (int i = 0; i < MAXPR; i++) n += mine_own(&PR[i]) && !PR[i].mineDet;
+    return n;
+}
+static Proj *mine_oldest(void) {                          /* la plus ancienne de mes mines sans detonation demandee */
+    Proj *o = NULL;
+    for (int i = 0; i < MAXPR; i++) {
+        Proj *p = &PR[i];
+        if (mine_own(p) && !p->mineDet && (!o || p->mineSeq < o->mineSeq)) o = p;
+    }
+    return o;
+}
+/* rail, plomb, arc : on peut tirer dedans, sauf une mine collee sur moi (il faut la parer) ou pas encore armee */
+static int mine_shootable(const Proj *p) {
+    if (!p->alive || p->kind != PR_MINE) return 0;
+    if (p->mineState == MS_PLAYER && (p->mineArmT > 0 || p->mineAttach == myId + 1)) return 0;
+    return 1;
+}
+static int mine_has_target(const Proj *p) {               /* ricochet : une cible a portee du souffle boost */
+    for (int j = 0; j < MAXE; j++)
+        if (E[j].alive && vlen(vsub(E[j].pos, p->pos)) < MINE_BOOST_RADIUS + enemy_radius(E[j].type)) return 1;
+    for (int j = 0; j < MAXP; j++)
+        if (np_target(j) && vlen(vsub(np_center(j), p->pos)) < MINE_BOOST_RADIUS + 0.5f) return 1;
+    return 0;
+}
+static V3 mine_base(const Proj *p) {                      /* reference du porteur : pieds d'un joueur, centre d'un drone */
+    int a = p->mineAttach - 1;
+    if (p->mineState == MS_ENEMY && a >= 0 && a < MAXE) return E[a].pos;
+    if (p->mineState == MS_PLAYER && a >= 0 && a < MAXP) return a == myId ? P.pos : NP[a].disp;
+    return p->pos;
+}
+static V3 mine_col(const Proj *p) {                       /* cyan : la mienne ; rouge : celle d'un autre */
+    return p->owner == myId && !spectating ? v3(0.3f, 1, 0.7f) : v3(1, 0.2f, 0.2f);
+}
+static void mine_remove_owner(int id) {                   /* depart d'un joueur : ses mines disparaissent */
+    for (int i = 0; i < MAXPR; i++)
+        if (PR[i].alive && PR[i].kind == PR_MINE && PR[i].owner == id) PR[i].alive = 0;
+}
+
+/* explosion calculee chez celui qui la declenche (poseur, ou tireur du rail / plomb / arc / ricochet).
+ * byShot : declenchee par un tir (c'est le tir qui gere la chaine). Renvoie le nombre de cibles touchees */
+static int mine_explode(Proj *p, int boosted, int byShot) {
+    V3 c = p->pos;
+    float dmg = MINE_DMG * (boosted ? MINE_BOOST_MULT : 1), rad = boosted ? MINE_BOOST_RADIUS : MINE_RADIUS;
+    int se = -1, sp = -1, hits = 0, a = p->mineAttach - 1;
+    p->alive = 0;
+    if (dmMode) net_fx_mine(MINE_EV_BOOM, p->netId, c, v3(boosted ? 1.0f : 0.0f, 0, 0), 0, 0);
+    if (p->mineState == MS_ENEMY && a >= 0 && a < MAXE && E[a].alive) {   /* porteur : degats garantis, sans degressivite */
+        damage_enemy(a, dmg, vmul(vnorm(vsub(E[a].pos, c)), 12));
+        se = a; hits++;
+    }
+    if (p->mineState == MS_PLAYER && a >= 0 && a < MAXP && np_target(a)) {
+        V3 kd = vnorm(vadd(vnorm(vsub(np_center(a), c)), v3(0, 0.6f, 0)));
+        net_hit_id(a, dmg * PVP_SCALE, vmul(kd, MINE_KNOCK + 3), W_MINE, p->netId);
+        sp = a; hits++;
+        impact_frame(c, 0.06f); hitstop = fmaxf(hitstop, 0.05f);
+        if (p->owner == myId) { mineArmedT += p->mineT; mineArmedN++; }
+    }
+    hits += explode_ex(c, rad, dmg, 1, MINE_KNOCK, W_MINE, se, sp, p->netId);   /* souffle, recul et 5 x f PV sur soi */
+    if (hits && !byShot) shot_result(1);                  /* une mine ne casse jamais la chaine (arme de preparation) */
+    if (hits) { hitMarker = 0.2f; play(S_HIT, 0.6f, 0.9f); }
+    if (boosted) {
+        impact_frame(c, 0.08f); hitstop = fmaxf(hitstop, 0.05f);
+        burst(c, v3(1, 0.85f, 0.4f), 60, 16, 0.6f, 0.35f);
+        play(S_EXPLO, 1.0f, 0.8f);
+    }
+    if (byShot) mineBoom[MX_SHOT]++;
+    if (botMode) netlog("ventouse : explosion%s (%s), %d touche(s)", boosted ? " x1,5" : "",
+                        p->mineState == MS_PLAYER ? "sur un joueur" : p->mineState == MS_WORLD ? "posee" : "autre", hits);
+    return hits;
+}
+
+/* detonation demandee : tout de suite, ou des que la mine est armee (0,1 s de vol, 0,6 s sur un joueur) */
+static void mine_detonate(Proj *p, int why) {
+    if ((p->mineState == MS_FLY && p->mineT < MINE_ARM_FLY - 0.5f * TICK) || (p->mineState == MS_PLAYER && p->mineArmT > 0)) {
+        p->mineDet = why + 1;
+        return;
+    }
+    mineBoom[why]++;
+    mine_explode(p, 0, 0);
+}
+
+/* telecommande (quelle que soit l'arme en main) : all = toutes mes mines, sinon la plus ancienne */
+static void mine_remote(int all) {
+    Proj *old = mine_oldest();
+    if (!old) { play(S_HIT, 0.5f, 0.45f); return; }      /* rien a faire sauter : clic sec */
+    if (all) {
+        for (int i = 0; i < MAXPR; i++)
+            if (mine_own(&PR[i]) && !PR[i].mineDet) mine_detonate(&PR[i], MX_REMOTE);
+        mineDetAll++;
+    } else { mine_detonate(old, MX_REMOTE); mineDetOne++; }
+    P.recoil = fmaxf(P.recoil, 0.5f);
+}
+
+static void fire_mine(void) {
+    if (P.ammo[WP_MINE] < 1) return;
+    if (mine_count() >= MINE_MAX_ACTIVE) {                /* la 3e fait sauter la plus ancienne */
+        Proj *o = mine_oldest();
+        if (o) mine_detonate(o, MX_THIRD);
+    }
+    V3 f = view_dir();
+    Proj *p = spawn_proj(PR_MINE, vadd(eye_pos(), vmul(f, 0.5f)), vadd(vmul(f, MINE_SPEED), P.vel));
+    if (!p) return;
+    P.ammo[WP_MINE]--;
+    p->mineState = MS_FLY; p->life = MINE_FLY_LIFE; p->mineT = 0; p->mineN = v3(0, 1, 0);
+    p->netId = ((unsigned int)(myId + 1) << 24) | ((unsigned int)PR_MINE << 20) | (++mineCounter & 0xFFFFF);
+    p->mineSeq = mineCounter;
+    if (dmMode) net_fx_mine(MINE_EV_THROW, p->netId, p->pos, p->vel, 0, 0);
+    P.fireCd = MINE_CD; P.recoil = 0.8f; muzzleT = 0.05f;
+    mineThrows++;
+    play(S_MINE_THROW, 0.7f, frange(0.95f, 1.05f));
+}
+
+/* mine collee sur MOI par un adversaire : un parry l'arrache et la renvoie dans ma direction de visee */
+static int mine_tear(Proj *p, V3 f) {
+    if (!dmMode || p->owner == myId || p->mineState != MS_PLAYER || p->mineAttach != myId + 1) return 0;
+    int from = p->owner;
+    p->kind = PR_PARRIED; p->mineState = MS_FLY; p->owner = myId; p->parries = 1; p->orb = 0;
+    p->mult = PARRY_ROCKET_MULT; p->life = 4;
+    p->pos = vadd(eye_pos(), vmul(f, 0.8f)); p->vel = vmul(f, PARRY_SPEED);   /* visee exacte, pas d'aide */
+    net_fx_mine(MINE_EV_TORN, p->netId, p->pos, p->vel, myId, p->mult);
+    P.swingLanded = 1;
+    parry_feedback(p->pos);
+    melee_parry_points(PTS_PARRY);
+    snprintf(popText, sizeof popText, "ARRACHEE !"); popT = 1.2f;
+    mineTorn++;
+    if (botMode) netlog("ventouse : mine de %s arrachee", NP[from < MAXP ? from : 0].name);
+    return 1;
+}
+
+static void mine_stuck_fx(Proj *p, float vol) {
+    p->mineT = p->mineFell ? p->mineT : 0;                /* retombee d'un porteur : la meche continue */
+    p->vel = v3(0, 0, 0); p->mineBeepT = MINE_BEEP_SLOW;
+    for (int k = 0; k < 8; k++) add_part(p->pos, vmul(rand_dir(), 2), mine_col(p), 0.2f, 0.06f, 0);
+    play(S_MINE_STICK, vol, 1.0f);
+}
+
+static void mine_tick(Proj *p, float dt) {
+    int mine = !dmMode || p->owner == myId;               /* seul le poseur decide */
+    int a = p->mineAttach - 1;
+    p->mineT += dt;
+    switch (p->mineState) {
+    case MS_FLY: {
+        p->vel.y -= MINE_GRAVITY * dt;
+        V3 step = vmul(p->vel, dt), dir = v3(0, -1, 0), n;
+        float len = vlen(step);
+        if (len > 1e-6f) dir = vmul(step, 1.0f / len); else len = 1e-6f;
+        float t = ray_world(p->pos, dir, len, &n), te;
+        if (mine) {
+            int he = -1, hp = -1;
+            for (int j = 0; j < MAXE; j++)
+                if (E[j].alive && ray_sphere(p->pos, dir, E[j].pos, enemy_radius(E[j].type) + MINE_STICK_GROW, t, &te)) { t = te; he = j; }
+            for (int j = 0; j < MAXP; j++) {
+                V3 mn, mx;
+                if (!np_target(j) || j == p->owner) continue;
+                np_aabb(j, MINE_STICK_GROW, &mn, &mx);
+                if (ray_box(p->pos, dir, mn, mx, t, &te, NULL) && te < t) { t = te; hp = j; he = -1; }
+            }
+            V3 hit = vadd(p->pos, vmul(dir, t));
+            if (he >= 0) {                                /* drone (solo) : il l'emporte avec lui */
+                p->mineState = MS_ENEMY; p->mineAttach = he + 1; p->mineOfs = vsub(hit, E[he].pos); p->pos = hit;
+                mineStickE++;
+            } else if (hp >= 0) {                         /* joueur : position relative a ses pieds, bornee a son corps */
+                V3 o = vsub(hit, NP[hp].disp);
+                o.x = clampf(o.x, -(HW + 0.05f), HW + 0.05f); o.z = clampf(o.z, -(HW + 0.05f), HW + 0.05f);
+                o.y = clampf(o.y, 0.1f, np_height(hp));
+                p->mineState = MS_PLAYER; p->mineAttach = hp + 1; p->mineOfs = o; p->mineArmT = MINE_ARM_PLAYER;
+                p->pos = vadd(NP[hp].disp, o); p->mineFell = 0;
+                if (dmMode) net_fx_mine(MINE_EV_PLAYER, p->netId, o, v3(0, 0, 0), hp, 0);
+                mineStickP++;
+                if (botMode) netlog("ventouse : mine collee sur %s", NP[hp].name);
+            } else if (t < len) {                         /* decor : point + normale */
+                p->mineState = MS_WORLD; p->pos = vadd(hit, vmul(n, MINE_SKIN)); p->mineN = n;
+                if (dmMode) net_fx_mine(MINE_EV_WORLD, p->netId, p->pos, n, 0, 0);
+                mineStickW++;
+            }
+            if (p->mineState != MS_FLY) { mine_stuck_fx(p, 0.6f); return; }
+            if (p->mineT >= MINE_FLY_LIFE) { mineBoom[MX_FLY]++; mine_explode(p, 0, 0); return; }
+            if (p->mineDet && p->mineT >= MINE_ARM_FLY - 0.5f * TICK) { mineBoom[p->mineDet - 1]++; mine_explode(p, 0, 0); return; }
+        } else if (t < len) {                             /* copie : prevision visuelle, corrigee par EV_MINE */
+            p->mineState = MS_WORLD; p->pos = vadd(vadd(p->pos, vmul(dir, t)), vmul(n, MINE_SKIN)); p->mineN = n;
+            mine_stuck_fx(p, 0.6f * atten(p->pos));
+            return;
+        }
+        p->pos = vadd(p->pos, step);
+        if (((int)(p->mineT * 120)) % 2 == 0)             /* petite trainee, une fois sur deux */
+            add_part(p->pos, v3(0, 0, 0), mine_col(p), 0.2f, 0.06f, 0);
+        break;
+    }
+    case MS_ENEMY:
+        if (a < 0 || a >= MAXE || !E[a].alive) {          /* le drone meurt avant : elle retombe */
+            p->mineState = MS_FLY; p->vel = (a >= 0 && a < MAXE) ? E[a].vel : v3(0, 0, 0); p->mineAttach = 0; p->mineFell = 1;
+            break;
+        }
+        p->pos = vadd(E[a].pos, p->mineOfs);
+        break;
+    case MS_PLAYER: {
+        int gone = a < 0 || a >= MAXP || !NP[a].active || (a == myId ? P.dead : !NP[a].alive);
+        if (gone) {                                       /* porteur mort ou parti : elle retombe, la meche continue */
+            V3 v = (a >= 0 && a < MAXP && a != myId) ? vmul(np_vel(a), 0.5f) : v3(0, 0, 0);
+            p->mineState = MS_FLY; p->vel = v; p->mineAttach = 0; p->mineFell = 1;
+            if (mine && dmMode) net_fx_mine(MINE_EV_THROW, p->netId, p->pos, p->vel, 0, 0);
+            break;
+        }
+        float h = a == myId ? pheight() : np_height(a);
+        if (p->mineOfs.y > h) p->mineOfs.y = h;           /* porteur accroupi : la mine ne flotte pas */
+        p->pos = vadd(mine_base(p), p->mineOfs);
+        if ((p->mineArmT -= dt) < 0.5f * TICK) p->mineArmT = 0;   /* armee au 72e tick, sans erreur d'arrondi */
+        break;
+    }
+    default:
+        break;
+    }
+    if (p->mineState >= MS_WORLD) {                       /* bip : plus rapide vers la fin de la meche */
+        float k = clampf(p->mineT / MINE_FUSE, 0, 1);
+        if ((p->mineBeepT -= dt) <= 0) {
+            int onMe = p->mineState == MS_PLAYER && a == myId;
+            p->mineBeepT = MINE_BEEP_SLOW + (MINE_BEEP_FAST - MINE_BEEP_SLOW) * k;
+            play(S_MINE_BEEP, onMe ? 0.9f : 0.5f * atten(p->pos), onMe ? 1.2f : 1.0f);
+        }
+    }
+    if (mine && p->mineState >= MS_WORLD) {
+        int armed = p->mineState != MS_PLAYER || p->mineArmT <= 0;
+        if (armed && p->mineDet) { mineBoom[p->mineDet - 1]++; mine_explode(p, 0, 0); }
+        else if (armed && p->mineT >= MINE_FUSE - 0.5f * TICK) { mineBoom[MX_FUSE]++; mine_explode(p, 0, 0); }
+    } else if (!mine && p->mineState >= MS_WORLD && p->mineT > MINE_FUSE + 1) {
+        p->alive = 0;                                     /* EV_MINE BOOM perdu : suppression silencieuse */
+    }
+}
+/* --- fin Ventouse --------------------------------------------------------- */
+
 static void proj_tick(float dt) {
     for (int i = 0; i < MAXPR; i++) {
         Proj *p = &PR[i];
         if (!p->alive) continue;
         if (p->kind == PR_SAW) { saw_tick(p, dt); continue; }   /* Scie : sa propre machine a etats */
+        if (p->kind == PR_MINE) { mine_tick(p, dt); continue; } /* Ventouse */
         p->life -= dt;
         V3 step = vmul(p->vel, dt);
         float len = vlen(step);
@@ -3571,6 +3956,9 @@ static void proj_tick(float dt) {
                 if (p->kind == PR_PARRIED && p->orb) {
                     if (hitEnemy >= 0) damage_enemy(hitEnemy, PARRY_DMG, vmul(dir, 10));
                     explode(c, 3.0f, 80, 2);
+                } else if (p->kind == PR_PARRIED && p->mineState) {   /* --- Ventouse : mine renvoyee (souffle de mine) --- */
+                    if (hitEnemy >= 0) damage_enemy(hitEnemy, 40 * p->mult, vmul(dir, 10));
+                    explode_ex(c, MINE_RADIUS, MINE_DMG * p->mult, 2, MINE_KNOCK, W_PARRY, -1, -1, p->netId);
                 } else if (p->kind == PR_PARRIED) {
                     if (hitEnemy >= 0) damage_enemy(hitEnemy, 40 * p->mult, vmul(dir, 10));
                     explode(c, ROCKET_RADIUS, ROCKET_DMG * p->mult, 2);
@@ -3732,13 +4120,14 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   8
+#define NET_VER   9
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
        EV_PICKUP_TAKEN, EV_COIN, EV_MELEE_PARRY,
        EV_SHOT = 15,                                      /* Eventail : un tir = un evenement (graine des plombs) */
        EV_SAW = 16,                                       /* Scie */
+       EV_MINE = 17,                                      /* Ventouse : sub = MINE_EV_* */
        EV_TESLA = 18,                                     /* Tesla : relais (0) ou decharge renvoyee (1) */
        EV_LANCE = 20,                                     /* Lance : choc de joute, emis par l'hote seulement */
        EV_SLAM = 21 };                                    /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
@@ -4035,6 +4424,23 @@ static void net_hit_lance(int target, float dmg, V3 knock, float spd, float vc, 
     net_emit(&e);
 }
 /* --- fin Lance : evenements --- */
+/* --- Ventouse : evenements --- */
+/* EV_MINE : sub = MINE_EV_*, netId de la mine, f[0..2] = a, f[3..5] = b, f[6] = x, target = joueur porteur ou pareur */
+static void net_fx_mine(int sub, unsigned int netId, V3 a, V3 b, int target, float x) {
+    NetEvent e = ev_new(EV_MINE);
+    e.sub = (unsigned char)sub; e.netId = netId; e.target = (unsigned char)target;
+    vf(e.f, a); vf(e.f + 3, b); e.f[6] = x;
+    net_emit(&e);
+}
+/* comme net_hit, avec le netId de l'objet source : l'hote ignore les touches d'une mine dont il a donne le sort a un autre */
+static void net_hit_id(int target, float dmg, V3 knock, int weapon, unsigned int netId) {
+    if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
+    NetEvent e = ev_new(EV_HIT);
+    e.target = (unsigned char)target; e.sub = (unsigned char)weapon; e.netId = netId;
+    e.f[0] = dmg; vf(&e.f[1], knock);
+    net_emit(&e);
+}
+/* --- fin Ventouse : evenements --- */
 
 static void kfeed_add(int killer, int victim, int kind, int info) {
     memmove(&kfeed[1], &kfeed[0], sizeof kfeed - sizeof kfeed[0]);
@@ -4129,6 +4535,77 @@ static void saw_parry_apply(const NetEvent *ev) {
 }
 /* --- fin Scie : reception --- */
 
+/* --- Ventouse : reception ------------------------------------------- */
+/* mine d'un autre joueur : copie visuelle creee ou corrigee ; ses degats sont calcules par le poseur (ou le tireur) */
+static void mine_apply(const NetEvent *ev) {
+    int from = ev->from;
+    V3 a = fv(ev->f), b = fv(ev->f + 3);
+    Proj *p = find_proj(ev->netId);
+    if (ev->sub <= MINE_EV_PLAYER) {                      /* lancer, collages : seulement les copies */
+        if (from == myId || from >= MAXP) return;
+        if (!p) {
+            p = spawn_proj(PR_MINE, a, b);
+            if (!p) return;
+            p->netId = ev->netId; p->mineN = v3(0, 1, 0);
+        }
+        p->kind = PR_MINE; p->owner = from;
+    }
+    switch (ev->sub) {
+    case MINE_EV_THROW:
+        p->pos = a; p->vel = b; p->mineAttach = 0;
+        if (p->mineState == MS_NONE) { p->mineT = 0; play(S_MINE_THROW, 0.6f * atten(a), 1.0f); }
+        else p->mineFell = 1;                             /* retombee d'un porteur */
+        p->mineState = MS_FLY;
+        break;
+    case MINE_EV_WORLD:
+        p->pos = a; p->vel = v3(0, 0, 0); p->mineN = b; p->mineAttach = 0;
+        if (p->mineState != MS_WORLD) { p->mineState = MS_WORLD; mine_stuck_fx(p, 0.6f * atten(a)); }
+        break;
+    case MINE_EV_PLAYER: {
+        int t = ev->target;
+        if (t >= MAXP) break;
+        p->mineState = MS_PLAYER; p->mineAttach = t + 1; p->mineOfs = a; p->mineArmT = MINE_ARM_PLAYER; p->mineFell = 0;
+        p->pos = vadd(mine_base(p), a);
+        mine_stuck_fx(p, t == myId ? 1.0f : 0.6f * atten(p->pos));
+        if (t == myId) {                                  /* alerte : bip, contour rouge (HUD), il faut parer */
+            snprintf(popText, sizeof popText, "MINE SUR TOI ! PARE !"); popT = 1.2f;
+            shake += 0.1f;
+        }
+        netlog("ventouse : mine de %s collee sur %s", pname(from), pname(t));
+        break;
+    }
+    case MINE_EV_BOOM: {                                  /* la mine a saute chez le poseur (ou le tireur) */
+        if (from == myId) break;
+        V3 c = a;
+        if (p && p->mineState == MS_PLAYER && p->mineAttach == myId + 1) c = vadd(P.pos, p->mineOfs);   /* sur mon corps */
+        if (p && (p->kind == PR_MINE || p->mineState)) p->alive = 0;
+        explode_fx(c);
+        if (ev->f[3] > 0.5f) { burst(c, v3(1, 0.85f, 0.4f), 60, 16, 0.6f, 0.35f); play(S_EXPLO, atten(c), 0.8f); }
+        break;
+    }
+    case MINE_EV_TORN:                                    /* arrachee par son porteur : elle repart comme une roquette renvoyee */
+        if (from == myId || from >= MAXP) break;
+        if (!p) {
+            p = spawn_proj(PR_PARRIED, a, b);
+            if (!p) break;
+            p->netId = ev->netId;
+        }
+        p->kind = PR_PARRIED; p->mineState = MS_FLY; p->owner = from; p->pos = a; p->vel = b; p->life = 4;
+        p->mult = ev->f[6]; p->parries = 1; p->orb = 0; p->mineAttach = 0;
+        for (int k = 0; k < 20; k++) add_part(a, vmul(rand_dir(), 8), v3(1, 1, 0.85f), 0.35f, 0.1f, 0);
+        play(S_PARRY, 0.8f * atten(a), 1.0f);
+        if ((int)(ev->netId >> 24) == myId + 1) { snprintf(popText, sizeof popText, "MINE ARRACHEE PAR %s", pname(from)); popT = 1.2f; }
+        netlog("ventouse : %s arrache une mine", pname(from));
+        break;
+    case MINE_EV_CANCEL:                                  /* hote : elle avait deja saute, l'arrachage ne compte pas */
+        if (p) p->alive = 0;
+        if (ev->target == myId) { snprintf(popText, sizeof popText, "TROP TARD !"); popT = 1.2f; }
+        netlog("ventouse : arrachage de %s annule (mine deja explosee)", pname(ev->target));
+        break;
+    }
+}
+/* --- fin Ventouse : reception --- */
+
 static void pickup_taken(int i, int who) {
     PU[i].t = PICKUP_RESPAWN;
     netlog("recharge : %s prend la cellule %d", pname(who), i);
@@ -4181,6 +4658,7 @@ static void apply_event(const NetEvent *ev) {
         if (p) {
             p->kind = PR_PARRIED; p->owner = ev->from; p->netId = ev->netId; p->pos = a; p->vel = b; p->life = 4;
             p->mult = ev->f[6]; p->parries = ev->sub; p->orb = 0;
+            if (p->mineState || ((ev->netId >> 20) & 0xF) == PR_MINE) { p->mineState = MS_FLY; p->mineAttach = 0; }   /* Ventouse */
         }
         for (int k = 0; k < 20; k++) add_part(a, vmul(rand_dir(), 8), v3(1, 1, 0.85f), 0.35f, 0.1f, 0);
         play(S_PARRY, 0.8f * atten(a), 1.0f);
@@ -4300,6 +4778,7 @@ static void apply_event(const NetEvent *ev) {
     case EV_MATCH:
         if (ev->sub == 0) {
             matchOver = 0;
+            for (int i = 0; i < MAXPR; i++) if (PR[i].kind == PR_MINE) PR[i].alive = 0;   /* Ventouse : nouveau match */
             memset(kfeed, 0, sizeof kfeed);
             snprintf(msg, sizeof msg, "COMBAT !");
             msgT = 2;
@@ -4426,6 +4905,9 @@ static void apply_event(const NetEvent *ev) {
     case EV_SAW:
         saw_apply(ev);
         break;
+    case EV_MINE:                                         /* Ventouse */
+        mine_apply(ev);
+        break;
     case EV_TESLA:                                        /* --- Tesla --- */
         if (ev->sub == 0) {                               /* relais active par un autre : sa copie flotte et crepite */
             if (ev->from == myId || ev->from >= MAXP) break;
@@ -4464,6 +4946,7 @@ static void apply_event(const NetEvent *ev) {
         break;                                            /* --- fin Tesla --- */
     case EV_INFO:
         if (ev->sub && ev->target < MAXP) saw_remove_owner(ev->target);   /* depart : ses scies disparaissent */
+        if (ev->sub && ev->target < MAXP) mine_remove_owner(ev->target);  /* Ventouse : ses mines aussi (celles sur lui retombent) */
         kfeed_add(-1, ev->target, 0, ev->sub ? 2 : 1);
         netlog("%s %s", pname(ev->target), ev->sub ? "a quitte la partie" : "a rejoint la partie");
         break;
@@ -4568,6 +5051,43 @@ static int lance_host_joust(const NetEvent *ev) {
 }
 /* --- fin Lance : arbitrage --- */
 
+/* --- Ventouse : arbitrage. Le premier qui decide du sort d'une mine gagne (1 = explosee, 2 = arrachee) ;
+ * les EV_HIT portant son netId et venant d'un autre sont ignores --- */
+typedef struct { unsigned int id; int fate, who; } MineFate;
+static MineFate hostMine[32];
+static int hostMineHead, mineCancels, mineHitsIgnored, mineHostBooms, mineHostTorn;
+static MineFate *mine_fate(unsigned int id) {
+    for (int k = 0; k < 32; k++) if (id && hostMine[k].id == id) return &hostMine[k];
+    return NULL;
+}
+static void mine_fate_set(unsigned int id, int fate, int who) {
+    MineFate *m = &hostMine[hostMineHead];
+    hostMineHead = (hostMineHead + 1) % 32;
+    m->id = id; m->fate = fate; m->who = who;
+}
+/* renvoie 1 si l'evenement est annule (ni applique ni relaye) */
+static int mine_host(const NetEvent *ev) {
+    MineFate *m = mine_fate(ev->netId);
+    if (ev->sub == MINE_EV_BOOM) {
+        if (m && m->who != ev->from) { netlog("ventouse : explosion de %s ignoree (sort deja decide)", pname(ev->from)); return 1; }
+        if (!m) { mine_fate_set(ev->netId, 1, ev->from); mineHostBooms++; }
+    } else if (ev->sub == MINE_EV_TORN && ev->from < MAXP) {
+        if (m && m->fate == 1) {                          /* deja explosee : l'arrachage est annule, pas de soin */
+            NetEvent e = ev_new(EV_MINE);
+            e.sub = MINE_EV_CANCEL; e.netId = ev->netId; e.target = ev->from;
+            mineCancels++;
+            net_emit(&e);
+            apply_event(&e);
+            return 1;
+        }
+        if (!m) mine_fate_set(ev->netId, 2, ev->from);
+        mineHostTorn++; parryCount++;
+        NP[ev->from].hp = fminf(100, NP[ev->from].hp + PARRY_HEAL);
+    }
+    return 0;
+}
+/* --- fin Ventouse : arbitrage --- */
+
 static void host_take_pickup(int i, int who) {
     if (i >= npu || PU[i].t > 0 || who >= MAXP || !NP[who].alive) return;   /* premier arrive, premier servi */
     NetEvent e = ev_new(EV_PICKUP_TAKEN);
@@ -4580,9 +5100,15 @@ static void host_take_pickup(int i, int who) {
  * (sinon la victime d'un coup pare subirait quand meme le recul et le flash) */
 static int host_handle(const NetEvent *ev) {
     if (ev->kind == EV_PICKUP) { host_take_pickup(ev->sub, ev->from); return 0; }
+    if (ev->kind == EV_MINE) return mine_host(ev);        /* Ventouse */
     if (ev->kind == EV_HIT) {
         int v = ev->target;
         if (ev->sub >= W_COUNT) return 1;
+        if (ev->netId && mine_fate(ev->netId) && mine_fate(ev->netId)->who != ev->from) {   /* Ventouse : decision perdue */
+            mineHitsIgnored++;
+            netlog("ventouse : touche de %s ignoree (mine arrachee ou deja explosee)", pname(ev->from));
+            return 1;
+        }
         hitCount[ev->sub]++;
         if (ev->sub == W_SAW && ev->f[4] > 0) sawHostBounceHits++;   /* Scie : touche apres un renvoi */
         netlog("degats : %s -> %s, %.0f (arme %d), PV avant %.0f", pname(ev->from), pname(v), ev->f[0], ev->sub, NP[v < MAXP ? v : 0].hp);
@@ -5655,6 +6181,37 @@ static void bot_think(float dt) {
         }
     }
 
+    /* --- Ventouse : une mine adverse collee sur moi. On decide une fois par mine (60 %), puis, apres 0,15 a 0,45 s
+     * de reaction, parry en visant l'adversaire le plus proche (la mine arrachee part dans la direction de visee) --- */
+    {
+        static unsigned int mineKey;
+        static int mineGo;
+        static double mineAt;
+        for (int i = 0; i < MAXPR; i++) {
+            Proj *p = &PR[i];
+            if (!p->alive || p->kind != PR_MINE || p->mineState != MS_PLAYER || p->mineAttach != myId + 1) continue;
+            if (mineKey != p->netId) {
+                mineKey = p->netId; mineGo = frand() < 0.6f; mineAt = nowT + frange(0.15f, 0.45f);
+                netlog("ventouse : mine de %s sur moi, %s", pname(p->owner), mineGo ? "arrachage prevu" : "pas de reaction");
+            }
+            if (mineGo && nowT >= mineAt && P.meleeCd <= 0) {
+                int tg = -1;
+                float td = 1e9f;
+                for (int j = 0; j < MAXP; j++)
+                    if (np_target(j) && vlen(vsub(NP[j].disp, P.pos)) < td) { td = vlen(vsub(NP[j].disp, P.pos)); tg = j; }
+                if (tg >= 0) {
+                    V3 d = vsub(np_center(tg), eye_pos());
+                    P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(clampf(d.y / fmaxf(vlen(d), 0.01f), -1, 1));
+                }
+                botPress[A_MELEE] = 1; mineGo = 0;
+                netlog("ventouse : arrachage tente");
+                return;
+            }
+            break;
+        }
+    }
+    /* --- fin Ventouse --- */
+
     /* Scie : ma scie revient ; une fois sur deux, on se tourne vers une cible visible pour la renvoyer */
     {
         static unsigned int bounceKey;
@@ -5861,6 +6418,12 @@ static void bot_think(float dt) {
         if (wp_has_ammo(WP_TESLA) && bd < 20 && !(pref == WP_SHOTGUN && bd < 10)) pref = WP_TESLA;
         else if (pref == WP_TESLA && wp_has_ammo(o)) pref = o;
     }
+    if (la == WP_MINE || lb == WP_MINE) {                 /* --- Ventouse : piege sur une cible vue entre 6 et 20 m --- */
+        int o = la == WP_MINE ? lb : la;
+        int trap = wp_has_ammo(WP_MINE) && best >= 0 && see && bd > 6 && bd < 20 && mine_count() < MINE_MAX_ACTIVE;
+        if (trap) pref = WP_MINE;
+        else if (pref == WP_MINE && wp_has_ammo(o)) pref = o;
+    }
     if (P.meleeKind == MK_ANVIL && P.anvilLandT < 1.0f && P.swingHitPts && wp_has_ammo(WP_RAIL) && (la == WP_RAIL || lb == WP_RAIL))
         pref = WP_RAIL;                                   /* onde qui touche : la cible vole ~1 s, le rail l'acheve */
     P.weapon = pref;
@@ -5907,6 +6470,56 @@ static void bot_think(float dt) {
         (P.weapon != WP_SHOTGUN || bd < (P.sliding ? 13.0f : 11.0f))) {   /* Eventail : au-dela, moins de 4 plombs */
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1;
     }
+    {   /* --- Ventouse : lancer (anticipation grossiere de 0,4 s, visee relevee pour la gravite), detonation, contre-jeu --- */
+        if (P.weapon == WP_MINE) {
+            botHeld[A_FIRE] = 0;
+            if (best >= 0 && see && seeT > 0.3f && bd > 6 && bd < 20 && P.fireCd <= 0 && P.switchT <= 0 &&
+                wp_has_ammo(WP_MINE) && mine_count() < MINE_MAX_ACTIVE) {
+                V3 eye = eye_pos(), c = vadd(np_center(best), vmul(np_vel(best), 0.4f)), d = vsub(c, eye);
+                float l = vlen(d), sp = fmaxf(MINE_SPEED + vdot(P.vel, vmul(d, 1.0f / fmaxf(l, 0.01f))), 8), tt = l / sp;
+                V3 lead = vadd(d, v3(0, 0.5f * MINE_GRAVITY * tt * tt, 0));
+                P.yaw = atan2f(lead.x, -lead.z) + aimErrYaw;
+                P.pitch = asinf(clampf(lead.y / fmaxf(vlen(lead), 0.01f), -1, 1)) + aimErrPitch;
+                botHeld[A_FIRE] = 1;
+                netlog("ventouse : mine lancee vers %s (%.1f m)", pname(best), bd);
+            }
+        }
+        /* detonation : une mine armee sur un joueur, ou un adversaire a moins de 2,5 m d'une mine posee (moi a plus
+         * de 2 m), apres 0,15 s de reaction. Seule la plus ancienne est concernee : DETONER UNE garde l'autre en piege */
+        static double nearSince;
+        Proj *old = mine_oldest();
+        int one = 0, all = 0;
+        for (int i = 0; i < MAXPR; i++) {
+            Proj *p = &PR[i];
+            if (!mine_own(p) || p->mineDet || p->mineState < MS_WORLD) continue;
+            int hot = p->mineState == MS_PLAYER && p->mineArmT <= 0;
+            for (int j = 0; j < MAXP && !hot; j++) hot = np_target(j) && vlen(vsub(np_center(j), p->pos)) < 2.5f;
+            if (!hot || vlen(vsub(pcenter(), p->pos)) < 2) continue;
+            if (p == old) one = 1; else all = 1;
+        }
+        if (!one && !all) nearSince = 0;
+        else if (nearSince <= 0) nearSince = nowT;
+        else if (nowT - nearSince >= 0.15) {
+            botPress[all ? A_DETONATE_ALL : A_DETONATE_ONE] = 1;
+            nearSince = 0;
+            netlog("ventouse : detonation (%s)", all ? "toutes" : "la plus ancienne");
+        }
+        /* contre-jeu : une fois sur deux, rail dans une mine adverse posee a moins de 4 m de son poseur */
+        if (P.weapon == WP_RAIL && P.ammo[WP_RAIL] >= 1 && P.fireCd <= 0 && P.switchT <= 0) {
+            for (int i = 0; i < MAXPR; i++) {
+                Proj *p = &PR[i];
+                if (!mine_shootable(p) || p->owner == myId || p->owner >= MAXP || p->netId % 2 || p->mineState < MS_WORLD) continue;
+                if (!np_target(p->owner) || vlen(vsub(np_center(p->owner), p->pos)) > 4) continue;
+                V3 eye = eye_pos(), d = vsub(p->pos, eye);
+                float l = vlen(d);
+                if (l > 45 || !los(eye, p->pos)) continue;
+                P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(clampf(d.y / fmaxf(l, 0.01f), -1, 1));
+                botHeld[A_FIRE] = 1;
+                netlog("ventouse : tir dans la mine de %s", pname(p->owner));
+                break;
+            }
+        }
+    }   /* --- fin Ventouse --- */
     if (P.weapon == WP_SAW && best >= 0 && see && seeT > 0.3f && bd < 30 && P.sawCd <= 0 && P.fireCd <= 0 &&
         wp_has_ammo(WP_SAW)) {                            /* Scie : on vise devant la cible, et un peu au-dessus (gravite) */
         V3 eye = eye_pos(), c = np_center(best), d = vsub(c, eye);
@@ -6066,6 +6679,7 @@ static void fire_weapon(void) {
     case WP_KINETIC: fire_kinetic(); break;
     case WP_SHOTGUN: fire_shotgun(); break;
     case WP_SAW:    fire_saw(); break;
+    case WP_MINE:   fire_mine(); break;                   /* Ventouse */
     }
 }
 /* chargeur vide : clic sec, puis l'autre arme si elle peut tirer, sinon on pousse au contact */
@@ -6165,6 +6779,7 @@ static void game_tick(float dt) {
         else dry_fire();
     }
     tesla_tick(dt, !P.dead && P.weapon == WP_TESLA && (act[A_FIRE] || lmbp) && P.switchT <= 0);   /* Tesla : tir maintenu */
+    if (!P.dead && (actP[A_DETONATE_ALL] || actP[A_DETONATE_ONE])) mine_remote(actP[A_DETONATE_ALL]);   /* Ventouse : quelle que soit l'arme */
     if (!P.dead && !wp_has_ammo(P.loadout[0]) && !wp_has_ammo(P.loadout[1])) dryT += dt;
     ammoGainT -= dt; dryHintT -= dt;
 
@@ -6691,6 +7306,30 @@ static void draw_lance_vm(void) {
 }
 /* --- fin Lance : rendu --- */
 
+/* --- Ventouse : lanceur (tube carre, disque en facade, mine chargee) ; deux LED = mines actives, clignotantes en vol --- */
+static void draw_mine_vm(float ready) {
+    int n = 0, fly = 0;
+    for (int i = 0; i < MAXPR; i++)
+        if (mine_own(&PR[i])) { n++; fly |= PR[i].mineState == MS_FLY; }
+    glColor3f(0.28f, 0.3f, 0.34f);
+    box_faces(v3(-0.06f, -0.06f, -0.34f), v3(0.06f, 0.06f, 0.08f));
+    glColor3f(0.2f, 0.2f, 0.22f);
+    box_faces(v3(-0.03f, -0.17f, -0.02f), v3(0.03f, -0.06f, 0.06f));
+    glColor3f(0.13f, 0.13f, 0.15f);
+    box_faces(v3(-0.085f, -0.085f, -0.38f), v3(0.085f, 0.085f, -0.34f));
+    glDisable(GL_LIGHTING);
+    if (P.ammo[WP_MINE] > 0) {
+        glColor3f(1.0f * ready, 0.35f * ready, 0.35f * ready);
+        box_faces(v3(-0.04f, -0.04f, -0.395f), v3(0.04f, 0.04f, -0.38f));
+    }
+    for (int s = 0; s < MINE_MAX_ACTIVE; s++) {
+        float b = s < n ? ((fly && fmodf(gameTime, 0.2f) < 0.1f) ? 0.3f : 1.0f) : 0.12f;
+        glColor3f(0.3f * b, 1.0f * b, 0.7f * b);
+        box_faces(v3(-0.045f + s * 0.05f, 0.06f, -0.2f), v3(-0.015f + s * 0.05f, 0.075f, -0.16f));
+    }
+}
+/* --- fin Ventouse --- */
+
 static void draw_viewmodel(float aspect) {
     glClear(GL_DEPTH_BUFFER_BIT);
     set_frustum(60, aspect, 0.01f, 10);
@@ -6830,6 +7469,8 @@ static void draw_viewmodel(float aspect) {
         }
     } else if (P.weapon == WP_TESLA) {                    /* Tesla */
         draw_tesla_vm();
+    } else if (P.weapon == WP_MINE) {                     /* Ventouse */
+        draw_mine_vm(ready);
     } else {
         glColor3f(0.32f, 0.36f, 0.22f);
         box_faces(v3(-0.055f, -0.055f, -0.5f), v3(0.055f, 0.055f, 0.05f));
@@ -7297,6 +7938,42 @@ static void draw_saws(void) {
     }
 }
 
+/* --- Ventouse : rendu --- */
+/* passe opaque : petit cube sombre, bande de couleur (cyan : la mienne, rouge : adverse), ventouse contre la face */
+static void draw_mines(void) {
+    glEnable(GL_LIGHTING);
+    for (int i = 0; i < MAXPR; i++) {
+        Proj *p = &PR[i];
+        if (!p->alive || p->kind != PR_MINE) continue;
+        V3 c = mine_col(p);
+        glPushMatrix();
+        glTranslatef(p->pos.x, p->pos.y, p->pos.z);
+        if (p->mineState == MS_FLY) glRotatef(p->mineT * 540, 1, 0.3f, 0.2f);
+        glColor3f(0.22f, 0.22f, 0.25f);
+        box_faces(v3(-0.11f, -0.11f, -0.11f), v3(0.11f, 0.11f, 0.11f));
+        glColor3f(c.x * 0.8f, c.y * 0.8f, c.z * 0.8f);
+        box_faces(v3(-0.115f, -0.03f, -0.115f), v3(0.115f, 0.03f, 0.115f));
+        if (p->mineState == MS_WORLD) {                   /* disque "ventouse" aplati contre la face (normales du decor : axes) */
+            V3 n = p->mineN, h, m = vmul(n, -0.12f);
+            h = v3(fabsf(n.x) > 0.5f ? 0.02f : 0.15f, fabsf(n.y) > 0.5f ? 0.02f : 0.15f, fabsf(n.z) > 0.5f ? 0.02f : 0.15f);
+            glColor3f(0.12f, 0.12f, 0.14f);
+            box_faces(vsub(m, h), vadd(m, h));
+        }
+        glPopMatrix();
+    }
+    glDisable(GL_LIGHTING);
+}
+/* passe additive (dans un glBegin(GL_QUADS)) : voyant qui clignote de 2 Hz au collage a 12 Hz en fin de meche */
+static void draw_mine_glow(const Proj *p) {
+    V3 c = mine_col(p);
+    if (p->mineState == MS_FLY) { glColor4f(c.x, c.y, c.z, 0.5f); billboard(p->pos, 0.25f); return; }
+    float k = clampf(p->mineT / MINE_FUSE, 0, 1), hz = 2 + 10 * k;
+    int lit = fmodf(p->mineT * hz, 1.0f) < 0.5f;
+    glColor4f(c.x, c.y, c.z, lit ? 0.95f : 0.25f);
+    billboard(p->pos, lit ? 0.35f : 0.22f);
+}
+/* --- fin Ventouse : rendu --- */
+
 static void draw_remote_players(void) {
     glEnable(GL_LIGHTING);
     for (int i = 0; i < MAXP; i++) {
@@ -7561,6 +8238,55 @@ static void draw_tesla_hud(float cx, float cy) {
     }
 }
 /* --- fin Tesla : HUD --- */
+
+/* --- Ventouse : HUD. Alerte "mine sur toi" (cadre rouge pulsant, barre d'armement puis de meche) ; pastilles de mes
+ * mines actives (la plus ancienne encadree : c'est elle que vise DETONER UNE) et rappel des deux touches --- */
+static void draw_mine_hud(float cx, float cy) {
+    char buf[96];
+    if (P.dead) return;
+    for (int i = 0; i < MAXPR; i++) {
+        Proj *p = &PR[i];
+        if (!p->alive || p->kind != PR_MINE || p->mineState != MS_PLAYER || p->mineAttach != myId + 1 || p->owner == myId) continue;
+        float a = 0.4f + 0.4f * sinf(gameTime * 18), W = (float)winW, H = (float)winH;
+        rect(0, 0, W, 10, 1, 0.1f, 0.1f, a); rect(0, H - 10, W, 10, 1, 0.1f, 0.1f, a);
+        rect(0, 10, 10, H - 20, 1, 0.1f, 0.1f, a); rect(W - 10, 10, 10, H - 20, 1, 0.1f, 0.1f, a);
+        text_c(1, cx, cy + 74, "MINE SUR TOI ! PARE !", 1, 0.3f, 0.25f, 0.95f);
+        int arming = p->mineArmT > 0;
+        float k = arming ? p->mineArmT / MINE_ARM_PLAYER : 1 - p->mineT / MINE_FUSE;
+        rect(cx - 80, cy + 84, 160, 5, 0.1f, 0.1f, 0.15f, 0.7f);
+        rect(cx - 80, cy + 84, 160 * clampf(k, 0, 1), 5, 1, arming ? 0.85f : 0.25f, 0.2f, 0.95f);
+        break;
+    }
+    Proj *own[MAXPR];
+    int n = 0;
+    for (int i = 0; i < MAXPR && n < MAXPR; i++) if (mine_own(&PR[i])) own[n++] = &PR[i];
+    if (!n && P.weapon != WP_MINE) return;
+    for (int i = 1; i < n; i++)                           /* tri par ordre de lancer */
+        for (int j = i; j > 0 && own[j]->mineSeq < own[j - 1]->mineSeq; j--) { Proj *t = own[j]; own[j] = own[j - 1]; own[j - 1] = t; }
+    Proj *old = mine_oldest();
+    float y = winH - 150.0f;
+    text(0, winW - 36.0f - MINE_MAX_ACTIVE * 20.0f - fontW[0] * 5, y + 12, "MINES", 0.3f, 1, 0.7f, 0.9f);
+    for (int s = 0; s < MINE_MAX_ACTIVE; s++) {
+        float x = winW - 30.0f - (MINE_MAX_ACTIVE - s) * 20.0f;
+        rect(x, y, 14, 14, 0.08f, 0.15f, 0.12f, 0.7f);
+        if (s < n) {
+            Proj *p = own[s];
+            int blink = p->mineState == MS_FLY || p->mineDet ? fmodf(gameTime, 0.2f) < 0.1f : 1;
+            rect(x + 2, y + 2, 10, 10, 0.3f, 1, 0.7f, blink ? 0.95f : 0.3f);
+            if (p == old) {                               /* cadre : la prochaine a sauter avec DETONER UNE */
+                rect(x - 2, y - 2, 18, 2, 1, 1, 1, 0.9f); rect(x - 2, y + 14, 18, 2, 1, 1, 1, 0.9f);
+                rect(x - 2, y, 2, 14, 1, 1, 1, 0.9f); rect(x + 14, y, 2, 14, 1, 1, 1, 0.9f);
+            }
+        }
+    }
+    if (n) {
+        snprintf(buf, sizeof buf, "[%s] DETONER TOUT", bind_text(A_DETONATE_ALL));
+        text(0, winW - 30.0f - fontW[0] * (float)strlen(buf), y - 10, buf, 0.75f, 0.95f, 0.85f, 0.9f);
+        snprintf(buf, sizeof buf, "[%s] DETONER UNE", bind_text(A_DETONATE_ONE));
+        text(0, winW - 30.0f - fontW[0] * (float)strlen(buf), y - 30, buf, 0.75f, 0.95f, 0.85f, 0.9f);
+    }
+}
+/* --- fin Ventouse : HUD --- */
 
 static void draw_hud(void) {
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
@@ -7871,6 +8597,7 @@ static void draw_hud(void) {
     }
     draw_saw_hud(cx, cy);                                 /* Scie */
     if (P.weapon == WP_TESLA && !P.dead) draw_tesla_hud(cx, cy);   /* Tesla */
+    draw_mine_hud(cx, cy);                                /* Ventouse */
     for (int i = 0; i < COIN_MAX; i++) {                 /* pieces disponibles */
         float fill = clampf(P.coins - i, 0, 1), x = winW - 30.0f - (COIN_MAX - i) * 20.0f, y = winH - 96.0f;
         rect(x, y, 14, 14, 0.15f, 0.12f, 0.05f, 0.7f);
@@ -8137,6 +8864,7 @@ static void render(float alpha, float frameDt) {
         glPopMatrix();
     }
     draw_saws();                                          /* Scie */
+    draw_mines();                                         /* Ventouse */
     for (int i = 0; i < npu; i++) {                      /* cellules de munitions : les grandes sont plus grosses et violettes */
         if (PU[i].t > 0) continue;
         int big = PU[i].pts >= PICKUP_BIG;
@@ -8226,6 +8954,7 @@ static void render(float alpha, float frameDt) {
             billboard(q->pos, st == SAW_PLANTED ? 0.9f : 0.6f);
             continue;
         }
+        if (PR[i].kind == PR_MINE) { draw_mine_glow(&PR[i]); continue; }   /* Ventouse */
         if (PR[i].kind == PR_ROCKET) { glColor4f(1, 0.6f, 0.2f, 1); billboard(PR[i].pos, 0.55f); glColor4f(1, 1, 0.8f, 1); billboard(PR[i].pos, 0.2f); }
         else if (PR[i].kind == PR_PARRIED) { glColor4f(1, 0.85f, 0.4f, 1); billboard(PR[i].pos, 1.0f); glColor4f(1, 1, 1, 1); billboard(PR[i].pos, 0.3f); }
         else { glColor4f(1, 0.25f, 0.9f, 1); billboard(PR[i].pos, 0.7f); glColor4f(1, 0.9f, 1, 1); billboard(PR[i].pos, 0.22f); }
@@ -8495,6 +9224,50 @@ static Enemy *tesla_test_drone(int i, V3 pos, float hp) {
     return &E[i];
 }
 /* --- fin Tesla : outils des tests --- */
+
+/* --- Ventouse : outils des tests --- */
+/* remise a zero : solo, Ventouse + rail, Ventouse en main avec 1 mine, sans drones */
+static void mine_test_reset(V3 pos, float yaw, float pitch) {
+    reset_game();
+    dmMode = 0; hitstop = 0; waveDelay = 1000;
+    memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+    memset(DN, 0, sizeof DN);
+    P.pos = P.prevPos = pos; P.yaw = yaw; P.pitch = pitch; P.vel = v3(0, 0, 0);
+    P.loadout[0] = WP_MINE; P.loadout[1] = WP_RAIL; P.weapon = WP_MINE; P.switchT = 0; P.fireCd = 0;
+    P.ammo[WP_MINE] = 1; P.ammoGauge[WP_MINE] = 0;
+}
+static Proj *mine_test_last(void) {                       /* ma derniere mine lancee */
+    Proj *r = NULL;
+    for (int i = 0; i < MAXPR; i++) if (mine_own(&PR[i]) && (!r || PR[i].mineSeq > r->mineSeq)) r = &PR[i];
+    return r;
+}
+static int mine_test_stick(Proj *p, int moveP) {          /* ticks jusqu'au collage (ou l'explosion) */
+    int n = 0;
+    while (n < 600 && p->alive && p->kind == PR_MINE && p->mineState == MS_FLY) {
+        nowT += TICK; proj_tick(TICK);
+        if (moveP) player_tick(TICK, 0, 0);
+        n++;
+    }
+    return n;
+}
+static Proj *mine_test_put(V3 pos, int st, int owner) {   /* mine posee a la main (armee) */
+    Proj *p = spawn_proj(PR_MINE, pos, v3(0, 0, 0));
+    p->owner = owner; p->mineState = st; p->mineN = v3(0, 1, 0); p->mineSeq = ++mineCounter;
+    p->netId = ((unsigned int)(owner + 1) << 24) | ((unsigned int)PR_MINE << 20) | (mineCounter & 0xFFFFF);
+    return p;
+}
+/* LAN simule : moi (hote, 0) et NP[1] en t ; table d'arbitrage vide */
+static void mine_test_lan(V3 t) {
+    dmMode = 1; matchOver = 0;
+    memset(NP, 0, sizeof NP);
+    memset(hostMine, 0, sizeof hostMine);
+    NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi");
+    NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
+    NP[1].disp = t; vf(NP[1].st.pos, t);
+    NP[0].disp = P.pos;
+    nowT += 1;
+}
+/* --- fin Ventouse : outils des tests --- */
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
 static void run_tests(const char *path) {
@@ -9875,6 +10648,253 @@ static void run_tests(const char *path) {
     }
     /* --- fin Lance --- */
 
+    /* --- Ventouse --- */
+    {   /* 1. vol et collage au sol, puis contre un mur (8 m) */
+        mine_test_reset(v3(-20, 0, 40), PI, -0.3f);
+        fire_mine();
+        Proj *m = mine_test_last();
+        int ammo = P.ammo[WP_MINE];
+        for (int i = 0; i < 120; i++) proj_tick(TICK);
+        fprintf(f, "ventouse sol : etat %d, normale (%.0f %.0f %.0f), y %.2f, z %.1f, munitions %d, jauge %.0f "
+                   "(attendu 2, (0 1 0), 0.06, entre 43 et 46, 0, 0)\n",
+                m->mineState, m->mineN.x, m->mineN.y, m->mineN.z, m->pos.y, m->pos.z, ammo, P.ammoGauge[WP_MINE]);
+        mine_test_reset(v3(-20, 0, 70), PI, 0.1f);
+        fire_mine();
+        m = mine_test_last();
+        mine_test_stick(m, 0);
+        fprintf(f, "ventouse mur : etat %d, normale (%.0f %.0f %.0f), z %.2f (attendu 2, (0 0 -1), face du mur moins 0.06)\n",
+                m->mineState, m->mineN.x, m->mineN.y, m->mineN.z, m->pos.z);
+    }
+    {   /* 2. meche : 3 s depuis le collage */
+        mine_test_reset(v3(-20, 0, 40), PI, -0.3f);
+        fire_mine();
+        Proj *m = mine_test_last();
+        mine_test_stick(m, 0);
+        int n = 0;
+        while (n < 1000 && m->alive) { proj_tick(TICK); n++; }
+        fprintf(f, "ventouse meche : explosion %d ticks apres le collage (attendu 360 +- 1)\n", n);
+    }
+    {   /* 3. mine-jump (sans sauter), compare au rocket jump sans saut */
+        mine_test_reset(v3(-20, 0, 40), 0, -1.5f);
+        fire_mine();
+        Proj *m = mine_test_last();
+        mine_test_stick(m, 1);
+        int st = m->mineState;
+        mine_detonate(m, MX_REMOTE);
+        float top = 0;
+        for (int i = 0; i < 200; i++) { proj_tick(TICK); player_tick(TICK, 0, 0); top = fmaxf(top, P.pos.y); }
+        float hpM = P.hp;
+        reset_game();
+        P.pos = P.prevPos = v3(-20, 0, 40); P.pitch = -1.5f;
+        fire_rocket();
+        float topR = 0;
+        for (int i = 0; i < 200; i++) { proj_tick(TICK); player_tick(TICK, 0, 0); topR = fmaxf(topR, P.pos.y); }
+        fprintf(f, "ventouse mine-jump : collee %d, apogee %.2f, PV %.0f ; rocket jump sans saut %.2f (attendu 2, > 4.3 (~4.6), 96 ; ~4.0)\n",
+                st, top, hpM, topR);
+    }
+    {   /* 4. drone colle : 90 garantis ; un 2e drone a 3 m de la mine */
+        mine_test_reset(v3(-20, 0, 40), 0, 0.13f);
+        tesla_test_drone(0, v3(-20, 1.6f, 30), 1000);
+        fire_mine();
+        Proj *m = mine_test_last();
+        mine_test_stick(m, 0);
+        int st = m->mineState;
+        tesla_test_drone(1, vadd(m->pos, v3(3, 0, 0)), 1000);
+        mine_detonate(m, MX_REMOTE);
+        fprintf(f, "ventouse drone colle : etat %d, degats %.2f, 2e drone a 3 m %.2f (attendu 3, 90.00, 51.43)\n",
+                st, 1000 - E[0].hp, 1000 - E[1].hp);
+    }
+    {   /* 5. rail dans une mine posee a 2 m d'un drone (le drone derriere la mine n'est pas touche par le rail) */
+        mine_test_reset(v3(-20, 0, 40), 0, 0);
+        Proj *m = mine_test_put(v3(-20, 1.6f, 30), MS_WORLD, myId);
+        tesla_test_drone(0, v3(-20, 1.6f, 28), 1000);
+        P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2;
+        fire_rail();
+        fprintf(f, "ventouse rail : mine %d, degats au drone %.2f, message \"%s\", chaine %d (attendu 0, 102.97, MINE x1,5 !, 1)\n",
+                m->alive, 1000 - E[0].hp, popText, shotStreak);
+        hitstop = 0;
+    }
+    {   /* 5b. un plomb de l'Eventail, puis l'arc de la Tesla, dans une mine a 2 m d'un drone (x1) */
+        float dm[2];
+        for (int k = 0; k < 2; k++) {
+            mine_test_reset(v3(-20, 0, 40), 0, 0);
+            mine_test_put(v3(-20, 1.6f, 34), MS_WORLD, myId);
+            tesla_test_drone(0, v3(-18, 1.6f, 34), 1000);
+            if (k == 0) { P.weapon = WP_SHOTGUN; P.ammo[WP_SHOTGUN] = 3; fire_shotgun(); }
+            else { P.weapon = WP_TESLA; P.ammo[WP_TESLA] = 60; tesla_pulse(); tesla_flush(); }
+            dm[k] = 1000 - E[0].hp;
+            hitstop = 0;
+        }
+        fprintf(f, "ventouse plomb / arc : degats au drone %.2f / %.2f (attendu 64.29 / 64.29)\n", dm[0], dm[1]);
+    }
+    {   /* 6. limite de 2 : la 3e fait sauter la plus ancienne */
+        mine_test_reset(v3(-20, 0, 40), PI, -0.3f);
+        P.ammo[WP_MINE] = 3;
+        unsigned int first = 0;
+        for (int k = 0; k < 3; k++) {
+            P.fireCd = 0;
+            fire_mine();
+            if (!k) first = mine_test_last()->mineSeq;
+            for (int i = 0; i < 30; i++) proj_tick(TICK);
+        }
+        int n = 0, firstAlive = 0;
+        for (int i = 0; i < MAXPR; i++)
+            if (mine_own(&PR[i])) { n++; firstAlive |= PR[i].mineSeq == first; }
+        fprintf(f, "ventouse limite : %d mines actives, la 1re vivante %d, munitions %d (attendu 2, 0, 0)\n", n, firstAlive, P.ammo[WP_MINE]);
+    }
+    {   /* 7. deux commandes : DETONER UNE (la plus ancienne), DETONER TOUT, puis sans mine (clic sec) */
+        mine_test_reset(v3(-20, 0, 40), PI, -0.3f);
+        P.ammo[WP_MINE] = 2;
+        Proj *ma, *mb;
+        fire_mine(); ma = mine_test_last();
+        for (int i = 0; i < 30; i++) proj_tick(TICK);
+        P.fireCd = 0;
+        fire_mine(); mb = mine_test_last();
+        for (int i = 0; i < 30; i++) proj_tick(TICK);
+        botPress[A_DETONATE_ONE] = 1; game_tick(TICK); hitstop = 0;
+        int aOne = ma->alive, bOne = mb->alive;
+        botPress[A_DETONATE_ALL] = 1; game_tick(TICK); hitstop = 0;
+        int bAll = mb->alive;
+        float hp0 = P.hp;
+        botPress[A_DETONATE_ONE] = 1; game_tick(TICK); hitstop = 0;
+        fprintf(f, "ventouse commandes : UNE -> A %d B %d ; TOUT -> B %d ; sans mine : mines %d, PV %+.0f (attendu 0 1 ; 0 ; 0, +0)\n",
+                aOne, bOne, bAll, mine_count(), P.hp - hp0);
+    }
+    {   /* 8. munitions par jauge : 3 coups d'epee = 1 mine, grande cellule = +1, plein a 3, aucune recharge passive */
+        mine_test_reset(v3(-20, 0, 40), 0, 0);
+        P.ammo[WP_MINE] = 0;
+        tesla_test_drone(0, v3(-20, 1.6f, 38), 1000);
+        for (int k = 0; k < 3; k++) { P.meleeCd = 0; P.parryWin = 0; hitstop = 0; melee(); }
+        hitstop = 0; P.parryWin = 0;
+        int sword = P.ammo[WP_MINE]; float gSword = P.ammoGauge[WP_MINE];
+        int big = 0;
+        for (int i = 0; i < npu; i++) if (PU[i].pts == PICKUP_BIG) { big = i; break; }
+        pickup_taken(big, myId); PU[big].t = 0;
+        int cell = P.ammo[WP_MINE];
+        P.ammo[WP_MINE] = 3; P.ammoGauge[WP_MINE] = 0;
+        pickup_taken(big, myId); PU[big].t = 0;
+        int full = P.ammo[WP_MINE]; float gFull = gauge_frac(WP_MINE);
+        E[0].alive = 0;
+        P.ammo[WP_MINE] = 0; P.ammoGauge[WP_MINE] = 0;
+        for (int i = 0; i < 3600; i++) { game_tick(TICK); hitstop = 0; }
+        fprintf(f, "ventouse jauge : 3 coups d'epee -> %d mine(s), jauge %.0f ; grande cellule (%d) -> %d ; a 3 + cellule -> %d, "
+                   "jauge affichee %.0f%% ; 30 s a vide -> %d, jauge %.0f (attendu 1, 0 ; 150, 2 ; 3, 100%% ; 0, 0)\n",
+                sword, gSword, PU[big].pts, cell, full, 100 * gFull, P.ammo[WP_MINE], P.ammoGauge[WP_MINE]);
+    }
+    {   /* 9. LAN : mine collee sur un joueur, detonation demandee a 0,3 s, explosion a l'armement (0,6 s), 60 garantis */
+        mine_test_reset(v3(-20, 0, 40), 0, 0);
+        mine_test_lan(v3(-20, 0, 34));
+        fire_mine();
+        Proj *m = mine_test_last();
+        mine_test_stick(m, 0);
+        int st = m->mineState, at = m->mineAttach;
+        int t = 0;
+        for (; t < 36; t++) { nowT += TICK; proj_tick(TICK); }
+        mine_detonate(m, MX_REMOTE);
+        float hpMid = NP[1].hp;
+        while (t < 600 && m->alive) { nowT += TICK; proj_tick(TICK); t++; }
+        hitstop = 0;
+        fprintf(f, "ventouse LAN : etat %d sur %d, PV a 0,3 s %.0f, explosion a %.2f s, PV %.0f (attendu 4 sur 2, 100, 0.60, 40)\n",
+                st, at, hpMid, t * TICK, NP[1].hp);
+    }
+    {   /* 7b. LAN : A collee sur un joueur (pas armee), B au sol : deux DETONER UNE dans le meme 0,1 s */
+        mine_test_reset(v3(-20, 0, 40), 0, 0);
+        mine_test_lan(v3(-20, 0, 30));
+        Proj *ma = mine_test_put(v3(-20, 1, 30.4f), MS_PLAYER, myId), *mb = mine_test_put(v3(-14, 0.06f, 30), MS_WORLD, myId);
+        ma->mineAttach = 2; ma->mineOfs = v3(0, 1, 0.4f); ma->mineArmT = MINE_ARM_PLAYER;
+        mine_remote(0);
+        mine_remote(0);
+        hitstop = 0;
+        fprintf(f, "ventouse UNE x2 : A vivante %d (detonation en attente %d), B vivante %d (attendu 1 (1), 0)\n",
+                ma->alive, ma->mineDet != 0, mb->alive);
+        ma->alive = 0;
+    }
+    {   /* 10. arrachage : mine adverse collee sur moi, parry -> renvoyee dans ma visee a 36 m/s */
+        mine_test_reset(v3(-20, 0, 40), 0.3f, 0.1f);
+        mine_test_lan(v3(-20, 0, 30));
+        Proj *m = mine_test_put(vadd(P.pos, v3(0, 1, 0.3f)), MS_PLAYER, 1);
+        m->mineAttach = myId + 1; m->mineOfs = v3(0, 1, 0.3f); m->mineArmT = 0.3f;
+        P.parryWin = 0.1f;
+        int n = try_parry();
+        fprintf(f, "ventouse arrachage : pares %d, kind %d, owner %d, vitesse %.1f, alignement %.4f, mult %.2f, message \"%s\" "
+                   "(attendu 1, %d, 0, 36.0, > 0.999, 1.25, ARRACHEE !)\n",
+                n, m->kind, m->owner, vlen(m->vel), vdot(vnorm(m->vel), view_dir()), m->mult, popText, PR_PARRIED);
+        m->alive = 0; P.parryWin = 0; hitstop = 0;
+    }
+    {   /* 11. arbitrage de l'hote : arrachage puis touche du poseur ; puis explosion, touche, arrachage tardif */
+        mine_test_reset(v3(-20, 0, 40), 0, 0);
+        mine_test_lan(v3(-20, 0, 30));
+        unsigned int id1 = (1u << 24) | ((unsigned int)PR_MINE << 20) | 0x9001, id2 = id1 + 1;
+        NetEvent e = ev_new(EV_MINE);
+        e.sub = MINE_EV_TORN; e.from = 1; e.target = 1; e.netId = id1;
+        int r1 = host_handle(&e);
+        NetEvent h = ev_new(EV_HIT);
+        h.from = 0; h.target = 1; h.sub = W_MINE; h.f[0] = 63; h.netId = id1;
+        int r2 = host_handle(&h);
+        float hpA = NP[1].hp;
+        NP[1].hp = 100;
+        int c0 = mineCancels;
+        e.sub = MINE_EV_BOOM; e.from = 0; e.netId = id2;
+        int r3 = host_handle(&e);
+        h.netId = id2;
+        int r4 = host_handle(&h);
+        float hpB = NP[1].hp;
+        e.sub = MINE_EV_TORN; e.from = 1;
+        int r5 = host_handle(&e);
+        fprintf(f, "ventouse arbitrage : arrachage %d puis touche du poseur annulee %d, PV %.0f ; explosion %d, touche %d, PV %.0f, "
+                   "arrachage tardif annule %d, CANCEL %d (attendu 0 1, 100 ; 0 0, 40, 1, 1)\n",
+                r1, r2, hpA, r3, r4, hpB, r5, mineCancels - c0);
+    }
+    {   /* 12. mine adverse volee au rail : son poseur pres de la mine prend le souffle (plafonne a 60) */
+        mine_test_reset(v3(-20, 0, 41), 0, 0);
+        mine_test_lan(v3(-18.5f, 0, 33));
+        Proj *m = mine_test_put(v3(-20, 1.6f, 33), MS_WORLD, 1);
+        P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2;
+        fire_rail();
+        hitstop = 0;
+        fprintf(f, "ventouse volee : mine %d, PV du poseur %.0f, message \"%s\" (attendu 0, 40, MINE VOLEE !)\n", m->alive, NP[1].hp, popText);
+    }
+    {   /* 13. reception : copie d'une mine adverse, collee sur moi (alerte), puis explosee */
+        mine_test_reset(v3(-20, 0, 40), 0, 0);
+        mine_test_lan(v3(-20, 0, 30));
+        unsigned int id = (2u << 24) | ((unsigned int)PR_MINE << 20) | 0x9100;
+        NetEvent e = ev_new(EV_MINE);
+        e.sub = MINE_EV_THROW; e.from = 1; e.netId = id; vf(e.f, v3(-20, 1.6f, 31)); vf(e.f + 3, v3(0, 0, 24));
+        apply_event(&e);
+        Proj *p = find_proj(id);
+        int copy = p && p->kind == PR_MINE && p->owner == 1 && p->mineState == MS_FLY;
+        e.sub = MINE_EV_PLAYER; e.target = 0; vf(e.f, v3(0, 1.2f, -0.4f));
+        apply_event(&e);
+        int onMe = p && p->mineState == MS_PLAYER && p->mineAttach == 1;
+        char alert[32];
+        snprintf(alert, sizeof alert, "%s", popText);
+        e.sub = MINE_EV_BOOM; vf(e.f, v3(-20, 1.2f, 39.6f)); vf(e.f + 3, v3(0, 0, 0));
+        apply_event(&e);
+        fprintf(f, "ventouse reseau : copie %d, collee sur moi %d, alerte \"%s\", retiree %d (attendu 1, 1, MINE SUR TOI ! PARE !, 1)\n",
+                copy, onMe, alert, find_proj(id) == NULL);
+    }
+    {   /* 14. bot a la Ventouse : cible immobile a 12 m, il lance, la mine colle, il la fait sauter une fois armee */
+        mine_test_reset(v3(-20, 0, 41), 0, 0);
+        mine_test_lan(v3(-20, 0, 29));
+        P.ammo[WP_MINE] = 2; P.dashCharge = 0.2f; P.hookCd = 100;
+        int t0 = mineThrows, h0 = hitCount[W_MINE], i = 0;
+        for (; i < 480 && hitCount[W_MINE] == h0; i++) {
+            nowT += TICK;
+            bot_think(TICK);
+            game_tick(TICK);
+            P.hookCd = 100;
+        }
+        hitstop = 0;
+        fprintf(f, "bot ventouse : lancers %d, touches ventouse %d apres %.2f s, PV cible %.0f (attendu >= 1, >= 1, < 100)\n",
+                mineThrows - t0, hitCount[W_MINE] - h0, i * TICK, NP[1].hp);
+        memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+        reset_game();
+        dmMode = 0;
+        memset(NP, 0, sizeof NP);
+        memset(hostMine, 0, sizeof hostMine);
+    }
+    /* --- fin Ventouse --- */
+
     /* reglages : sauvegarde puis rechargement de velocity.ini */
     {
         int savedBot = botMode;
@@ -10376,6 +11396,15 @@ done:
                    "doubles desarconnements %d",
                    lanceHostCouch, lanceHostVcSum / (lanceHostCouch ? lanceHostCouch : 1), lanceHostThrust, lanceHostParried,
                    lanceClashWins, lanceClashDouble);
+        if (mineThrows || hitCount[W_MINE] || mineTorn)  /* --- Ventouse --- */
+            netlog("ventouse (moi) : %d lancers, collees decor %d / joueur %d / drone %d ; explosions telecommande %d, meche %d, "
+                   "3e mine %d, tir %d, en vol %d ; DETONER TOUT %d, DETONER UNE %d ; arrachees %d ; delai collage -> explosion "
+                   "sur un joueur %.2f s",
+                   mineThrows, mineStickW, mineStickP, mineStickE, mineBoom[MX_REMOTE], mineBoom[MX_FUSE], mineBoom[MX_THIRD],
+                   mineBoom[MX_SHOT], mineBoom[MX_FLY], mineDetAll, mineDetOne, mineTorn, mineArmedT / (mineArmedN ? mineArmedN : 1));
+        if (netMode == NET_HOST && (mineHostBooms || mineHostTorn || hitCount[W_MINE]))
+            netlog("ventouse (arbitre) : touches %d, explosions %d, arrachages %d, annulations %d, touches ignorees %d",
+                   hitCount[W_MINE], mineHostBooms, mineHostTorn, mineCancels, mineHitsIgnored);
     }
     net_shutdown();
     if (botLog) fclose(botLog);
