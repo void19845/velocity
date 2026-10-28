@@ -354,6 +354,36 @@ enum { MX_REMOTE, MX_FUSE, MX_THIRD, MX_SHOT, MX_FLY, MX_COUNT };   /* origine d
 #define FLAIL_COIN_HIT_R    0.4f    /* marge de touche de la piece frappee */
 #define FLAIL_COMBO_T       1.0f    /* fenetre du combo fleau -> rail (visuel seulement) */
 /* --- fin Fleau --- */
+/* --- Poings a impulsion : combo de 3 coups (le 3e est un uppercut), punch-jump sur le decor --- */
+#define FIST_GAP            0.22f   /* entre deux coups du combo */
+#define FIST_END_CD         0.70f   /* recharge apres le 3e coup */
+#define FIST_COMBO_WIN      0.45f   /* au-dela, sans nouveau coup, le combo revient au coup 1 */
+#define FIST_WHIFF_CD       0.60f   /* combo sans touche ni parry : recharge en plus */
+#define FIST_BUFFER         0.12f   /* un appui un peu en avance est memorise */
+#define FIST_ANIM           0.16f   /* duree de l'animation d'un coup */
+#define FIST_RANGE          1.9f
+#define FIST_RANGE_PER_MS   0.06f
+#define FIST_CONE           0.6f    /* cosinus du demi-angle (~53 degres), une seule cible */
+#define FIST_DMG            14.0f   /* coups 1 et 2 */
+#define FIST_DMG_PER_MS     1.5f
+#define FIST_UP_DMG         20.0f   /* coup 3 : uppercut */
+#define FIST_UP_DMG_PER_MS  2.5f
+#define FIST_KNOCK          2.5f    /* recul faible : la cible reste a portee */
+#define FIST_UP_KNOCK       11.0f   /* uppercut : recul vertical */
+#define FIST_AIR_HANG       2.0f    /* touche en l'air sur une cible en l'air : on reste suspendu */
+#define FIST_DASH           0.35f   /* dash rendu par coup qui touche */
+#define FIST_PARRY_WIN      0.06f   /* fenetre de parry de chaque coup */
+#define FIST_PARRY_GRACE    0.05f   /* tolerance de l'hote quand la victime joue les Poings */
+#define FIST_STAGGER_KNOCK  8.0f    /* un recul recu au moins aussi fort casse le combo */
+#define FIST_STAGGER_CD     0.3f
+#define FIST_PJ_RANGE       1.9f    /* coup dans le decor : distance maximale */
+#define FIST_PJ_FLOOR_RANGE 1.9f    /* idem pour le sol (2.6 propose, voir fiche) */
+#define FIST_PJ_FLOOR_DELAY 0.1f    /* pas de coup au sol dans les 0,1 s qui suivent le decollage (super-saut) */
+#define FIST_PJ_PUSH        11.0f   /* composante normale minimale apres l'impulsion */
+#define FIST_PJ_HCAP        20.0f   /* le punch-jump n'accelere plus au-dela (il reoriente) */
+#define FIST_PJ_CD          0.25f   /* partage avec P.wallJumpCd */
+#define FIST_UP_COMBO_T     0.5f    /* bot : apres un uppercut qui touche, le rail suit */
+/* --- fin Poings --- */
 
 /* Axe tir : chaque touche successive augmente degats et cadence, un tir rate remet a zero */
 #define STREAK_MAX        8
@@ -393,7 +423,7 @@ static const AmmoDef ammoDef[WP_COUNT] = {
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
 static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 1, 1 };   /* chaque arme codee passe sa case a 1 */
-static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 1, 0, 0 };
+static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 1, 1, 0 };
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, MINE_CD, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
@@ -413,6 +443,7 @@ enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_LANCE_COUCH, S_LANCE_THRUST, S_LANCE_HIT, S_LANCE_CLASH,        /* Lance */
        S_MINE_THROW, S_MINE_STICK, S_MINE_BEEP,           /* Ventouse */
        S_FLAIL_SWING, S_FLAIL_HIT, S_FLAIL_COIN,          /* Fleau */
+       S_FIST_HIT, S_FIST_UPPER, S_FIST_PJ,               /* Poings */
        S_COUNT };
 typedef struct { short *data; int len; } Sound;
 /* loop : voix en boucle (Tesla), jamais volee par play ; fade : baisse de volume par echantillon (arret sans clic) */
@@ -908,6 +939,36 @@ static void make_sounds(void) {
     }
     sounds[S_FLAIL_COIN] = mksound(b, n);
     /* --- fin Fleau --- */
+    /* --- Poings --- */
+    /* touche : bruit passe-bas tres bref + sinus 180 -> 120 Hz (plus sec et plus aigu que S_PUNCH) */
+    b = sbuf(0.12f, &n); lp = 0; ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        lp += 0.25f * (noise() - lp);
+        ph += (180 - 500 * t) / SR;
+        b[i] = lp * 1.3f * expf(-t * 45) + sinf(ph * 2 * PI) * 0.7f * expf(-t * 25);
+    }
+    sounds[S_FIST_HIT] = mksound(b, n);
+    /* uppercut : sinus montant 120 -> 420 Hz + claquement de bruit */
+    b = sbuf(0.3f, &n); ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (120 + 1000 * t) / SR;
+        b[i] = sinf(ph * 2 * PI) * 0.6f * expf(-t * 8) + noise() * 0.5f * expf(-t * 50);
+    }
+    sounds[S_FIST_UPPER] = mksound(b, n);
+    /* punch-jump : "whoomp", sinus 70 -> 160 Hz + souffle filtre dont la coupure monte de 300 a 2500 Hz */
+    b = sbuf(0.35f, &n); lp = 0; ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (70 + 257 * t) / SR;
+        a = 1 - expf(-2 * PI * (300 + 2200 * t / 0.35f) / SR);
+        lp += a * (noise() - lp);
+        float env = t < 0.03f ? t / 0.03f : expf(-(t - 0.03f) * 8);
+        b[i] = sinf(ph * 2 * PI) * 0.9f * expf(-t * 9) + lp * 0.6f * env;
+    }
+    sounds[S_FIST_PJ] = mksound(b, n);
+    /* --- fin Poings --- */
 }
 
 static void audio_init(void) {
@@ -1161,6 +1222,12 @@ typedef struct {
     float flailT, flailParriedT, flailLastT;
     V3 flailHitPos;
     int flailHitN, flailLastTgt;
+    /* --- Poings : coups donnes dans le combo (0..3), coup anime (1..3, rendu et NetPState.melee), punch-jump disponible,
+     * points de jauge deja donnes par le combo (0..50), joueur touche par le dernier uppercut + 1 (bot : rail) ;
+     * temps depuis le dernier coup, appui memorise, temps en l'air, garde (arme a distance abaissee), fenetre
+     * uppercut -> rail --- */
+    int fistStep, fistAnim, fistPJ, fistPts, fistUpTgt;
+    float fistT, fistBuf, fistAirT, fistGuard, fistUpT;
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -1302,6 +1369,7 @@ static void net_fx_rocket(V3 pos, V3 vel, unsigned int netId);
 static void net_fx_rocket_end(unsigned int netId, V3 pos);
 static void net_fx_parry(unsigned int netId, V3 pos, V3 vel, float mult, int parries);
 static void net_fx_melee(V3 pos, V3 dir, float sp);
+static void net_fx_fist(V3 pos, V3 dir, float x, int sub);   /* Poings : EV_MELEE, sub = coup (1..3) | 0x10 punch-jump */
 static void net_fx_slam(V3 pos, float radius, float vy, int hits);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
 static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed);
@@ -1892,13 +1960,14 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     wall_check();
     if (alive && P.anvilState != ANVIL_DIVE && !P.grounded && P.hook != HOOK_ATTACHED && P.wallTouch && act[A_FWD] &&
         hlen(P.vel) > WALLRUN_MIN && P.wallTime < WALLRUN_MAX) {
-        if (!P.wallrun) { P.wallrun = 1; if (P.vel.y < 1) P.vel.y = 1; P.airJumps = 1; }
+        if (!P.wallrun) { P.wallrun = 1; if (P.vel.y < 1) P.vel.y = 1; P.airJumps = 1; P.fistPJ = 1; }   /* Poings : charge rendue */
         P.wallTime += dt;
         if (frand() < 0.3f)
             add_part(vsub(vadd(P.pos, v3(0, 0.5f, 0)), vmul(P.wallN, HW)), v3(frange(-1, 1), frange(0, 1), frange(-1, 1)),
                      v3(1, 0.6f, 0.9f), 0.4f, 0.08f, 4);
     } else P.wallrun = 0;
     if (P.grounded) P.wallTime = 0;
+    if (P.grounded) { P.fistPJ = 1; P.fistAirT = 0; } else P.fistAirT += dt;   /* Poings : 1 punch-jump par sejour en l'air */
 
     /* camera */
     float targetEye = P.dead ? 0.3f : (P.crouch ? EYE_CROUCH : EYE_STAND);
@@ -2115,6 +2184,8 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     P.lanceHitT = 10; P.lanceHitWho = 0; P.meleeCd = 0;
     P.flailT = P.flailParriedT = P.flailLastT = 0;      /* Fleau : chaine au repos */
     P.flailHitN = P.flailLastTgt = 0;
+    P.fistStep = P.fistAnim = P.fistPts = P.fistUpTgt = 0;   /* Poings : combo au repos, punch-jump disponible */
+    P.fistT = 10; P.fistBuf = P.fistGuard = P.fistUpT = 0; P.fistPJ = 1;
     melee_start_swing();
 }
 static void weapon_select(int w) { if (w != P.weapon) { P.weapon = w; P.switchT = SWITCH_TIME; } }
@@ -2811,9 +2882,178 @@ static void flail_parried(V3 pd, V3 pa) {
 }
 /* --- fin Fleau --- */
 
+/* --- Poings ------------------------------------------------------------ */
+/* Poings a impulsion : combo de 3 coups rapides (0,22 s), le 3e est un uppercut, puis 0,7 s de recharge. Une seule
+ * cible par coup : la plus proche du cone (~53 degres) ou au contact. Un coup qui ne touche personne mais frappe le
+ * decor a moins de 1,9 m donne un punch-jump : la composante normale de la vitesse passe a au moins 11 m/s (sans
+ * cumul), sans pousser la vitesse horizontale au-dela de max(avant, 20 m/s). Une charge par sejour en l'air, rendue
+ * au sol et au debut d'un wall-run ; recharge partagee avec le wall-jump. Fenetre de parry de 0,06 s par coup ;
+ * combo sans touche ni parry : 0,6 s de plus ; poing pare : combo casse, 1 s. Jauge : 25 points par touche, 50 au
+ * plus par combo (kill +100 et parry +50 : regles communes). */
+static int fistPunches, fistHits, fistUppers, fistCombos, fistFullCombos, fistPJs, fistBreaks, fistUpRails;   /* journal */
+static float fistRelSum;
+
+static float fist_range(float rel) { return FIST_RANGE + rel * FIST_RANGE_PER_MS; }
+static float fist_dmg(float rel, int up) { return up ? FIST_UP_DMG + rel * FIST_UP_DMG_PER_MS : FIST_DMG + rel * FIST_DMG_PER_MS; }
+
+/* fin normale du combo (delai depasse, ou fenetre du 3e coup finie) : un combo qui n'a rien touche ni pare coute 0,6 s */
+static void fist_combo_end(void) {
+    if (!P.swingLanded) P.meleeCd = fmaxf(P.meleeCd, 0) + FIST_WHIFF_CD;
+    if (P.fistStep == 3) fistFullCombos++;
+    P.fistStep = 0; P.swingLanded = 0; P.fistPts = 0;
+}
+/* combo casse : poing pare (1 s), choc (0,7 s), gros recul recu (0,3 s) */
+static void fist_combo_break(float cd) {
+    if (P.fistStep) fistBreaks++;
+    P.fistStep = 0; P.swingLanded = 0; P.fistPts = 0; P.fistBuf = 0;
+    P.meleeCd = fmaxf(P.meleeCd, cd); P.parryWin = 0;
+}
+
+/* anneau du punch-jump dans le plan de la surface (n = normale), poussiere ; local : secousse, FOV, recul de l'arme */
+static void fist_pj_fx(V3 at, V3 n, int local) {
+    V3 a = vnorm(vcross(n, fabsf(n.y) < 0.9f ? v3(0, 1, 0) : v3(1, 0, 0))), b = vcross(n, a);
+    for (int k = 0; k < 16; k++) {
+        float an = k * (2 * PI / 16);
+        V3 d = vadd(vmul(a, cosf(an)), vmul(b, sinf(an)));
+        add_part(vadd(at, vmul(n, 0.05f)), vadd(vmul(d, 7), n), v3(0.45f, 0.9f, 1), 0.3f, 0.08f, 0);
+    }
+    for (int k = 0; k < 6; k++) add_part(at, vadd(vmul(n, 2), vmul(rand_dir(), 1.5f)), v3(0.7f, 0.7f, 0.75f), 0.5f, 0.12f, 4);
+    if (local) { shake += 0.12f; P.fovKick += 5; P.recoil += 0.6f; play(S_FIST_PJ, 0.8f, 1.0f); }
+    else play(S_FIST_PJ, 0.7f * atten(at), 1.0f);
+}
+
+/* impulsion du punch-jump sur une surface de normale n, avec ses garde-fous (testee seule par run_tests) */
+static void fist_pj_push(V3 n) {
+    float hs0 = hlen(P.vel), vn = vdot(P.vel, n);
+    if (vn < FIST_PJ_PUSH) P.vel = vadd(P.vel, vmul(n, FIST_PJ_PUSH - vn));   /* au moins 11 le long de n, sans cumul */
+    float hs = hlen(P.vel), cap = fmaxf(hs0, FIST_PJ_HCAP);
+    if (hs > cap) { P.vel.x *= cap / hs; P.vel.z *= cap / hs; }   /* au-dela de 20 m/s : reoriente sans accelerer */
+    if (n.y > 0.7f) { P.grounded = 0; P.coyote = 1; }
+    P.fistPJ = 0; P.wallJumpCd = FIST_PJ_CD;              /* ni wall-jump ni second punch-jump sur le meme contact */
+}
+
+/* coup qui n'a touche aucune cible : le decor a portee donne un punch-jump. Renvoie 1 s'il a lieu (*dist = distance) */
+static int fist_pj(V3 eye, V3 f, float *dist) {
+    V3 n;
+    if (!P.fistPJ || P.wallJumpCd > 0) return 0;
+    float t = ray_world(eye, f, fmaxf(FIST_PJ_RANGE, FIST_PJ_FLOOR_RANGE), &n);
+    int floor = n.y > 0.7f;
+    if (t >= (floor ? FIST_PJ_FLOOR_RANGE : FIST_PJ_RANGE)) return 0;
+    if (floor && (P.grounded || P.fistAirT < FIST_PJ_FLOOR_DELAY)) return 0;   /* pas de super-saut depuis le sol */
+    fist_pj_push(n);
+    *dist = t;
+    fist_pj_fx(vadd(eye, vmul(f, t)), n, 1);
+    fistPJs++;
+    if (botMode) netlog("punch-jump : %s, vitesse %.1f (vy %.1f)", floor ? "sol" : n.y < -0.7f ? "plafond" : "mur", vlen(P.vel), P.vel.y);
+    return 1;
+}
+
+/* un coup du combo (P.fistStep = coups deja donnes : 0, 1 ou 2) */
+static void fist_punch(void) {
+    int step = P.fistStep, up = step == 2, parried, bestE = -1, bestP = -1, hit = 0, tgtAir = 0, pj = 0;
+    float sp = vlen(P.vel), bestR = 1e9f, rel = 0, pjDist = 0;
+    V3 eye = eye_pos(), f = view_dir(), fh = vnorm(v3(f.x, 0, f.z)), at = eye;
+    V3 r = v3(cosf(P.yaw), 0, sinf(P.yaw));
+
+    if (step == 0) { P.swingLanded = 0; P.fistPts = 0; fistCombos++; }
+    melee_start_swing();                                  /* parry : +50 une fois par coup */
+    parried = try_parry(MELEE_RANGE + 1.5f, 1);
+    for (int i = 0; i < MAXE; i++) {                      /* une seule cible : la plus proche, ennemi ou joueur */
+        Enemy *e = &E[i];
+        if (!e->alive) continue;
+        float rl = rel_speed(e->vel);
+        V3 d = vsub(e->pos, eye);
+        float dist = vlen(d), reach = dist - enemy_radius(e->type);
+        if (reach > fist_range(rl)) continue;
+        if (reach > 0.8f && vdot(vmul(d, 1.0f / dist), f) < FIST_CONE) continue;
+        if (reach < bestR) { bestR = reach; bestE = i; rel = rl; }
+    }
+    for (int i = 0; i < MAXP; i++) {
+        if (!np_target(i)) continue;
+        float rl = rel_speed(np_vel(i));
+        V3 d = vsub(np_center(i), eye);
+        float dist = vlen(d), reach = dist - 0.5f;
+        if (reach > fist_range(rl)) continue;
+        if (reach > 0.8f && vdot(vmul(d, 1.0f / dist), f) < FIST_CONE) continue;
+        if (reach < bestR) { bestR = reach; bestP = i; bestE = -1; rel = rl; }
+    }
+    V3 knock = up ? vadd(vmul(fh, 3), v3(0, FIST_UP_KNOCK, 0)) : vadd(vmul(fh, FIST_KNOCK), v3(0, 1, 0));
+    if (bestE >= 0) {
+        Enemy *e = &E[bestE];
+        at = e->pos; tgtAir = e->type == EN_DRONE;
+        if (e->type == EN_RUSHER) {                       /* kamikaze : explose dans sa face, comme avec l'epee */
+            damage_enemy(bestE, 9999, vmul(f, 10));
+            parry_feedback(at);
+            melee_parry_points(PTS_PARRY);
+            parried++;
+        } else {
+            damage_enemy(bestE, fist_dmg(rel, up), knock);
+            if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }   /* kill en melee (solo) */
+        }
+        hit = 1;
+    } else if (bestP >= 0) {
+        at = np_center(bestP);
+        tgtAir = fabsf(NP[bestP].st.vel[1]) > 0.5f;       /* pas de drapeau "au sol" : on lit vel.y */
+        hit = 1;
+    }
+    /* effets locaux d'abord : chez l'hote, un parry revient tout de suite (dans net_hit, a la fin) */
+    if (hit) {
+        int pts = PTS_FIST_COMBO_MAX - P.fistPts < meleePts[MK_FIST] ? PTS_FIST_COMBO_MAX - P.fistPts : meleePts[MK_FIST];
+        P.dashCharge = fminf(2, P.dashCharge + FIST_DASH);
+        if (pts > 0) { P.fistPts += pts; ammo_points((float)pts, AP_HIT); }   /* 25 par touche, 50 au plus par combo */
+        if (!up && tgtAir && !P.grounded) P.vel.y = fmaxf(P.vel.y, FIST_AIR_HANG);   /* combo possible contre un drone */
+        hitMarker = 0.18f; shake += up ? 0.2f : 0.08f;
+        if (!parried) hitstop = fmaxf(hitstop, up ? 0.06f + sp * 0.0015f : 0.025f);
+        if (up && sp > 15) impact_frame(vadd(eye, vmul(f, 1.5f)), 0.05f);
+        burst(at, v3(0.6f, 0.95f, 1), 10, 7, 0.25f, 0.09f);
+        if (up)                                           /* uppercut : colonne de particules vers le haut */
+            for (int k = 0; k < 12; k++)
+                add_part(vadd(at, v3(frange(-0.3f, 0.3f), -0.6f + k * 0.12f, frange(-0.3f, 0.3f))), v3(0, 7 + k * 0.5f, 0),
+                         v3(0.7f, 0.95f, 1), 0.35f, 0.08f, 0);
+        play(up ? S_FIST_UPPER : S_FIST_HIT, 0.9f, frange(0.95f, 1.05f));
+        fistHits++; fistRelSum += rel;
+        if (up) fistUppers++;
+        if (up && bestP >= 0) { P.fistUpTgt = bestP + 1; P.fistUpT = FIST_UP_COMBO_T; }   /* bot : la cible vole, le rail suit */
+    }
+    if (!hit && !parried) pj = fist_pj(eye, f, &pjDist);   /* une cible touchee passe toujours avant le decor */
+    P.swingLanded |= hit || parried || pj;                /* le combo entier : un punch-jump compte comme utile */
+    P.fistStep = P.fistAnim = step + 1; P.fistT = 0;
+    P.meleeCd = up ? FIST_END_CD : FIST_GAP;
+    P.meleeT = FIST_ANIM; P.parryWin = FIST_PARRY_WIN;
+    fistPunches++;
+    play(S_DASH, 0.3f, 2.2f);                             /* souffle du coup */
+    {                                                     /* petite trainee devant le poing */
+        V3 hand = vadd(eye, vadd(vmul(r, step == 1 ? 0.15f : -0.2f), v3(0, up ? -0.35f : -0.2f, 0)));
+        for (int k = 0; k < 6; k++)
+            add_part(vadd(hand, vmul(f, 0.4f + k * 0.18f)), vmul(f, 3), sp > 15 ? v3(1, 0.85f, 0.6f) : v3(0.55f, 0.9f, 1),
+                     0.12f, 0.05f + sp * 0.001f, 0);
+    }
+    if (dmMode) net_fx_fist(eye, f, pj ? pjDist : sp, (step + 1) | (pj ? 0x10 : 0));
+    if (botMode && hit) netlog("poings : coup %d sur %s, v_rel %.1f, %.0f degats", step + 1,
+                               bestP >= 0 ? NP[bestP].name : "drone", rel, fist_dmg(rel, up) * (bestP >= 0 ? PVP_SCALE : 1));
+    if (bestP >= 0) net_hit(bestP, fist_dmg(rel, up) * PVP_SCALE, knock, W_FIST);   /* un seul net_hit par coup */
+}
+
+/* game_tick : appui memorise 0,12 s, fin du combo (delai ou fenetre du 3e coup finie), parry, garde du viewmodel */
+static void fist_tick(float dt, int press) {
+    P.fistBuf -= dt; P.fistT += dt; P.fistUpT -= dt;
+    if (press) P.fistBuf = FIST_BUFFER;
+    if ((P.fistStep == 1 || P.fistStep == 2) && P.fistT > FIST_COMBO_WIN) fist_combo_end();
+    if (!P.dead && P.fistBuf > 0 && P.meleeCd <= 0) { P.fistBuf = 0; fist_punch(); }
+    if (P.parryWin > 0) {
+        if (!P.dead) try_parry(MELEE_RANGE + 1.5f, 1);   /* met swingLanded a 1 s'il pare */
+        P.parryWin -= dt;
+    }
+    if (P.fistStep == 3 && P.parryWin <= 0) fist_combo_end();
+    if (P.meleeT > 0 || P.fistStep > 0) P.fistGuard = fminf(1, P.fistGuard + dt / 0.05f);   /* arme a distance abaissee */
+    else P.fistGuard = fmaxf(0, P.fistGuard - dt / 0.15f);
+}
+/* --- fin Poings --- */
+
 static void melee(void) {
     if (P.meleeKind == MK_ANVIL) { anvil_press(); return; }
     if (P.meleeKind == MK_FLAIL) { flail_swing(); return; }
+    if (P.meleeKind == MK_FIST) { fist_punch(); return; }   /* Poings : un coup (le combo vit dans fist_tick) */
     float sp = vlen(P.vel);
     V3 eye = eye_pos(), f = view_dir();
     V3 r = v3(cosf(P.yaw), 0, sinf(P.yaw)), u = vcross(r, f);
@@ -4455,7 +4695,7 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   9
+#define NET_VER   10
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
@@ -4599,7 +4839,10 @@ static void pack_state(NetPState *s) {
     float swingT = P.meleeKind == MK_ANVIL ? ANVIL_SWING_T : P.meleeKind == MK_LANCE ? 0.2f :   /* Lance : estoc */
                    P.meleeKind == MK_FLAIL ? FLAIL_ANIM : 0.25f;
     s->melee = (unsigned char)(clampf(P.meleeT / swingT, 0, 1) * 255);
-    s->pad = (unsigned char)(P.meleeKind & 0x0F);      /* bits 4-7 : etats d'arme (ST_*), ajoutes par chaque arme */
+    if (P.meleeKind == MK_FIST)                           /* Poings : coup anime (0..2) sur 2 bits, avancement 1..63 sur 6 bits */
+        s->melee = P.meleeT > 0 && P.fistAnim > 0 ?
+                   (unsigned char)(((P.fistAnim - 1) << 6) | (1 + (int)(clampf(1 - P.meleeT / FIST_ANIM, 0, 1) * 62))) : 0;
+    s->pad =(unsigned char)(P.meleeKind & 0x0F);      /* bits 4-7 : etats d'arme (ST_*), ajoutes par chaque arme */
     if (P.anvilState == ANVIL_DIVE) s->pad |= ST_SLAM;
     if (P.teslaOn) s->pad |= ST_ZAP;                      /* Tesla : chaque client recalcule l'arc */
     if (P.lanceState == LS_COUCH) s->pad |= ST_LANCE;   /* Lance couchee : la pointe brille chez les autres */
@@ -4701,6 +4944,11 @@ static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel) {
 static void net_fx_melee(V3 pos, V3 dir, float sp) {
     NetEvent e = ev_new(EV_MELEE);
     vf(e.f, pos); vf(e.f + 3, dir); e.f[6] = sp;
+    net_emit(&e);
+}
+static void net_fx_fist(V3 pos, V3 dir, float x, int sub) {   /* Poings : x = vitesse, ou distance du decor si punch-jump */
+    NetEvent e = ev_new(EV_MELEE);
+    vf(e.f, pos); vf(e.f + 3, dir); e.f[6] = x; e.sub = (unsigned char)sub;
     net_emit(&e);
 }
 static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed) {   /* Eventail : chaque client recalcule les plombs */
@@ -5007,6 +5255,8 @@ static void apply_event(const NetEvent *ev) {
             if (ev->from != myId) {                       /* recul applique par la victime */
                 P.vel = vadd(P.vel, fv(ev->f + 1));
                 if (ev->f[2] > 2) P.grounded = 0;
+                if (P.meleeKind == MK_FIST && P.fistStep && vlen(fv(ev->f + 1)) >= FIST_STAGGER_KNOCK)
+                    fist_combo_break(FIST_STAGGER_CD);    /* Poings : un gros recul casse le combo */
             }
             P.hurtFlash = 0.6f; shake += 0.25f;
             play(S_HURT, 0.8f, frange(0.9f, 1.1f));
@@ -5028,6 +5278,15 @@ static void apply_event(const NetEvent *ev) {
         break;
     }
     case EV_MELEE:
+        if (ev->sub) {                                    /* --- Poings : sub = coup (1..3) | 0x10 punch-jump --- */
+            if (ev->sub & 0x10) fist_pj_fx(vadd(a, vmul(b, ev->f[6])), vmul(b, -1), 0);   /* normale : face au coup */
+            else {
+                for (int k = 0; k < 6; k++)
+                    add_part(vadd(a, vmul(b, 0.5f + k * 0.14f)), vmul(b, 3), v3(0.55f, 0.9f, 1), 0.12f, 0.06f, 0);
+                play((ev->sub & 3) == 3 ? S_FIST_UPPER : S_DASH, 0.35f * atten(a), (ev->sub & 3) == 3 ? 1.0f : 2.2f);
+            }
+            break;
+        }                                                 /* --- fin Poings --- */
         if (ev->from < MAXP && (NP[ev->from].st.pad & 15) == MK_ANVIL) {   /* coup au sol de l'Enclume : plus lourd */
             for (int k = 0; k < 12; k++)
                 add_part(vadd(a, vmul(b, 1.5f + k * 0.15f)), v3(b.x * 2, -4, b.z * 2), v3(1, 0.75f, 0.45f), 0.18f, 0.1f, 0);
@@ -5184,11 +5443,16 @@ static void apply_event(const NetEvent *ev) {
         V3 mid = vlerp(pd, pa, 0.5f);
         for (int k = 0; k < 30; k++) add_part(mid, vmul(rand_dir(), 10), v3(1, 0.95f, 0.7f), 0.35f, 0.1f, 0);
         play(S_PUNCH, 0.8f * atten(mid), 1.6f);
+        int fistW = (int)ev->f[0] == W_FIST;              /* Poings : coup pare, ou choc avec un poing */
         if (def == myId) {
             parry_feedback(mid);
             ammo_points(PTS_PARRY, AP_PARRY);             /* decision de l'hote : souvent apres la fin du coup */
-            snprintf(popText, sizeof popText, clash ? "CHOC D'EPEES !" : "PARRY !");
+            snprintf(popText, sizeof popText, clash ? (fistW || P.meleeKind == MK_FIST ? "CHOC !" : "CHOC D'EPEES !") : "PARRY !");
             if (clash) P.vel = vadd(P.vel, vadd(vmul(vnorm(vsub(pd, pa)), 8), v3(0, 3, 0)));
+            if (P.meleeKind == MK_FIST) {                 /* Poings : un parry rend le combo utile ; un choc le casse */
+                if (clash) fist_combo_break(FIST_END_CD);
+                else if (P.fistStep) P.swingLanded = 1;
+            }
         }
         if (att == myId) {                                /* l'attaquant est repousse, epee bloquee */
             if (is_melee_w((int)ev->f[0]) && nowT - P.undoT < REFUND_UNDO_T) {   /* le coup ne compte plus : on rend ses points */
@@ -5206,17 +5470,18 @@ static void apply_event(const NetEvent *ev) {
                 P.vel = vadd(P.vel, vadd(vmul(vnorm(vsub(pa, pd)), clash ? 8.0f : 11.0f), v3(0, 3, 0)));
                 P.meleeCd = fmaxf(P.meleeCd, clash ? MELEE_CD : lance ? LANCE_PARRIED_CD : MELEE_PARRIED_CD);
                 if (lance) { P.lanceState = LS_IDLE; P.lanceVc = 0; }
+                if (fistW) fist_combo_break(clash ? FIST_END_CD : MELEE_PARRIED_CD);   /* Poings : combo casse */
             }
             P.grounded = 0;
             hitstop = fmaxf(hitstop, 0.1f);
             shake += 0.3f;
-            snprintf(popText, sizeof popText, clash ? "CHOC D'EPEES !" : wave ? "ONDE PAREE PAR %s" :
-                     (int)ev->f[0] == W_LANCE ? "LANCE PAREE PAR %s" :
+            snprintf(popText, sizeof popText, clash ? (fistW ? "CHOC !" : "CHOC D'EPEES !") : wave ? "ONDE PAREE PAR %s" :
+                     (int)ev->f[0] == W_LANCE ? "LANCE PAREE PAR %s" : fistW ? "POING PARE PAR %s" :
                      (int)ev->f[0] == W_FLAIL ? "CHAINE RETOURNEE PAR %s" : "PARE PAR %s", pname(def));
             popT = 1.2f;
         }
-        netlog("%s : %s -> %s", clash ? "choc d'epees" : (int)ev->f[0] == W_SLAM ? "enclume paree" :
-               (int)ev->f[0] == W_LANCE ? "lance paree" : (int)ev->f[0] == W_FLAIL ? "fleau pare" : "epee paree",
+        netlog("%s : %s -> %s", clash ? (fistW ? "choc de poings" : "choc d'epees") : (int)ev->f[0] == W_SLAM ? "enclume paree" :
+               (int)ev->f[0] == W_LANCE ? "lance paree" : (int)ev->f[0] == W_FLAIL ? "fleau pare" : fistW ? "poing pare" : "epee paree",
                pname(att), pname(def));
         break;
     }
@@ -5352,7 +5617,9 @@ static int slamLastBy[MAXP];
 
 /* tolerance de latence de l'hote pour un parry, selon l'arme qui frappe (et la melee de la victime) */
 static double parry_grace(int w, int victimMK) {
-    (void)victimMK;                                       /* les Poings (0,05 s) s'ajouteront ici */
+    /* Poings : la victime ouvre une fenetre toutes les 0,22 s ; a 0,15 s de tolerance, elle serait "en parry" 95 % du
+     * combo. Cette regle passe avant celle de l'arme qui attaque */
+    if (victimMK == MK_FIST) return FIST_PARRY_GRACE;
     if (w == W_SLAM) return SLAM_PARRY_GRACE;             /* l'onde de l'Enclume : 0,20 s */
     if (w == W_TESLA) return TESLA_PARRY_GRACE;           /* decharge de la Tesla : 0,25 s (fenetre de cumul) */
     return MELEE_PARRY_GRACE;
@@ -5362,6 +5629,7 @@ static double parry_grace(int w, int victimMK) {
 static double joustT[MAXP][MAXP];                         /* derniere joute resolue entre a et b */
 static int lanceHostCouch, lanceHostThrust, lanceHostParried, lanceClashWins, lanceClashDouble;
 static int flailHostParried;                              /* Fleau : fleaux pares (arbitre) */
+static int fistHostParried;                               /* Poings : poings pares (arbitre) */
 static float lanceHostVcSum;
 
 static V3 dir_of(float yaw, float pitch) {                /* meme formule que view_dir */
@@ -5501,10 +5769,12 @@ static int host_handle(const NetEvent *ev) {
         /* coup de melee ou impact de grappin pendant la fenetre de parry de la victime : c'est pare */
         if (is_parryable_w(ev->sub) && nowT - NP[v].lastParryT < parry_grace(ev->sub, NP[v].st.pad & 15)) {
             int clash = is_melee_w(ev->sub) && ev->sub != W_FLAIL && !couched && ev->from < MAXP &&   /* Fleau : chaines croisees */
-                        nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
+                        nowT - NP[ev->from].lastParryT <   /* Poings : la tolerance de l'attaquant est aussi de 0,05 s */
+                        ((NP[ev->from].st.pad & 15) == MK_FIST ? FIST_PARRY_GRACE : MELEE_PARRY_GRACE);
             if (ev->sub == W_SLAM) slamParried++;
             if (ev->sub == W_LANCE) lanceHostParried++;
             if (ev->sub == W_FLAIL) flailHostParried++;   /* Fleau */
+            if (ev->sub == W_FIST) fistHostParried++;     /* Poings */
             NetEvent e = ev_new(EV_MELEE_PARRY);
             e.actor = (unsigned char)v; e.target = ev->from; e.sub = (unsigned char)clash;
             e.f[0] = (float)ev->sub;                      /* arme paree : l'attaquant rend ses points de melee */
@@ -6415,7 +6685,13 @@ static char botShot[260];
 static int botSpec;                                       /* --spec : le bot client regarde la partie au lieu d'y jouer */
 static float bot_melee_reach(float rel) {
     return P.meleeKind == MK_ANVIL ? anvil_range(rel) : P.meleeKind == MK_LANCE ? LANCE_THRUST_RANGE :
-           P.meleeKind == MK_FLAIL ? flail_range(rel) : melee_range(rel);
+           P.meleeKind == MK_FLAIL ? flail_range(rel) : P.meleeKind == MK_FIST ? fist_range(rel) : melee_range(rel);
+}
+/* l'adversaire i vient-il de lancer un coup ? Epee et autres : minuteur >= 150 ; Poings : avancement < 20 sur 63 */
+static int swing_start(int i) {
+    unsigned char m = NP[i].st.melee;
+    if ((NP[i].st.pad & 0x0F) == MK_FIST) return m && (m & 63) < 20;
+    return m >= 150;
 }
 
 /* Le bot joue comme un joueur de movement shooter : bhop permanent, air-strafe en balancant
@@ -6439,10 +6715,10 @@ static void bot_think(float dt) {
     /* un adversaire tout proche lance son epee : une fois sur deux, on pare (ou on frappe en meme temps) */
     static double swingSeenT;
     for (int i = 0; i < MAXP; i++) {
-        if (!np_target(i) || NP[i].st.melee < 150 || nowT - swingSeenT < 0.4) continue;
+        if (!np_target(i) || !swing_start(i) || nowT - swingSeenT < 0.4) continue;
         if (vlen(vsub(NP[i].disp, P.pos)) > ((NP[i].st.pad & 0x0F) == MK_FLAIL ? 7 : 5)) continue;   /* Fleau : 7 m */
         swingSeenT = nowT;
-        if (frand() < botParryP[botLevel] && P.meleeCd <= 0) {
+        if (frand() < botParryP[botLevel] * ((NP[i].st.pad & 0x0F) == MK_FIST ? 0.68f : 1.0f) && P.meleeCd <= 0) {   /* Poings : fenetre courte, parry plus rare */
             V3 d = vsub(np_center(i), eye_pos());
             P.yaw = atan2f(d.x, -d.z);
             botPress[A_MELEE] = 1;
@@ -6699,6 +6975,33 @@ static void bot_think(float dt) {
         }
     }                                                     /* --- fin Fleau --- */
 
+    /* --- Poings : apres un uppercut qui touche, la cible suit une trajectoire balistique : tir immediat (rail de
+     * preference). Puis punch-jump vers une cible plus haute : en chute, accroupi (l'oeil descend), coup vers le sol --- */
+    if (P.meleeKind == MK_FIST && P.fistUpT > 0 && P.fistUpTgt > 0 && np_target(P.fistUpTgt - 1)) {
+        int tg = P.fistUpTgt - 1;
+        V3 eye = eye_pos(), c = np_center(tg), d = vsub(c, eye);
+        if ((P.loadout[0] == WP_RAIL || P.loadout[1] == WP_RAIL) && wp_has_ammo(WP_RAIL)) P.weapon = WP_RAIL;
+        if (P.weapon != WP_SAW && P.weapon != WP_MINE && wp_has_ammo(P.weapon) && los(eye, c)) {
+            P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(clampf(d.y / fmaxf(vlen(d), 0.01f), -1, 1));
+            if (P.fireCd <= 0 && P.switchT <= 0) {
+                botHeld[A_FIRE] = 1; P.fistUpT = 0; fistUpRails++;
+                netlog("poings : uppercut -> tir sur %s", pname(tg));
+            }
+            return;
+        }
+    }
+    if (P.meleeKind == MK_FIST && best >= 0 && !P.grounded && P.vel.y < -3 && P.fistPJ && P.fistStep == 0 &&
+        P.wallJumpCd <= 0 && P.hook == HOOK_NONE && NP[best].disp.y - P.pos.y > 2 && P.fistAirT >= FIST_PJ_FLOOR_DELAY &&
+        anvil_ground_dist(P.pos) < 2.5f) {
+        botHeld[A_CROUCH] = 1;
+        if (P.meleeCd <= 0 && ray_world(eye_pos(), v3(0, -1, 0), FIST_PJ_FLOOR_RANGE, 0) < FIST_PJ_FLOOR_RANGE - 0.05f) {
+            P.pitch = -1.5f;
+            botPress[A_MELEE] = 1;
+            netlog("punch-jump tente vers %s (%.1f m plus haut)", pname(best), NP[best].disp.y - P.pos.y);
+            return;
+        }
+    }                                                     /* --- fin Poings --- */
+
     /* CROSS-UP : monter au-dessus de l'adversaire (saut + double saut), dasher par-dessus,
      * se retourner et tirer dans son dos. */
     static int crossPhase;
@@ -6761,7 +7064,11 @@ static void bot_think(float dt) {
     } else crossPhase = 0;
 
     /* coince contre un obstacle : on part en biais, puis de l'autre cote, puis demi-tour */
-    if (hs < 3 && P.hook == HOOK_NONE && P.kinT <= 0) stuckT += dt; else stuckT = 0;   /* un tir d'Elan arrete net : pas coince */
+    /* Poings : en combo, ou une cible a portee de poing, on n'est pas coince : on reste au contact */
+    int fistClose = P.meleeKind == MK_FIST && (P.fistStep > 0 || (best >= 0 && bd < fist_range(rel_speed(np_vel(best))) + 0.3f));
+    if (fistClose) escapeT = 0;
+    if (hs < 3 && P.hook == HOOK_NONE && P.kinT <= 0 && !fistClose) stuckT += dt;   /* un tir d'Elan arrete net : pas coince */
+    else stuckT = 0;
     if (stuckT > 0.4f) {
         static int escapeStep;
         static const float dirs[3] = { 1.3f, -1.3f, PI };
@@ -7022,6 +7329,12 @@ static void bot_think(float dt) {
             }
         }                                                 /* (le combo fleau -> tir est plus haut, avant le cross-up) */
         /* --- fin Fleau --- */
+    } else if (P.meleeKind == MK_FIST) {                  /* --- Poings --- : au contact, appui a chaque tick (le tampon enchaine) */
+        if (best >= 0 && bd < fist_range(rel_speed(np_vel(best))) + 0.3f && P.meleeCd <= FIST_BUFFER && (see || bd < 2.5f)) {
+            P.yaw = aimYaw; P.pitch = aimPitch;
+            botPress[A_MELEE] = 1;
+        }                                                 /* (uppercut -> rail et punch-jump : plus haut, avant le cross-up) */
+        /* --- fin Poings --- */
     } else if (best >= 0 && bd < bot_melee_reach(rel_speed(np_vel(best))) + 0.5f && P.meleeCd <= 0) { P.yaw = aimYaw; botPress[A_MELEE] = 1; }
     /* --- fin Lance --- */
     static float logT;
@@ -7159,8 +7472,9 @@ static void game_tick(float dt) {
     if (P.meleeKind == MK_LANCE) {                        /* Lance : appui = estoc, maintien = lance couchee */
         if (!P.dead && meleePress && P.meleeCd <= 0 && P.lanceState == LS_IDLE) lance_press();
         lance_tick(dt, act[A_MELEE]);                     /* maintenu : act, pas actP */
-    } else if (!P.dead && meleePress && P.meleeCd <= 0) melee();
-    if (P.parryWin > 0) {
+    } else if (P.meleeKind == MK_FIST) fist_tick(dt, meleePress);   /* Poings : combo, tampon, parry de chaque coup */
+    else if (!P.dead && meleePress && P.meleeCd <= 0) melee();
+    if (P.meleeKind != MK_FIST && P.parryWin > 0) {
         if (!P.dead) try_parry(P.meleeKind == MK_FLAIL ? FLAIL_PARRY_RANGE : MELEE_RANGE + 1.5f,   /* Fleau : 6 m, renvoi x0,8 */
                                P.meleeKind == MK_FLAIL ? FLAIL_PARRY_SPEED : 1);
         P.parryWin -= dt;
@@ -7832,6 +8146,39 @@ static void draw_flail_vm(void) {
 }
 /* --- fin Fleau : rendu --- */
 
+/* --- Poings : rendu --- */
+/* un gant : avant-bras, poing d'acier, bobine emissive (couleur coil, sans eclairage) */
+static void fist_glove_model(V3 coil) {
+    glColor3f(0.2f, 0.21f, 0.24f);                        /* avant-bras */
+    box_faces(v3(-0.05f, -0.05f, 0.0f), v3(0.05f, 0.05f, 0.30f));
+    glColor3f(0.55f, 0.58f, 0.63f);                       /* poing */
+    box_faces(v3(-0.07f, -0.07f, -0.12f), v3(0.07f, 0.07f, 0.0f));
+    glDisable(GL_LIGHTING);
+    glColor3f(coil.x, coil.y, coil.z);                    /* bobine */
+    box_faces(v3(-0.075f, -0.02f, -0.08f), v3(0.075f, 0.02f, -0.04f));
+    glEnable(GL_LIGHTING);
+}
+/* viewmodel : gant gauche (coups 1 et 3) et gant droit (coup 2) ; la bobine va du cyan au blanc chaud avec la vitesse */
+static void draw_fist_vm(void) {
+    float k = P.meleeT > 0 ? clampf(1 - P.meleeT / FIST_ANIM, 0, 1) : 0, e = P.meleeT > 0 ? sinf(k * PI) : 0;
+    float heat = clampf(vlen(P.vel) / 30, 0, 1);
+    int st = P.meleeT > 0 ? P.fistAnim : 0;
+    V3 coil = v3(0.3f + 0.7f * heat, 0.9f, 1.0f - 0.35f * heat);
+    for (int g = 0; g < 2; g++) {                         /* 0 = gauche, 1 = droit */
+        /* au repos : bas de l'ecran, de part et d'autre de l'arme ; le coup les amene vers le centre de la vue */
+        float x = g ? 0.32f : -0.95f, y = g ? -0.36f : -0.30f, z = g ? 0.0f : -0.05f, rot = 0;
+        if (st == 1 && g == 0) { z -= 0.55f * e; x += 0.35f * e; y += 0.15f * e; }          /* jab gauche */
+        if (st == 2 && g == 1) { z -= 0.6f * e; x -= 0.3f * e; y += 0.2f * e; }             /* direct droit */
+        if (st == 3 && g == 0) { y += 0.4f * e; z -= 0.35f * e; x += 0.3f * e; rot = -50 * e; }   /* uppercut gauche */
+        glPushMatrix();
+        glTranslatef(x, y, z);
+        if (rot != 0) glRotatef(rot, 1, 0, 0);
+        fist_glove_model(coil);
+        glPopMatrix();
+    }
+}
+/* --- fin Poings : rendu --- */
+
 static void draw_viewmodel(float aspect) {
     glClear(GL_DEPTH_BUFFER_BIT);
     set_frustum(60, aspect, 0.01f, 10);
@@ -7854,7 +8201,10 @@ static void draw_viewmodel(float aspect) {
     if (P.meleeKind == MK_ANVIL) draw_anvil_vm();
     else if (P.meleeKind == MK_LANCE) draw_lance_vm();    /* Lance : toujours visible */
     else if (P.meleeKind == MK_FLAIL) draw_flail_vm();    /* Fleau : manche toujours visible, tete au repos */
-    else if (P.meleeT > 0) {                              /* coup d'epee : balayage de droite a gauche */
+    else if (P.meleeKind == MK_FIST) {                    /* Poings : gants toujours visibles ; en combo, l'arme s'abaisse */
+        draw_fist_vm();
+        if (P.fistGuard > 0) glTranslatef(0, -0.24f * P.fistGuard, 0.06f * P.fistGuard);
+    } else if (P.meleeT > 0) {                            /* coup d'epee : balayage de droite a gauche */
         float k = clampf(1 - P.meleeT / 0.25f, 0, 1), heat = clampf(vlen(P.vel) / 30, 0, 1);
         glPushMatrix();
         glTranslatef(-0.5f, 0.08f, 0.14f);
@@ -8254,8 +8604,9 @@ static void draw_loadout(float cx, float cy) {
                       d->max, d->gauge, d->gauge / meleePts[MK_SWORD]);
         text(0, x0, cy + 120 + s * 24.0f, buf, 0.8f, 0.82f, 0.9f, 1);
     }
-    snprintf(buf, sizeof buf, "%s : %d pts par coup qui touche, +%d par kill, +%d par parry ; cellules : %d ou %d pts",
-             meleeNames[wantMelee], meleePts[wantMelee], PTS_MELEE_KILL, PTS_PARRY, PICKUP_SMALL, PICKUP_BIG);
+    snprintf(buf, sizeof buf, "%s : %d pts par coup qui touche%s, +%d par kill, +%d par parry ; cellules : %d ou %d pts",
+             meleeNames[wantMelee], meleePts[wantMelee], wantMelee == MK_FIST ? " (50 max par combo)" : "",   /* Poings */
+             PTS_MELEE_KILL, PTS_PARRY, PICKUP_SMALL, PICKUP_BIG);
     text(0, x0, cy + 168, buf, 1, 0.85f, 0.5f, 1);
     if (appState == APP_GAME) text(0, x0, cy + 194, "pris en compte au prochain respawn", 0.6f, 0.6f, 0.7f, 1);
     if (button(cx - 105, cy + 220, 210, 50, "VALIDER")) { loadoutOpen = 0; cfg_save(); }
@@ -8570,6 +8921,21 @@ static void draw_remote_players(void) {
                 flail_head_model(v3(0, -0.38f, -0.345f), 0.08f);
             }
             glPopMatrix();
+        } else if ((n->st.pad & 15) == MK_FIST) {         /* --- Poings : deux gants, celui du coup en cours avance --- */
+            int stp = n->st.melee ? (n->st.melee >> 6) + 1 : 0;   /* 1, 2, 3 : gauche, droit, gauche (uppercut) */
+            float e = n->st.melee ? sinf(PI * (n->st.melee & 63) / 63.0f) : 0;
+            for (int g = 0; g < 2; g++) {                 /* 0 = gauche (-x), 1 = droit */
+                int on = (g == 0 && (stp == 1 || stp == 3)) || (g == 1 && stp == 2);
+                glPushMatrix();
+                glTranslatef(g ? 0.38f : -0.38f, h - 0.75f + (on && stp == 3 ? 0.5f * e : 0), -0.25f - (on ? 0.7f * e : 0));
+                glColor3f(0.55f, 0.58f, 0.63f);
+                box_faces(v3(-0.07f, -0.07f, -0.07f), v3(0.07f, 0.07f, 0.07f));
+                glDisable(GL_LIGHTING);
+                glColor3f(c[0], c[1], c[2]);              /* bobine de la couleur du joueur */
+                box_faces(v3(-0.075f, -0.02f, -0.06f), v3(0.075f, 0.02f, -0.02f));
+                glEnable(GL_LIGHTING);
+                glPopMatrix();
+            }                                             /* --- fin Poings --- */
         } else if (n->st.melee) {                         /* epee en plein balayage */
             float k = 1 - n->st.melee / 255.0f;
             glPushMatrix();
@@ -8971,6 +9337,8 @@ static void draw_hud(void) {
         else if (P.meleeKind == MK_LANCE)                 /* Lance : estoc / joute */
             snprintf(mt, sizeof mt, P.lanceState == LS_COUCH ? "LANCE COUCHEE +%d" : "LANCE  +%d pts",
                      P.lanceState == LS_COUCH ? PTS_LANCE_JOUST : meleePts[MK_LANCE]);
+        else if (P.meleeKind == MK_FIST)                  /* Poings : points du combo deja gagnes */
+            snprintf(mt, sizeof mt, "%s  +%d pts (%d/%d)", meleeNames[MK_FIST], meleePts[MK_FIST], P.fistPts, PTS_FIST_COMBO_MAX);
         else snprintf(mt, sizeof mt, "%s%s  +%d pts", meleeNames[P.meleeKind], aimed ? " (vs cible)" : "", meleePts[P.meleeKind]);
         text(0, mx, by - 78.0f, mt, blink ? 1.0f : 0.75f, blink ? 0.6f : 0.75f, blink ? 0.2f : 0.85f, 0.9f);
     }
@@ -9011,6 +9379,29 @@ static void draw_hud(void) {
             }
             glEnd();
         }                                                 /* --- fin Fleau --- */
+    } else if (P.meleeKind == MK_FIST) {                  /* --- Poings : coup suivant, pastilles du combo, aide au punch-jump --- */
+        int nxt = P.fistStep < 3 ? P.fistStep : 0;
+        float fd = fist_dmg(sp3, nxt == 2) * pvp;
+        if (dmMode) fd = fminf(fd, PVP_HIT_CAP);
+        mcd = FIST_END_CD;
+        snprintf(buf, sizeof buf, "%s%d dmg %.1fm", nxt == 2 ? "UPPERCUT " : "", (int)fd, fist_range(sp3));
+        for (int k = 0; k < 3; k++) {                     /* coups du combo deja donnes, le 3e en or */
+            int on = k < P.fistStep;
+            if (k == 2) rect(mx + k * 16.0f, by - 26.0f, 12, 10, on ? 1.0f : 0.25f, on ? 0.8f : 0.22f, on ? 0.25f : 0.1f, 0.95f);
+            else rect(mx + k * 16.0f, by - 26.0f, 12, 10, on ? 0.45f : 0.12f, on ? 0.9f : 0.2f, on ? 1.0f : 0.25f, 0.95f);
+        }
+        if (P.fistPJ && !P.dead) {                        /* le decor est a portee de poing : anneau cyan autour du viseur */
+            V3 n;
+            float t = ray_world(eye_pos(), view_dir(), FIST_PJ_RANGE, &n);
+            int floorNo = n.y > 0.7f && (P.grounded || P.fistAirT < FIST_PJ_FLOOR_DELAY);
+            if (t < FIST_PJ_RANGE && !floorNo) {
+                glLineWidth(2);
+                glColor4f(0.4f, 0.9f, 1, P.wallJumpCd <= 0 && P.meleeCd <= 0 ? 0.9f : 0.35f);
+                glBegin(GL_LINE_LOOP);
+                for (int k = 0; k < 24; k++) glVertex2f(cx + 30 * cosf(k * (2 * PI / 24)), cy + 30 * sinf(k * (2 * PI / 24)));
+                glEnd();
+            }
+        }                                                 /* --- fin Poings --- */
     } else snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(melee_dmg(sp3) * pvp), melee_range(sp3));
     text(1, mx, by - 48.0f, buf, 1, 1 - mk * 0.45f, 1 - mk * 0.85f, 1);
     rect(mx, by - 36.0f, 180, 6, 0.1f, 0.1f, 0.15f, 0.7f);
@@ -9833,6 +10224,20 @@ static const NetEvent *flail_test_last_hit(void) {
     return NULL;
 }
 /* --- fin Fleau : outils des tests --- */
+/* --- Poings : outils des tests --- */
+/* remise a zero : solo, Poings en melee, immobile en pos, vue vers -z */
+static void fist_test_reset(V3 pos) {
+    reset_game();
+    dmMode = 0; hitstop = 0;
+    memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+    P.meleeKind = MK_FIST; P.pos = P.prevPos = pos; P.yaw = 0; P.pitch = 0; P.vel = v3(0, 0, 0);
+    P.grounded = pos.y < 0.01f;                           /* pose au sol (sinon un coup sur un drone "suspend" en l'air) */
+}
+/* un tick de melee comme dans game_tick, sans le reste du monde */
+static void fist_test_tick(int press) { P.meleeCd -= TICK; P.meleeT -= TICK; fist_tick(TICK, press); hitstop = 0; }
+/* un coup tout de suite ; le drone e reste immobile (son recul ne compte pas dans v_rel) */
+static void fist_test_punch(Enemy *e) { if (e) e->vel = v3(0, 0, 0); P.meleeCd = 0; fist_punch(); hitstop = 0; }
+/* --- fin Poings : outils des tests --- */
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
 static void run_tests(const char *path) {
@@ -11623,6 +12028,249 @@ static void run_tests(const char *path) {
     }
     /* --- fin Fleau --- */
 
+    /* --- Poings (solo) : couloir degage x = -20, joueur en (-20, 0, 40), vue vers -z --- */
+    {
+        FILE *savedLog = botLog;
+        botLog = NULL;                                    /* pas de lignes du journal du bot au milieu des resultats */
+        {   /* 1. cadence : appui a chaque tick, drone immobile a 1,5 m. Temps de jeu (hitstop exclu), recharges arrondies au tick */
+            fist_test_reset(v3(-20, 0, 40));
+            Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 38.5f), EN_DRONE);
+            float tp[4] = { -1, -1, -1, -1 }, hp3 = -1;
+            int n = 0, prev = fistPunches;
+            gameTime = 0;
+            for (int i = 0; i < 400 && gameTime < 1.5f; i++) {
+                e->pos = v3(-20, 1.6f, 38.5f); e->vel = v3(0, 0, 0); e->fireT = 10;   /* enemy_tick court-circuite */
+                botPress[A_MELEE] = 1;
+                float t0 = gameTime;
+                game_tick(TICK);
+                if (fistPunches != prev) { prev = fistPunches; if (n < 4) tp[n] = t0; if (++n == 3) hp3 = e->hp; }
+            }
+            hitstop = 0;
+            memset(botPress, 0, sizeof botPress);
+            fprintf(f, "poings cadence : coups a %.3f %.3f %.3f %.3f s, PV du drone apres 3 coups %.0f "
+                       "(attendu 0.000 0.225 0.450 1.158 : 0,22 / 0,44 / 1,14 arrondis au tick ; 52)\n", tp[0], tp[1], tp[2], tp[3], hp3);
+            memset(E, 0, sizeof E);
+        }
+        {   /* 2. pause de 0,5 s apres le coup 1 : le combo revient au coup 1 (14 degats, pas 20) */
+            fist_test_reset(v3(-20, 0, 40));
+            Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 38.5f), EN_DRONE);
+            fist_test_tick(1);
+            for (int i = 0; i < 60; i++) fist_test_tick(0);
+            float hp1 = e->hp;
+            e->vel = v3(0, 0, 0);                         /* drone immobile : le recul du coup 1 ne compte pas dans v_rel */
+            fist_test_tick(1);
+            fprintf(f, "poings retour au coup 1 : etape %d, degats du 2e appui %.0f, recharge du combo %.2f (attendu 1, 14, 0.22)\n",
+                    P.fistStep, hp1 - e->hp, P.meleeCd);
+            memset(E, 0, sizeof E);
+        }
+        {   /* 3. 3 coups dans le vide : 0,70 + 0,60 - 0,06 = ~1,24 s de recharge a la fin de la fenetre du 3e coup */
+            fist_test_reset(v3(-20, 0, 40));
+            int i = 0;
+            for (; i < 120 && P.fistStep < 3; i++) fist_test_tick(1);
+            for (; i < 240 && P.fistStep == 3; i++) fist_test_tick(0);
+            fprintf(f, "poings dans le vide : recharge %.2f a la fin du 3e coup, combo %d, punch-jumps %d (attendu 1.24, 0, 0)\n",
+                    P.meleeCd, P.fistStep, P.fistPJ ? 0 : 1);
+        }
+        {   /* 4. mini-saut : pieds a 0,25 m, chute a -12, coup vers le sol -> vy 11 ; 2e coup du meme sejour : rien ; au sol : rendu */
+            fist_test_reset(v3(-20, 0.25f, 40));
+            P.grounded = 0; P.coyote = 0.5f; P.fistAirT = 0.5f; P.vel = v3(0, -12, 0); P.pitch = -PI / 2;
+            fist_punch();
+            float vy1 = P.vel.y;
+            P.vel.y = -12; P.wallJumpCd = 0; P.meleeCd = 0;
+            fist_punch();
+            float vy2 = P.vel.y;
+            int pj2 = P.fistPJ, land = 0;
+            for (int i = 0; i < 360 && !land; i++) { player_tick(TICK, 0, 0); land = P.grounded; }
+            fprintf(f, "poings mini-saut : vy %.1f ; 2e coup vy %.1f, charge %d ; apres l'atterrissage (%d) charge %d (attendu 11.0 ; -12.0, 0 ; 1, 1)\n",
+                    vy1, vy2, pj2, land, P.fistPJ);
+        }
+        {   /* 5. super-saut : saut depuis le sol puis coup vers le sol au tick suivant -> refuse (vy 8,4 - 2 ticks de gravite) ;
+             *    au sol, coup vers le sol -> rien */
+            fist_test_reset(v3(-20, 0, 40));
+            P.pitch = -PI / 2;
+            player_tick(TICK, 0, 0);
+            player_tick(TICK, 1, 0);
+            player_tick(TICK, 0, 0);
+            fist_punch();
+            float vyJ = P.vel.y;
+            int chJ = P.fistPJ;
+            fist_test_reset(v3(-20, 0, 40));
+            P.pitch = -PI / 2;
+            player_tick(TICK, 0, 0);
+            int g = P.grounded;
+            fist_punch();
+            fprintf(f, "poings super-saut : apres un saut vy %.1f, charge %d ; au sol (%d) vy %.1f, charge %d (attendu 8.0, 1 ; 1, 0.0, 1)\n",
+                    vyJ, chJ, g, P.vel.y, P.fistPJ);
+        }
+        {   /* 6. mur a 1,5 m de l'oeil, vel (0, 0, -5) vers le mur : composante normale 11 ; wall-jump refuse 0,25 s */
+            fist_test_reset(v3(-20, 3, 40));
+            int nb0 = nb;
+            addbox(-21, 0, 38, -19, 6, 38.5f, 0.5f, 0.5f, 0.5f);
+            P.grounded = 0; P.coyote = 1; P.fistAirT = 0.5f; P.vel = v3(0, 0, -5);
+            fist_punch();
+            float vz = P.vel.z, cd = P.wallJumpCd;
+            P.wallTouch = 1; P.wallN = v3(0, 0, 1); P.airJumps = 0;
+            player_tick(TICK, 1, 0);                      /* appui de saut contre le mur, tout de suite apres */
+            int wj = P.vel.y > 5;
+            nb = nb0;
+            fprintf(f, "poings mur : vel.z %.1f, recharge partagee %.2f, wall-jump juste apres %d (attendu 11.0, 0.25, 0)\n", vz, cd, wj);
+        }
+        {   /* 7. plafond horizontal : 25 m/s le long du mur, coup au mur -> |v_h| reste 25, direction tournee ;
+             *    20 impulsions sur des normales qui tournent de 70 degres, depuis 5 m/s -> jamais plus de 20 */
+            fist_test_reset(v3(-20, 3, 40));
+            int nb0 = nb;
+            addbox(-21, 0, 38, -19, 6, 38.5f, 0.5f, 0.5f, 0.5f);
+            P.grounded = 0; P.fistAirT = 0.5f; P.vel = v3(25, 0, 0);
+            fist_punch();
+            float h1 = hlen(P.vel), ang = atan2f(P.vel.z, P.vel.x) * 180 / PI;
+            nb = nb0;
+            P.vel = v3(5, 0, 0);
+            float hmax = 0, hfree = 5;
+            for (int k = 0; k < 20; k++) {
+                float a = k * 1.2217f;
+                V3 n = v3(cosf(a), 0, sinf(a));
+                P.fistPJ = 1; P.wallJumpCd = 0;
+                hfree += FIST_PJ_PUSH;                    /* sans garde-fou : +11 a chaque mur */
+                fist_pj_push(n);
+                hmax = fmaxf(hmax, hlen(P.vel));
+            }
+            fprintf(f, "poings plafond horizontal : |v_h| %.2f tournee de %.0f deg ; 20 murs : max %.2f (sans garde-fou jusqu'a %.0f) "
+                       "(attendu 25.00, ~24 ; <= 20.00)\n", h1, ang, hmax, hfree);
+        }
+        {   /* 8. LAN simule (je suis l'hote) : coup 1 a v_rel 0 = 14 x 0,7 = 9,8 ; uppercut : recul vertical 11 ;
+             *    combo a v_rel 20 : 30,8 + 30,8 + 49 = 110,6 -> mort */
+            fist_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 38.5f));
+            fist_punch();
+            float hp1 = NP[1].hp;
+            const NetEvent *h = flail_test_last_hit();
+            int w = h ? h->sub : -1;
+            P.meleeCd = 0; fist_punch();
+            P.meleeCd = 0; fist_punch();
+            h = flail_test_last_hit();
+            float ky = h ? h->f[2] : 0;
+            fist_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 38.5f));
+            P.vel = v3(0, 0, -20);
+            for (int k = 0; k < 3; k++) { P.meleeCd = 0; fist_punch(); }
+            hitstop = 0;
+            fprintf(f, "poings PvP : PV apres le coup 1 %.1f, arme %d, recul vertical de l'uppercut %.1f ; combo a v_rel 20 : "
+                       "cible vivante %d (attendu 90.2, %d, 11.0 ; 0)\n", hp1, w, ky, NP[1].alive, W_FIST);
+        }
+        {   /* 9. parry de l'hote : victime aux Poings, tolerance 0,05 s (coup d'epee 0,04 s apres sa fenetre : pare ; 0,08 s :
+             *    touche ; victime a l'epee a 0,08 s : paree). Attaquant aux Poings pare : combo casse, 1 s, points rendus */
+            fist_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 38.5f));
+            NP[1].st.pad = MK_FIST;
+            NP[1].lastParryT = nowT - 0.04;
+            net_hit(1, 20, v3(0, 0, -5), W_MELEE);
+            float hpA = NP[1].hp;
+            NP[1].lastParryT = nowT - 0.08;
+            net_hit(1, 20, v3(0, 0, -5), W_MELEE);
+            float hpB = NP[1].hp;
+            NP[1].hp = 100; NP[1].st.pad = MK_SWORD;
+            net_hit(1, 20, v3(0, 0, -5), W_MELEE);
+            float hpC = NP[1].hp;
+            fist_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 38.5f));
+            NP[1].lastParryT = nowT;
+            int fp = fistHostParried;
+            fist_punch();
+            hitstop = 0;
+            fprintf(f, "poings parry hote : victime aux Poings a +0,04 s PV %.0f, a +0,08 s PV %.0f ; a l'epee a +0,08 s PV %.0f ; "
+                       "mon poing pare : combo %d, recharge %.2f, pares +%d, points rendus : jauges %.0f %.0f (attendu 100, 80, 100 ; 0, 1.00, +1, 0 0)\n",
+                    hpA, hpB, hpC, P.fistStep, P.meleeCd, fistHostParried - fp, P.ammoGauge[WP_RAIL], P.ammoGauge[WP_ROCKET]);
+        }
+        {   /* 10. recul recu pendant le combo : 4 m/s (rail) ne casse rien, 10 m/s (roquette) casse le combo (0,3 s) */
+            fist_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 30));
+            P.fistStep = 1; P.meleeCd = 0.1f;
+            NetEvent e = ev_new(EV_HIT);
+            e.from = 1; e.target = (unsigned char)myId; e.sub = W_RAIL; vf(e.f + 1, v3(4, 0, 0));
+            apply_event(&e);
+            int s1 = P.fistStep;
+            e.sub = W_ROCKET; vf(e.f + 1, v3(10, 0, 0));
+            apply_event(&e);
+            fprintf(f, "poings recul recu : 4 m/s -> combo %d ; 10 m/s -> combo %d, recharge %.2f (attendu 1 ; 0, 0.30)\n",
+                    s1, P.fistStep, P.meleeCd);
+        }
+        {   /* 11. jauge (roquettes en main, 0 munition, jauge de 50) : combo de 3 touches = 25 + 25 + 0 -> 1 roquette ;
+             *     seul l'uppercut touche -> +25 ; combo qui tue au 3e coup = 50 + 100 -> 3 roquettes ; parry d'une orbe pendant
+             *     le 3e coup -> +50 hors plafond (2 roquettes) ; 10 s sans rien faire -> rien */
+            fist_test_reset(v3(-20, 0, 40));
+            dmMode = 0;
+            memset(NP, 0, sizeof NP);
+            P.loadout[0] = WP_ROCKET; P.loadout[1] = WP_RAIL; P.weapon = WP_ROCKET;
+            P.ammo[WP_ROCKET] = 0; P.ammoGauge[WP_ROCKET] = 0; P.ammo[WP_RAIL] = 2;
+            Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 38.5f), EN_DRONE);
+            e->hp = 1000;
+            for (int k = 0; k < 3; k++) fist_test_punch(e);
+            int a1 = P.ammo[WP_ROCKET]; float g1 = P.ammoGauge[WP_ROCKET];
+            for (int i = 0; i < 30 && P.fistStep; i++) fist_test_tick(0);
+            e->pos = v3(-20, 1.6f, 20);                   /* coups 1 et 2 dans le vide */
+            for (int k = 0; k < 2; k++) fist_test_punch(e);
+            e->pos = v3(-20, 1.6f, 38.5f);
+            fist_test_punch(e);
+            int a2 = P.ammo[WP_ROCKET]; float g2 = P.ammoGauge[WP_ROCKET];
+            for (int i = 0; i < 30 && P.fistStep; i++) fist_test_tick(0);
+            P.ammo[WP_ROCKET] = 0; P.ammoGauge[WP_ROCKET] = 0; e->hp = 48;
+            for (int k = 0; k < 3; k++) fist_test_punch(e);
+            int a3 = P.ammo[WP_ROCKET], dead = !e->alive;
+            for (int i = 0; i < 30 && P.fistStep; i++) fist_test_tick(0);
+            P.ammo[WP_ROCKET] = 0; P.ammoGauge[WP_ROCKET] = 0;
+            e = flail_test_enemy(0, v3(-20, 1.6f, 38.5f), EN_DRONE);
+            e->hp = 1000;
+            for (int k = 0; k < 2; k++) fist_test_punch(e);
+            Proj *o = spawn_proj(PR_ORB, v3(-20, 1.6f, 37.5f), v3(0, 0, 16));
+            fist_test_punch(e);
+            int a4 = P.ammo[WP_ROCKET], par = o && o->kind == PR_PARRIED;
+            memset(PR, 0, sizeof PR); memset(E, 0, sizeof E);
+            float before = P.ammo[WP_ROCKET] * 1000.0f + P.ammoGauge[WP_ROCKET] + P.ammo[WP_RAIL] * 1000000.0f + P.ammoGauge[WP_RAIL];
+            for (int i = 0; i < 1200; i++) fist_test_tick(0);
+            float after = P.ammo[WP_ROCKET] * 1000.0f + P.ammoGauge[WP_ROCKET] + P.ammo[WP_RAIL] * 1000000.0f + P.ammoGauge[WP_RAIL];
+            hitstop = 0;
+            fprintf(f, "poings jauge : 3 touches -> %d roquette(s) jauge %.0f ; uppercut seul -> %d jauge %.0f ; kill au 3e coup (%d) -> %d ; "
+                       "parry (%d) -> %d ; 10 s sans rien : inchange %d (attendu 1 0 ; 1 25 ; 1, 3 ; 1, 2 ; 1)\n",
+                    a1, g1, a2, g2, dead, a3, par, a4, before == after);
+        }
+        {   /* 12. NetPState.melee : coup 2 a mi-animation -> etape 1, avancement ~32 ; swing_start au debut du coup seulement */
+            fist_test_reset(v3(-20, 0, 40));
+            NetPState s;
+            P.fistAnim = 2; P.meleeT = FIST_ANIM * 0.5f;
+            pack_state(&s);
+            int stp = s.melee >> 6, adv = s.melee & 63;
+            NP[1].st = s;
+            int mid = swing_start(1);
+            P.meleeT = FIST_ANIM - TICK;
+            pack_state(&NP[1].st);
+            int start = swing_start(1);
+            P.meleeT = 0;
+            pack_state(&NP[1].st);
+            fprintf(f, "poings NetPState.melee : etape %d avancement %d, debut de coup vu %d, mi-coup vu %d, repos %d (attendu 1 32, 1, 0, 0)\n",
+                    stp, adv, start, mid, NP[1].st.melee);
+            memset(NP, 0, sizeof NP);
+        }
+        {   /* 13. bot aux Poings : cible a 1,5 m, il appuie a chaque tick : le combo complet part tout seul (3 touches) */
+            fist_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 38.5f));
+            P.dashCharge = 0.2f;                          /* ni cross-up ni dash */
+            int h0 = hitCount[W_FIST], i = 0;
+            for (; i < 120 && hitCount[W_FIST] - h0 < 3; i++) {
+                nowT += TICK;
+                bot_think(TICK);
+                game_tick(TICK);
+            }
+            hitstop = 0;
+            fprintf(f, "bot poings : %d touches au poing en %.2f s (attendu 3, ~0.5)\n", hitCount[W_FIST] - h0, i * TICK);
+            memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+            reset_game();
+            dmMode = 0;
+            memset(NP, 0, sizeof NP);
+        }
+        botLog = savedLog;
+    }
+    /* --- fin Poings --- */
+
     /* reglages : sauvegarde puis rechargement de velocity.ini */
     {
         int savedBot = botMode;
@@ -11912,6 +12560,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             NP[2].st.pad = MK_FLAIL; NP[2].st.melee = 0;
             P.meleeKind = MK_FLAIL;                       /* et mon fleau au repos */
         }
+        if (strstr(shotPath, "poings")) {                 /* Poings : Rival en plein uppercut vers moi, Ninja au repos */
+            NP[1].st.pad = MK_FIST; NP[1].st.melee = (2 << 6) | 30; NP[1].st.flags = 0;
+            NP[1].st.yaw = atan2f(6.5f, -7.0f);
+            NP[2].st.pad = MK_FIST; NP[2].st.melee = 0;
+            P.meleeKind = MK_FIST;                        /* et mes gants au repos */
+        }
         P.pos = P.prevPos = v3(0, 0, 24); P.yaw = -0.1f; P.pitch = 0.08f; P.hp = 100;
         if (strstr(shotPath, "eventail")) {               /* Rival a l'Eventail : son tir recu (traceurs recalcules) */
             NP[1].st.weapon = WP_SHOTGUN; NP[1].st.flags = 0; NP[1].st.melee = 0;
@@ -12007,6 +12661,18 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             flail_swing();
             P.flailT = FLAIL_ANIM * (strstr(shotPath, "vide") ? 0.5f : 0.7f);
             hitstop = 0; impactT = 0; P.meleeT = 0;
+        }
+        if (strstr(shotPath, "poings")) {                 /* Poings : direct droit (ou uppercut : "upper") sur un drone, mur proche */
+            hook_release(0);
+            memset(PA, 0, sizeof PA); memset(PR, 0, sizeof PR); memset(BM, 0, sizeof BM); memset(E, 0, sizeof E);
+            P.meleeKind = MK_FIST; P.meleeT = 0; P.meleeCd = 0; P.weapon = P.loadout[0]; P.switchT = 0; shotStreak = 0;
+            P.fistStep = 0; P.fistPJ = 1; P.recoil = 0;
+            P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0.05f; P.pitch = -0.05f; P.vel = v3(0, 0, -8); P.grounded = 1;
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 300; E[0].pos = v3(-20, 1.6f, 38.3f); E[0].fireT = 10;
+            int n = strstr(shotPath, "upper") ? 3 : 2;
+            for (int k = 0; k < n; k++) { P.meleeCd = 0; fist_punch(); }
+            P.meleeT = FIST_ANIM * 0.45f; P.fistGuard = 1;
+            hitstop = 0; impactT = 0; P.vel = v3(0, 0, -8);
         }
         if (strstr(shotPath, "scie")) {                   /* Scie : la mienne plantee, une adverse en vol (2 renvois) */
             hook_release(0);
@@ -12178,6 +12844,13 @@ done:
                    flailRelSum / (flailTargets ? flailTargets : 1), flailCoins, flailCoinHits, flailCombos);
         if (netMode == NET_HOST && (hitCount[W_FLAIL] || flailHostParried))
             netlog("fleau (arbitre) : touches %d, fleaux pares %d", hitCount[W_FLAIL], flailHostParried);
+        if (fistPunches || hitCount[W_FIST])              /* --- Poings --- */
+            netlog("poings (moi) : %d coups, %d touchent (v_rel moyen %.1f), %.2f touche(s) par combo, combos complets %d / "
+                   "commences %d, casses %d, uppercuts qui touchent %d (puis tir %d), punch-jumps %d (%.1f par minute)",
+                   fistPunches, fistHits, fistRelSum / (fistHits ? fistHits : 1), fistHits / (float)(fistCombos ? fistCombos : 1),
+                   fistFullCombos, fistCombos, fistBreaks, fistUppers, fistUpRails, fistPJs, fistPJs * 60.0f / fmaxf(botAliveT, 1));
+        if (netMode == NET_HOST && (hitCount[W_FIST] || fistHostParried))
+            netlog("poings (arbitre) : touches %d, poings pares %d", hitCount[W_FIST], fistHostParried);
     }
     net_shutdown();
     if (botLog) fclose(botLog);
