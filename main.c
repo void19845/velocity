@@ -187,6 +187,44 @@ static V3 rand_dir(void) {
 #define ST_SLAM            0x10    /* NetPState.pad : pique en cours */
 enum { ANVIL_IDLE, ANVIL_DIVE, ANVIL_STUN };
 
+/* --- Scie : disque-boomerang (une seule, ni jauge ni recharge : la scie est sa munition) --- */
+#define SAW_SPEED        32.0f   /* vitesse de lancer, plus la vitesse du joueur dans l'axe */
+#define SAW_MIN_SPEED    20.0f   /* plancher si on lance en reculant */
+#define SAW_GRAVITY      6.0f    /* gravite legere : ~1,4 m de chute sur 22 m */
+#define SAW_DMG          30.0f   /* degats de base... */
+#define SAW_DMG_PER_MS   1.5f    /* ...plus 1,5 par m/s de vitesse relative au-dela de l'offset */
+#define SAW_REL_OFFSET   12.0f   /* cible immobile (rel 32) : 60 PvE / 42 PvP, 3 touches (choix du 27/10) */
+#define SAW_CD           0.4f    /* delai minimal entre deux lancers */
+#define SAW_RETURN_SPEED 36.0f   /* retour guide apres une touche */
+#define SAW_RECALL_SPEED 45.0f   /* rappel au grappin */
+#define SAW_HOME_MAX     2.5f    /* retour ou rappel plus long : rattrapee d'office */
+#define SAW_CATCH_R      1.5f    /* distance de ramassage / rattrapage */
+#define SAW_HOOK_R       0.6f    /* sphere que le crochet doit toucher */
+#define SAW_RADIUS       0.35f   /* rayon du disque (rendu) */
+#define SAW_EMBED        0.12f   /* profondeur d'enfoncement dans la face */
+#define SAW_HIT_GROW     0.25f   /* AABB des joueurs agrandie */
+#define SAW_DASH         0.5f    /* dash rendu au rattrapage apres une touche */
+#define SAW_COIN_R       0.8f    /* frolement d'une piece */
+#define SAW_COIN_KICK    11.0f   /* vitesse verticale donnee a la piece */
+#define SAW_COIN_LIFE    2.0f    /* vie ajoutee a la piece */
+#define SAW_PARRY_MULT   1.25f   /* scie paree par un adversaire : 1,25x sa vitesse (au moins PARRY_SPEED) */
+#define SAW_BOUNCE_MULT  1.5f    /* renvoi : 1,5x la vitesse de lancer (48 m/s), plus la vitesse du joueur */
+#define SAW_BOUNCE_MAX   70.0f   /* vitesse maximale d'un renvoi */
+#define SAW_BOUNCE_AIM_COS 0.9925f /* aide a la visee du renvoi : 7 degres (parry adverse : 0.988) */
+#define SAW_BOUNCE_AIM_RANGE 40.0f /* portee de l'aide a la visee */
+#define SAW_BOUNCE_CHAIN 3       /* renvois consecutifs max sans rattraper la scie */
+#define SAW_RETURN_PARRY_DMG_MULT 0.9f /* renvoi par parry : lancer + renvoi ne tue plus une cible immobile (choix du 27/10) */
+#define SAW_LOST_T       3.0f    /* sous le plan de mort : revient apres 3 s */
+#define SAW_LOST_Y       -20.0f  /* plan de mort (les cartes n'en definissent pas encore) */
+#define SAW_FLY_MAX      12.0f   /* garde-fou : vol trop long = perdue */
+#define SAW_RESYNC       2.0f    /* reemission periodique de l'etat plante (joueurs arrives en cours) */
+#define SAW_WHIRR        0.18f   /* vrombissement rejoue en vol */
+#define SAW_RECALL_HURTS 0       /* option : la scie rappelee blesse le premier adversaire traverse */
+enum { SAW_FLY, SAW_PARRIED, SAW_PLANTED, SAW_RETURN, SAW_RECALL, SAW_LOST };
+enum { SAWE_THROW, SAWE_PLANT, SAWE_HIT, SAWE_CATCH, SAWE_RECALL, SAWE_BOUNCE };       /* EV_SAW.sub */
+enum { SAW_HOW_RETURN, SAW_HOW_FOOT, SAW_HOW_RECALL, SAW_HOW_LOST, SAW_HOW_PARRIED };   /* EV_SAW.actor (rattrapage) */
+/* --- fin Scie --- */
+
 /* Axe tir : chaque touche successive augmente degats et cadence, un tir rate remet a zero */
 #define STREAK_MAX        8
 #define STREAK_DMG        0.15f   /* +15% de degats par touche */
@@ -224,7 +262,7 @@ static const AmmoDef ammoDef[WP_COUNT] = {
     { "TESLA",     60, 100, 2.5f, 0.60f, 0.70f, 1.00f },  /* 1 point = 0,4 de batterie */
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
-static unsigned char wpReady[WP_COUNT] = { 1, 1, 0, 1, 0, 0, 0 };   /* chaque arme codee passe sa case a 1 */
+static unsigned char wpReady[WP_COUNT] = { 1, 1, 0, 1, 1, 0, 0 };   /* chaque arme codee passe sa case a 1 */
 static unsigned char mkReady[MK_COUNT] = { 1, 1, 0, 0, 0, 0 };
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, KIN_CD, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
 
@@ -238,7 +276,9 @@ static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, KIN_CD, 0.4f, 0
 enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_ESHOT, S_PAD, S_WAVE, S_WALLJUMP, S_SLIDE, S_HOOK, S_HOOKHIT, S_PUNCH, S_PARRY,
        S_KIN,                                             /* Elan */
-       S_ANVIL_DIVE, S_ANVIL_SLAM, S_ANVIL_CLANG, S_COUNT };
+       S_ANVIL_DIVE, S_ANVIL_SLAM, S_ANVIL_CLANG,
+       S_SAW_THROW, S_SAW_PLANT, S_SAW_HIT, S_SAW_CATCH, S_SAW_BOUNCE,   /* Scie */
+       S_COUNT };
 typedef struct { short *data; int len; } Sound;
 typedef struct { int snd, active; float pos, step, vol; } Voice;
 static Sound sounds[S_COUNT];
@@ -486,6 +526,55 @@ static void make_sounds(void) {
                sinf(t * 2 * PI * 2150) * 0.18f * expf(-t * 25) + (t < 0.005f ? noise() * 0.8f : 0);
     }
     sounds[S_ANVIL_CLANG] = mksound(b, n);
+
+    /* --- Scie --- */
+    /* lancer : bruit passe-bande qui monte de 800 a 2500 Hz + sinus de 1800 Hz vibre a 40 Hz (rejoue en vol) */
+    b = sbuf(0.35f, &n); lp = 0; ph = 0;
+    {
+        float bp = 0;
+        for (int i = 0; i < n; i++) {
+            t = (float)i / SR;
+            float fc = 800 + 1700 * (t / 0.35f);
+            a = 1 - expf(-2 * PI * fc / SR);
+            lp += a * (noise() - lp);
+            bp += 0.2f * (lp - bp);                       /* passe-bande grossier : passe-haut sur le passe-bas */
+            ph += (1800 + 60 * sinf(t * 2 * PI * 40)) / SR;
+            b[i] = ((lp - bp) * 1.4f + sinf(ph * 2 * PI) * 0.22f) * expf(-t * 7);
+        }
+    }
+    sounds[S_SAW_THROW] = mksound(b, n);
+    /* plantee : choc grave + "twang" metallique module */
+    b = sbuf(0.5f, &n); ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (2400 + 60 * sinf(t * 2 * PI * 30)) / SR;
+        b[i] = sinf(t * 2 * PI * 90) * 0.8f * expf(-t * 30) + sinf(ph * 2 * PI) * 0.25f * expf(-t * 6) +
+               (t < 0.004f ? noise() * 0.7f : 0);
+    }
+    sounds[S_SAW_PLANT] = mksound(b, n);
+    /* touche : grincement de lame (dent de scie 300 Hz + bruit) */
+    b = sbuf(0.25f, &n); ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR; ph += 300.0f / SR;
+        float sw = 2 * (ph - floorf(ph)) - 1;
+        b[i] = (sw * 0.45f + noise() * 0.35f) * expf(-t * 12);
+    }
+    sounds[S_SAW_HIT] = mksound(b, n);
+    /* rattrapee : clic puis carillon montant */
+    b = sbuf(0.15f, &n); ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR; ph += (1200 + 800 * (t / 0.15f)) / SR;
+        b[i] = (t < 0.005f ? noise() * 0.6f : 0) + sinf(ph * 2 * PI) * 0.3f * expf(-t * 18);
+    }
+    sounds[S_SAW_CATCH] = mksound(b, n);
+    /* renvoi : "ting" metallique sur une attaque de bruit */
+    b = sbuf(0.3f, &n);
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        b[i] = (sinf(t * 2 * PI * 3200) * 0.3f + sinf(t * 2 * PI * 4800) * 0.15f) * expf(-t * 10) +
+               (t < 0.01f ? noise() * 0.5f : 0);
+    }
+    sounds[S_SAW_BOUNCE] = mksound(b, n);
 }
 
 static void audio_init(void) {
@@ -642,11 +731,13 @@ static int ray_box(V3 o, V3 d, V3 mn, V3 mx, float maxt, float *tout, V3 *nout) 
     return 1;
 }
 
+static int rayBox = -1;                                   /* boite touchee par le dernier ray_world (-1 : aucune) */
 static float ray_world(V3 o, V3 d, float maxt, V3 *n) {
     float best = maxt; V3 bn = v3(0, 1, 0);
+    rayBox = -1;
     for (int i = 0; i < nb; i++) {
         float t; V3 nn;
-        if (ray_box(o, d, boxes[i].mn, boxes[i].mx, best, &t, &nn) && t < best) { best = t; bn = nn; }
+        if (ray_box(o, d, boxes[i].mn, boxes[i].mx, best, &t, &nn) && t < best) { best = t; bn = nn; rayBox = i; }
     }
     if (n) *n = bn;
     return best;
@@ -718,6 +809,8 @@ typedef struct {
     int anvilState;                                       /* Enclume : ANVIL_IDLE / DIVE / STUN */
     float anvilStartY, anvilStunT;                        /* y au debut du pique, immobilisation restante */
     float anvilLandT, anvilLastVy;                        /* temps depuis la derniere onde, |vy| de la derniere onde */
+    int sawIdx;                                           /* Scie : 0 = en main (ou pas de scie), sinon index PR + 1 */
+    float sawCd;                                          /* Scie : delai avant le prochain lancer */
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -727,13 +820,22 @@ typedef struct { V3 pos, vel; float hp, fireT, t, flash; int type, alive; } Enem
 #define MAXE 64
 static Enemy E[MAXE];
 
-enum { PR_ROCKET, PR_ORB, PR_PARRIED };
+enum { PR_ROCKET, PR_ORB, PR_PARRIED, PR_SAW };
 
 typedef struct { V3 pos, vel; float life, spin; int alive, owner; unsigned int netId; } Coin;
 #define MAXCOIN 24
 static Coin CO[MAXCOIN];
 static int lastChain;                                     /* longueur du dernier ricochet (tests, journal) */
-typedef struct { V3 pos, vel; float life, mult; int kind, alive, owner, parries, orb; unsigned int netId; } Proj;
+typedef struct {
+    V3 pos, vel; float life, mult; int kind, alive, owner, parries, orb; unsigned int netId;
+    /* Scie (kind == PR_SAW) : etat SAW_*, temps dans l'etat, rotation, normale de la face (plantee), axe du disque,
+     * qui l'a paree (-1), boite ou elle est plantee (-1), renvois consecutifs, pieces relancees (bits),
+     * minuterie (reemission si plantee, vrombissement en vol) */
+    int sawState, sawBy, sawBox, sawHurt, sawBounces;
+    float sawT, sawSpin, sawSync;
+    V3 sawN, sawAxis;
+    unsigned int sawCoins;
+} Proj;
 #define MAXPR 128
 static Proj PR[MAXPR];
 
@@ -821,6 +923,12 @@ static void net_fx_parry(unsigned int netId, V3 pos, V3 vel, float mult, int par
 static void net_fx_melee(V3 pos, V3 dir, float sp);
 static void net_fx_slam(V3 pos, float radius, float vy, int hits);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
+/* Scie : definies apres les roquettes */
+static void net_fx_saw(int sub, Proj *p, int target, int actor);
+static int saw_hook_test(float *t);                       /* grappin : le crochet touche ma scie plantee ? */
+static void saw_recall_start(void);
+static int saw_parry(Proj *p, V3 eye, V3 f, float range, float speedMult);
+static void saw_remove_owner(int id);
 
 /* ------------------------------------------------------------------ */
 /* Entrees                                                             */
@@ -1108,6 +1216,7 @@ static void grapple_tick(float dt, int press, int held) {
         V3 n;
         float t = ray_world(P.hookPos, P.hookDir, len, &n), te;
         int target = -1, ptarget = -1;
+        int sawHit = saw_hook_test(&t);                   /* Scie : ma scie plantee, avant le mur (une cible plus proche l'emporte) */
         for (int j = 0; j < MAXE; j++)                    /* un ennemi devant le mur ? */
             if (E[j].alive && ray_sphere(P.hookPos, P.hookDir, E[j].pos, enemy_radius(E[j].type) + 0.3f, t, &te)) {
                 t = te; target = j;
@@ -1118,6 +1227,7 @@ static void grapple_tick(float dt, int press, int held) {
             np_aabb(j, 0.3f, &mn, &mx);
             if (ray_box(P.hookPos, P.hookDir, mn, mx, t, &te, NULL) && te < t) { t = te; target = -1; ptarget = j; }
         }
+        if (sawHit && target < 0 && ptarget < 0) { saw_recall_start(); return; }   /* rappel : le joueur ne bouge pas */
         if (target >= 0 || ptarget >= 0) {
             P.hook = HOOK_ATTACHED;
             if (target >= 0) { P.hookEnemy = target + 1; P.hookPos = P.anchor = E[target].pos; E[target].flash = 0.12f; }
@@ -1409,6 +1519,7 @@ static void damage_player(float dmg) {
     play(S_HURT, 0.8f, frange(0.9f, 1.1f));
     if (P.hp <= 0) {
         P.hp = 0; P.dead = 1; P.deathT = 0;
+        saw_remove_owner(myId);                           /* Scie : elle disparait, neuve au prochain depart */
         if (score > bestScore) bestScore = score;
     }
 }
@@ -1577,6 +1688,7 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     for (int w = 0; w < WP_COUNT; w++) { P.ammo[w] = ammoDef[w].start; P.ammoGauge[w] = 0; }
     P.weapon = P.loadout[0]; P.switchT = 0; P.undoPts[0] = P.undoPts[1] = 0;
     P.kinT = 0; P.kinDashT = 1; P.kinPreDash = 0;          /* Elan : ni fenetre de dash-tir ni malus */
+    P.sawIdx = 0; P.sawCd = 0;                            /* Scie : neuve, en main */
     melee_start_swing();
 }
 static void weapon_select(int w) { if (w != P.weapon) { P.weapon = w; P.switchT = SWITCH_TIME; } }
@@ -1594,6 +1706,10 @@ static int try_parry(void) {
     int parried = 0;
     for (int i = 0; i < MAXPR; i++) {
         Proj *p = &PR[i];
+        if (p->alive && p->kind == PR_SAW) {              /* Scie : renvoi de la mienne qui revient, ou parry d'une adverse */
+            parried += saw_parry(p, eye, f, MELEE_RANGE + 1.5f, 1);
+            continue;
+        }
         int foreignRocket = dmMode && (p->kind == PR_ROCKET || p->kind == PR_PARRIED) && p->owner != myId;
         if (!p->alive || (p->kind != PR_ORB && !foreignRocket)) continue;
         V3 d = vsub(p->pos, eye);
@@ -2171,6 +2287,8 @@ static Proj *spawn_proj(int kind, V3 pos, V3 vel) {
     for (int i = 0; i < MAXPR; i++)
         if (!PR[i].alive) {
             Proj *p = &PR[i];
+            memset(p, 0, sizeof *p);                      /* champs de la Scie a zero */
+            p->sawBy = p->sawBox = -1;
             p->alive = 1; p->kind = kind; p->pos = pos; p->vel = vel; p->life = 6; p->owner = myId; p->netId = 0;
             p->mult = 1; p->parries = 0; p->orb = kind == PR_ORB;
             return p;
@@ -2192,10 +2310,332 @@ static void fire_rocket(void) {
     play(S_ROCKET, 0.8f, frange(0.95f, 1.05f));
 }
 
+/* --- Scie : disque-boomerang ------------------------------------------- */
+/* Une seule lame. Lancee, elle touche (degats selon la vitesse relative, puis retour guide vers le lanceur),
+ * ou se plante dans le decor : il faut aller la chercher a pied, ou la rappeler au grappin (sans bouger).
+ * Quand elle revient, le lanceur peut la parer pour la renvoyer plus vite (3 renvois d'affilee au plus).
+ * Le lanceur fait autorite sur sa scie ; les autres simulent une copie corrigee par EV_SAW. */
+static unsigned int sawCounter;
+enum { SS_THROW, SS_HIT, SS_PLANT, SS_RECALL, SS_FOOT, SS_LOST, SS_BOUNCE, SS_BHIT, SS_TRY, SS_COUNT };
+static int sawStat[SS_COUNT];                             /* journal du lanceur (bots) */
+static float sawRelSum;                                   /* somme des vitesses relatives des touches */
+static void net_hit_saw(int target, float dmg, V3 knock, int w, int bounces);   /* reseau : definies plus loin */
+static void net_fx_coin_kick(const Coin *c);
+
+static float saw_dmg(float rel) { return SAW_DMG + fmaxf(0, rel - SAW_REL_OFFSET) * SAW_DMG_PER_MS; }
+/* disque tenu a plat dans le plan de visee : son axe est le "haut" de la camera qui regarde dans la direction f */
+static V3 saw_axis(V3 f) {
+    V3 r = vnorm(v3(-f.z, 0, f.x));
+    if (vlen(r) < 0.5f) r = v3(1, 0, 0);
+    return vnorm(vcross(r, f));
+}
+static Proj *saw_mine(void) {
+    Proj *s = P.sawIdx ? &PR[P.sawIdx - 1] : NULL;
+    return s && s->alive && s->kind == PR_SAW ? s : NULL;
+}
+static int saw_face(V3 n) {                               /* code de face pour le reseau : axe * 2 + (signe > 0) */
+    for (int a = 0; a < 3; a++) if (fabsf(*vc(&n, a)) > 0.5f) return a * 2 + (*vc(&n, a) > 0);
+    return 3;
+}
+static V3 saw_face_n(int face) { V3 n = v3(0, 0, 0); *vc(&n, (face / 2) % 3) = (face & 1) ? 1.0f : -1.0f; return n; }
+static V3 saw_col(const Proj *p) {                        /* la lame rougit avec les renvois */
+    return vlerp(v3(0.78f, 0.8f, 0.86f), v3(1, 0.45f, 0.2f), clampf(p->sawBounces / (float)SAW_BOUNCE_CHAIN, 0, 1));
+}
+
+static void saw_remove_owner(int id) {
+    for (int i = 0; i < MAXPR; i++)
+        if (PR[i].alive && PR[i].kind == PR_SAW && PR[i].owner == id) PR[i].alive = 0;
+    if (id == myId) P.sawIdx = 0;
+}
+
+static void fire_saw(void) {
+    if (P.ammo[WP_SAW] < 1 || P.sawCd > 0) return;
+    V3 f = view_dir();
+    float s = fmaxf(SAW_SPEED + vdot(P.vel, f), SAW_MIN_SPEED);   /* seule la vitesse dans l'axe est heritee */
+    Proj *p = spawn_proj(PR_SAW, eye_pos(), vmul(f, s));
+    if (!p) return;
+    p->sawState = SAW_FLY; p->sawAxis = saw_axis(f);
+    p->netId = ((unsigned int)(myId + 1) << 24) | ((unsigned int)PR_SAW << 20) | (++sawCounter & 0xFFFFF);
+    P.ammo[WP_SAW] = 0; P.sawIdx = (int)(p - PR) + 1; P.sawCd = SAW_CD;
+    P.recoil = 0.6f; shake += 0.04f;
+    sawStat[SS_THROW]++;
+    play(S_SAW_THROW, 0.7f, frange(0.95f, 1.05f));
+    if (dmMode) net_fx_saw(SAWE_THROW, p, -1, 0);
+}
+
+static void saw_hit_fx(V3 at, float dmg, float rel) {
+    burst(at, v3(1, 0.85f, 0.5f), 24, 9, 0.35f, 0.1f);
+    hitMarker = 0.18f;
+    hitstop = fmaxf(hitstop, 0.03f + rel * 0.001f);
+    shake += 0.1f;
+    if (dmg >= 85) impact_frame(at, 0.06f);                /* typiquement : un renvoi en courant */
+    play(S_SAW_HIT, 0.8f, frange(0.95f, 1.05f));
+    play(S_HIT, 0.6f, 1.1f);
+}
+
+static void saw_catch(Proj *p, int how) {
+    static const char *hows[5] = { "retour", "a pied", "rappel", "perdue", "paree" };
+    if (how == SAW_HOW_RETURN) { P.dashCharge = fminf(2, P.dashCharge + SAW_DASH); P.fovKick += 3; }
+    if (how == SAW_HOW_FOOT) sawStat[SS_FOOT]++;
+    P.ammo[WP_SAW] = 1; P.sawIdx = 0; p->alive = 0;       /* sawCd n'est pas touche : aucun delai ajoute */
+    play(S_SAW_CATCH, 0.6f, how == SAW_HOW_RETURN ? 1.15f : 1.0f);
+    if (dmMode) net_fx_saw(SAWE_CATCH, p, -1, how);
+    if (botMode) netlog("scie : rattrapee (%s)", hows[how]);
+}
+
+static void saw_plant(Proj *p, V3 hit, V3 n, V3 dir, int box) {
+    p->pos = vsub(hit, vmul(n, SAW_EMBED));               /* le centre s'enfonce : 0,23 m de lame depasse */
+    V3 ax = vcross(dir, n);                               /* le disque entre par la tranche : son plan contient dir et n */
+    if (vlen(ax) > 0.05f) p->sawAxis = vnorm(ax);         /* tir perpendiculaire a la face : on garde l'axe de vol */
+    p->sawN = n; p->sawBox = box; p->vel = v3(0, 0, 0);
+    p->sawState = SAW_PLANTED; p->sawT = 0; p->sawSync = SAW_RESYNC;
+    for (int k = 0; k < 14; k++) add_part(hit, vadd(vmul(n, 4), vmul(rand_dir(), 3)), v3(1, 0.8f, 0.45f), 0.35f, 0.08f, 12);
+    if (box >= 0) shards(hit, boxes[box].col, 3, 4);
+    play(S_SAW_PLANT, 0.8f * atten(hit), frange(0.95f, 1.05f));
+    sawStat[SS_PLANT]++;
+    if (dmMode) net_fx_saw(SAWE_PLANT, p, -1, 0);
+    if (botMode) netlog("scie : plantee a %.1f m (face %+.0f %+.0f %+.0f, apres %d renvois)",
+                        vlen(vsub(hit, pcenter())), n.x, n.y, n.z, p->sawBounces);
+}
+
+/* touche du lanceur (he : drone, hp : joueur) : degats, puis retour guide */
+static void saw_strike(Proj *p, V3 dir, float t, int he, int hp) {
+    V3 at = vadd(p->pos, vmul(dir, t));
+    float rel = vlen(vsub(p->vel, he >= 0 ? E[he].vel : np_vel(hp)));
+    float dmg = saw_dmg(rel) * (p->sawBounces ? SAW_RETURN_PARRY_DMG_MULT : 1);   /* renvoi : x0,9 */
+    if (he >= 0) damage_enemy(he, dmg, vmul(dir, 6));
+    else net_hit_saw(hp, dmg * PVP_SCALE, vadd(vmul(dir, 5), v3(0, 2, 0)), W_SAW, p->sawBounces);
+    if (p->sawBounces) {                                  /* renvoi qui touche = parry reussi : points a l'autre arme */
+        ammo_points(PTS_PARRY, AP_PARRY);
+        sawStat[SS_BHIT]++;
+    }
+    sawStat[SS_HIT]++; sawRelSum += rel;
+    saw_hit_fx(at, dmg, rel);
+    p->pos = at; p->sawState = SAW_RETURN; p->sawT = 0;   /* sawBounces garde son compte : la chaine continue */
+    if (dmMode) net_fx_saw(SAWE_HIT, p, hp, 0);
+    if (botMode) netlog("scie : touche %s, rel %.1f, degats %.0f, renvoi %d", he >= 0 ? "drone" : NP[hp].name, rel,
+                        he >= 0 ? dmg : dmg * PVP_SCALE, p->sawBounces);
+}
+
+/* la scie en vol frole une piece : elle la relance vers le haut (une fois par piece et par vol) */
+static void saw_coins(Proj *p, V3 dir, float t) {
+    for (int i = 0; i < MAXCOIN && i < 32; i++) {
+        Coin *c = &CO[i];
+        float tc;
+        if (!c->alive || ((p->sawCoins >> i) & 1u)) continue;
+        if (!ray_sphere(p->pos, dir, c->pos, SAW_COIN_R, t, &tc)) continue;
+        c->vel = v3(c->vel.x * 0.3f, SAW_COIN_KICK, c->vel.z * 0.3f);
+        c->life += SAW_COIN_LIFE;
+        p->sawCoins |= 1u << i;
+        for (int k = 0; k < 10; k++) add_part(c->pos, vmul(rand_dir(), 5), v3(1, 0.85f, 0.3f), 0.3f, 0.08f, 0);
+        play(S_HIT, 0.5f, 2.6f);
+        if (dmMode) net_fx_coin_kick(c);
+    }
+}
+
+/* option SAW_RECALL_HURTS : la scie rappelee blesse le premier adversaire traverse */
+static void saw_recall_hurt(Proj *p, V3 dir, float len) {
+    float te;
+    for (int j = 0; j < MAXE; j++)
+        if (E[j].alive && ray_sphere(p->pos, dir, E[j].pos, enemy_radius(E[j].type) + 0.3f, len, &te)) {
+            damage_enemy(j, saw_dmg(vlen(vsub(p->vel, E[j].vel))), vmul(dir, 6)); p->sawHurt = 1; return;
+        }
+    for (int j = 0; j < MAXP; j++) {
+        V3 mn, mx;
+        if (!np_target(j)) continue;
+        np_aabb(j, SAW_HIT_GROW, &mn, &mx);
+        if (ray_box(p->pos, dir, mn, mx, len, &te, NULL)) {
+            net_hit_saw(j, saw_dmg(vlen(vsub(p->vel, np_vel(j)))) * PVP_SCALE, vmul(dir, 5), W_SAW, 0);
+            p->sawHurt = 1; return;
+        }
+    }
+}
+
+static void saw_bounce_fx(V3 pos, V3 dir, int n) {
+    hitstop = fmaxf(hitstop, 0.05f);
+    P.fovKick += 4;
+    if (n > 1) snprintf(popText, sizeof popText, "RENVOI x%d", n); else snprintf(popText, sizeof popText, "RENVOI");
+    popT = 1.0f;
+    add_beam(pos, vadd(pos, vmul(dir, 2)), v3(1, 0.95f, 0.8f), 0.25f);
+    for (int k = 0; k < 20; k++) add_part(pos, vmul(rand_dir(), 7), v3(1, 1, 1), 0.3f, 0.09f, 0);
+    play(S_SAW_BOUNCE, 0.8f, 1.0f);
+    play(S_PARRY, 0.5f, 1.3f + 0.15f * n);
+}
+
+/* renvoi : je pare ma scie qui revient ; elle repart vers le viseur (aide a la visee de 7 degres) */
+static void saw_bounce(Proj *p, float speedMult) {
+    V3 eye = eye_pos(), f = view_dir(), aim = f;
+    float base = SAW_SPEED * SAW_BOUNCE_MULT * speedMult;
+    float sp = fminf(base + fmaxf(0, vdot(P.vel, f)), SAW_BOUNCE_MAX), best = SAW_BOUNCE_AIM_COS;
+    for (int j = 0; j < MAXE + MAXP; j++) {               /* drones puis joueurs : point anticipe le plus pres du viseur */
+        V3 c, vc2;
+        if (j < MAXE) { if (!E[j].alive) continue; c = E[j].pos; vc2 = E[j].vel; }
+        else { if (!np_target(j - MAXE)) continue; c = np_center(j - MAXE); vc2 = np_vel(j - MAXE); }
+        float dd = vlen(vsub(c, p->pos));
+        if (dd > SAW_BOUNCE_AIM_RANGE || !los(p->pos, c)) continue;
+        float tt = dd / sp;
+        V3 lead = vadd(vadd(c, vmul(vc2, tt)), v3(0, 0.5f * SAW_GRAVITY * tt * tt, 0));
+        float k = vdot(vnorm(vsub(lead, eye)), f);        /* cone mesure depuis l'oeil, comme le viseur */
+        if (k > best) { best = k; aim = vnorm(vsub(lead, p->pos)); }
+    }
+    p->vel = vmul(aim, sp);
+    p->sawState = SAW_FLY; p->sawT = 0; p->sawBy = -1; p->sawCoins = 0; p->sawBounces++;
+    p->sawAxis = saw_axis(aim);
+    sawStat[SS_BOUNCE]++;
+    saw_bounce_fx(p->pos, aim, p->sawBounces);
+    if (dmMode) net_fx_saw(SAWE_BOUNCE, p, -1, p->sawBounces);
+    if (botMode) netlog("scie : renvoi %d a %.0f m/s, aide %s", p->sawBounces, sp, best > SAW_BOUNCE_AIM_COS ? "oui" : "non");
+}
+
+/* appele par try_parry pour chaque scie : renvoi de la mienne, ou parry d'une scie adverse en vol. Renvoie 1 si paree */
+static int saw_parry(Proj *p, V3 eye, V3 f, float range, float speedMult) {
+    int st = p->sawState;
+    V3 d = vsub(p->pos, eye);
+    float dist = vlen(d);
+    int front = vdot(vmul(d, 1.0f / fmaxf(dist, 0.01f)), f) >= 0.3f;   /* il faut faire face a la scie */
+    if (!dmMode || p->owner == myId) {                    /* RENVOI : seulement une scie qui revient */
+        if ((st != SAW_RETURN && st != SAW_RECALL && st != SAW_PARRIED) || p->sawBounces >= SAW_BOUNCE_CHAIN) return 0;
+        if (dist > range * powf(PARRY_RANGE_SHRINK, (float)p->sawBounces) || !front) return 0;
+        saw_bounce(p, speedMult);
+        P.swingLanded = 1;                                /* ni soin, ni dash, ni grappin : ce serait farmable */
+        return 1;
+    }
+    if (st != SAW_FLY && st != SAW_PARRIED) return 0;     /* scie adverse en vol : parry normal */
+    if (st == SAW_PARRIED && p->sawBy == myId) return 0;  /* deja renvoyee par moi */
+    if (dist > range * powf(PARRY_RANGE_SHRINK, (float)p->parries) || !front) return 0;
+    V3 to = vnorm(vsub(np_center(p->owner), p->pos));     /* toujours vers son lanceur, sans aide a la visee */
+    p->vel = vmul(to, fmaxf(PARRY_SPEED, vlen(p->vel) * SAW_PARRY_MULT) * speedMult);
+    p->sawState = SAW_PARRIED; p->sawBy = myId; p->sawT = 0; p->parries++;
+    p->sawAxis = saw_axis(to);
+    net_fx_parry(p->netId, p->pos, p->vel, 1, p->parries);
+    P.swingLanded = 1;
+    parry_feedback(p->pos);                               /* parry adverse : recompense complete */
+    melee_parry_points(PTS_PARRY);
+    if (botMode) netlog("scie de %s paree", NP[p->owner].name);
+    return 1;
+}
+
+/* grappin en vol : le crochet touche-t-il ma scie plantee avant *t ? (pas a travers un mur fin) */
+static int saw_hook_test(float *t) {
+    Proj *s = saw_mine();
+    float ts;
+    if (!s || s->sawState != SAW_PLANTED) return 0;
+    if (!ray_sphere(P.hookPos, P.hookDir, s->pos, SAW_HOOK_R, *t + 0.05f, &ts)) return 0;
+    if (!los(P.hookPos, vadd(s->pos, vmul(s->sawN, 0.25f)))) return 0;
+    *t = ts;
+    return 1;
+}
+/* rappel : la scie revient a 45 m/s ; le crochet est decroche aussitot, ni traction ni balancement */
+static void saw_recall_start(void) {
+    Proj *s = saw_mine();
+    if (!s) return;
+    s->sawState = SAW_RECALL; s->sawT = 0;
+    P.hook = HOOK_NONE; P.hookEnemy = P.hookPlayer = 0; P.hookCd = GRAPPLE_CD;
+    for (int k = 0; k < 12; k++) add_part(s->pos, vmul(rand_dir(), 4), v3(0.4f, 0.8f, 1), 0.3f, 0.08f, 0);
+    play(S_HOOKHIT, 0.7f, 1.6f); play(S_SAW_CATCH, 0.4f, 0.7f);
+    sawStat[SS_RECALL]++;
+    if (dmMode) net_fx_saw(SAWE_RECALL, s, -1, 0);
+    if (botMode) netlog("scie : rappel au grappin (%.1f m)", vlen(vsub(s->pos, pcenter())));
+}
+
+static void saw_tick(Proj *p, float dt) {
+    int mine = !dmMode || p->owner == myId;
+    if (!mine && (p->owner < 0 || p->owner >= MAXP || !NP[p->owner].active)) { p->alive = 0; return; }
+    p->sawT += dt;
+    if (p->sawState != SAW_PLANTED && p->sawState != SAW_LOST) {
+        p->sawSpin += dt * 30;
+        if ((p->sawSync -= dt) <= 0) { p->sawSync = SAW_WHIRR; play(S_SAW_THROW, 0.3f * atten(p->pos), 1.3f); }   /* vrombissement */
+    }
+    V3 home = mine ? pcenter() : np_center(p->owner);
+    switch (p->sawState) {
+    case SAW_FLY: case SAW_PARRIED: {
+        p->vel.y -= SAW_GRAVITY * dt;
+        V3 step = vmul(p->vel, dt), dir = v3(0, -1, 0), n;
+        float len = vlen(step);
+        if (len > 1e-6f) dir = vmul(step, 1.0f / len); else len = 1e-6f;
+        float t = ray_world(p->pos, dir, len, &n), te;
+        int box = rayBox, he = -1, hp = -1;
+        if (mine && p->sawState == SAW_FLY) {             /* seul le lanceur juge les touches */
+            for (int j = 0; j < MAXE; j++)
+                if (E[j].alive && ray_sphere(p->pos, dir, E[j].pos, enemy_radius(E[j].type) + 0.3f, t, &te)) { t = te; he = j; }
+            for (int j = 0; j < MAXP; j++) {
+                V3 mn, mx;
+                if (!np_target(j)) continue;
+                np_aabb(j, SAW_HIT_GROW, &mn, &mx);
+                if (ray_box(p->pos, dir, mn, mx, t, &te, NULL) && te < t) { t = te; hp = j; he = -1; }
+            }
+            saw_coins(p, dir, t);
+        }
+        if (p->sawState == SAW_PARRIED && dmMode && p->sawBy == myId && np_target(p->owner)) {   /* celui qui a pare juge la touche */
+            V3 mn, mx;
+            np_aabb(p->owner, SAW_HIT_GROW, &mn, &mx);
+            if (ray_box(p->pos, dir, mn, mx, t, &te, NULL) && te < t) {
+                V3 at = vadd(p->pos, vmul(dir, te));
+                float rel = vlen(vsub(p->vel, np_vel(p->owner)));
+                net_hit_saw(p->owner, saw_dmg(rel) * PVP_SCALE, vadd(vmul(dir, 5), v3(0, 2, 0)), W_PARRY, 0);
+                saw_hit_fx(at, 0, rel);
+                p->alive = 0;                             /* le lanceur la rattrape chez lui */
+                return;
+            }
+        }
+        if (he >= 0 || hp >= 0) { saw_strike(p, dir, t, he, hp); return; }
+        if (t < len) {                                    /* decor : elle se plante */
+            V3 hit = vadd(p->pos, vmul(dir, t));
+            if (mine) saw_plant(p, hit, n, dir, box);
+            else {                                        /* prediction, corrigee par SAWE_PLANT */
+                V3 ax = vcross(dir, n);
+                if (vlen(ax) > 0.05f) p->sawAxis = vnorm(ax);
+                p->pos = vsub(hit, vmul(n, SAW_EMBED)); p->sawN = n; p->vel = v3(0, 0, 0);
+                p->sawState = SAW_PLANTED; p->sawT = 0;
+                play(S_SAW_PLANT, 0.6f * atten(hit), 1.0f);
+            }
+            return;
+        }
+        p->pos = vadd(p->pos, step);
+        if (mine && p->sawState == SAW_PARRIED && vlen(vsub(p->pos, home)) < SAW_CATCH_R) { saw_catch(p, SAW_HOW_PARRIED); return; }
+        if (p->pos.y < SAW_LOST_Y || p->sawT > SAW_FLY_MAX) {
+            p->sawState = SAW_LOST; p->sawT = 0;
+            if (mine) { sawStat[SS_LOST]++; if (botMode) netlog("scie : perdue"); }
+            return;
+        }
+        if (frand() < 0.6f) add_part(p->pos, vmul(rand_dir(), 0.5f), p->sawBounces ? v3(1, 0.9f, 0.6f) : v3(1, 0.6f, 0.25f),
+                                     0.25f, 0.08f, 0);   /* etincelles */
+        break;
+    }
+    case SAW_PLANTED:
+        if (!mine) break;
+        if (!P.dead && vlen(vsub(pcenter(), p->pos)) < SAW_CATCH_R) { saw_catch(p, SAW_HOW_FOOT); return; }
+        if (dmMode && (p->sawSync -= dt) <= 0) { p->sawSync = SAW_RESYNC; net_fx_saw(SAWE_PLANT, p, -1, 0); }
+        break;
+    case SAW_RETURN: case SAW_RECALL: {
+        float sp = p->sawState == SAW_RETURN ? SAW_RETURN_SPEED : SAW_RECALL_SPEED;
+        V3 d = vsub(home, p->pos);
+        float l = vlen(d);
+        p->vel = vmul(d, sp / fmaxf(l, 0.01f));           /* guidage parfait, a travers le decor */
+        if (SAW_RECALL_HURTS && mine && p->sawState == SAW_RECALL && !p->sawHurt && l > 0.01f)
+            saw_recall_hurt(p, vmul(d, 1.0f / l), sp * dt);
+        if (l < SAW_CATCH_R || l < sp * dt || p->sawT > SAW_HOME_MAX) {
+            if (mine) saw_catch(p, p->sawState == SAW_RETURN ? SAW_HOW_RETURN : SAW_HOW_RECALL);
+            else p->alive = 0;                            /* SAWE_CATCH confirmera (SAWE_BOUNCE la recree) */
+            return;
+        }
+        p->pos = vadd(p->pos, vmul(p->vel, dt));
+        add_part(p->pos, v3(0, 0, 0), v3(0.4f, 0.8f, 1.0f), 0.2f, 0.1f, 0);   /* trainee "magnetique" */
+        break;
+    }
+    case SAW_LOST:
+        if (mine && p->sawT > SAW_LOST_T) saw_catch(p, SAW_HOW_LOST);
+        else if (!mine && p->sawT > SAW_LOST_T + 2) p->alive = 0;
+        break;
+    }
+}
+/* --- fin Scie ----------------------------------------------------------- */
+
 static void proj_tick(float dt) {
     for (int i = 0; i < MAXPR; i++) {
         Proj *p = &PR[i];
         if (!p->alive) continue;
+        if (p->kind == PR_SAW) { saw_tick(p, dt); continue; }   /* Scie : sa propre machine a etats */
         p->life -= dt;
         V3 step = vmul(p->vel, dt);
         float len = vlen(step);
@@ -2387,11 +2827,12 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   6
+#define NET_VER   7
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
        EV_PICKUP_TAKEN, EV_COIN, EV_MELEE_PARRY,
+       EV_SAW = 16,                                       /* Scie */
        EV_SLAM = 21 };                                    /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
 
 #pragma pack(push, 1)
@@ -2630,6 +3071,33 @@ static void net_fx_slam(V3 pos, float radius, float vy, int hits) {   /* onde de
     vf(e.f, pos); e.f[3] = radius; e.f[4] = vy; e.sub = (unsigned char)(hits < 255 ? hits : 255);
     net_emit(&e);
 }
+/* --- Scie : evenements ---------------------------------------------- */
+/* EV_SAW : sub = SAWE_*, netId de la scie, target = joueur touche (255 : aucun), actor = moyen de rattrapage ou renvois */
+static void net_fx_saw(int sub, Proj *p, int target, int actor) {
+    NetEvent e = ev_new(EV_SAW);
+    e.sub = (unsigned char)sub; e.netId = p->netId;
+    e.target = (unsigned char)(target < 0 ? 255 : target); e.actor = (unsigned char)actor;
+    vf(e.f, p->pos);
+    if (sub == SAWE_THROW || sub == SAWE_BOUNCE) vf(e.f + 3, p->vel);
+    if (sub == SAWE_PLANT) { vf(e.f + 3, p->sawAxis); e.f[6] = (float)saw_face(p->sawN); e.actor = (unsigned char)p->sawBounces; }
+    if (sub == SAWE_HIT) e.actor = (unsigned char)p->sawBounces;
+    net_emit(&e);
+}
+/* comme net_hit, avec f[4] = nombre de renvois de la scie (journal de l'hote) */
+static void net_hit_saw(int target, float dmg, V3 knock, int w, int bounces) {
+    if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
+    NetEvent e = ev_new(EV_HIT);
+    e.target = (unsigned char)target; e.sub = (unsigned char)w;
+    e.f[0] = dmg; vf(&e.f[1], knock); e.f[4] = (float)bounces;
+    net_emit(&e);
+}
+/* EV_COIN sous-type 3 : piece relancee par une scie (f[6] = vie restante) */
+static void net_fx_coin_kick(const Coin *c) {
+    NetEvent e = ev_new(EV_COIN);
+    e.sub = 3; e.netId = c->netId; vf(e.f, c->pos); vf(e.f + 3, c->vel); e.f[6] = c->life;
+    net_emit(&e);
+}
+/* --- fin Scie : evenements --- */
 
 static void kfeed_add(int killer, int victim, int kind, int info) {
     memmove(&kfeed[1], &kfeed[0], sizeof kfeed - sizeof kfeed[0]);
@@ -2640,6 +3108,89 @@ static Proj *find_proj(unsigned int netId) {
     for (int i = 0; i < MAXPR; i++) if (PR[i].alive && PR[i].netId == netId) return &PR[i];
     return NULL;
 }
+
+/* --- Scie : reception ------------------------------------------------ */
+/* scie d'un autre joueur : on cree ou corrige sa copie locale */
+static void saw_apply(const NetEvent *ev) {
+    int from = ev->from;
+    if (from >= MAXP || from == myId) return;
+    V3 a = fv(ev->f), b = fv(ev->f + 3);
+    Proj *p = find_proj(ev->netId);
+    if (ev->sub == SAWE_CATCH) {
+        if (p) { p->alive = 0; play(S_SAW_CATCH, 0.4f * atten(p->pos), 1.0f); }
+        return;
+    }
+    if (ev->sub == SAWE_PLANT && !NP[from].alive) return;   /* reemission arrivee apres sa mort */
+    if (!p) {
+        p = spawn_proj(PR_SAW, a, v3(0, 0, 0));
+        if (!p) return;
+        p->netId = ev->netId; p->sawAxis = v3(0, 1, 0);
+    }
+    p->kind = PR_SAW; p->owner = from;
+    switch (ev->sub) {
+    case SAWE_THROW: case SAWE_BOUNCE:
+        p->pos = a; p->vel = b; p->sawState = SAW_FLY; p->sawT = 0; p->sawBy = -1;
+        p->sawBounces = ev->sub == SAWE_BOUNCE ? ev->actor : 0;
+        p->sawAxis = saw_axis(vnorm(b));
+        if (ev->sub == SAWE_THROW) play(S_SAW_THROW, 0.7f * atten(a), 1.0f);
+        else {
+            add_beam(a, vadd(a, vmul(vnorm(b), 2)), v3(1, 0.95f, 0.8f), 0.25f);
+            for (int k = 0; k < 20; k++) add_part(a, vmul(rand_dir(), 7), v3(1, 1, 1), 0.3f, 0.09f, 0);
+            play(S_SAW_BOUNCE, 0.8f * atten(a), 1.0f);
+        }
+        break;
+    case SAWE_PLANT: {
+        int was = p->sawState == SAW_PLANTED && vlen(vsub(p->pos, a)) < 0.3f;
+        p->pos = a; p->vel = v3(0, 0, 0); p->sawAxis = vnorm(b); p->sawN = saw_face_n((int)ev->f[6]);
+        p->sawState = SAW_PLANTED; p->sawBounces = ev->actor;
+        if (!was) { p->sawT = 0; play(S_SAW_PLANT, 0.6f * atten(a), 1.0f); }   /* pas a chaque reemission */
+        break;
+    }
+    case SAWE_HIT:
+        p->pos = a; p->sawState = SAW_RETURN; p->sawT = 0; p->sawBounces = ev->actor;
+        burst(a, v3(1, 0.85f, 0.5f), 20, 8, 0.3f, 0.1f);
+        play(S_SAW_HIT, 0.7f * atten(a), 1.0f);
+        break;
+    case SAWE_RECALL:
+        p->pos = a; p->sawState = SAW_RECALL; p->sawT = 0;
+        for (int k = 0; k < 12; k++) add_part(a, vmul(rand_dir(), 4), v3(0.4f, 0.8f, 1), 0.3f, 0.08f, 0);
+        break;
+    }
+}
+
+/* EV_PARRY d'une scie (adversaire qui l'a paree) : elle repart vers son lanceur */
+static void saw_parry_apply(const NetEvent *ev) {
+    int owner = (int)(ev->netId >> 24) - 1;
+    V3 a = fv(ev->f), b = fv(ev->f + 3);
+    Proj *p = find_proj(ev->netId);
+    if (owner == myId) {                                  /* ma scie : accepte seulement si elle vole ou revient */
+        int st = p ? p->sawState : -1;
+        if (st != SAW_FLY && st != SAW_RETURN && st != SAW_PARRIED) {
+            if (p && st == SAW_PLANTED) net_fx_saw(SAWE_PLANT, p, -1, 0);   /* corrige la copie de celui qui a pare */
+            else if (p && st == SAW_RECALL) net_fx_saw(SAWE_RECALL, p, -1, 0);
+            else if (!p) {
+                Proj tmp;
+                memset(&tmp, 0, sizeof tmp);
+                tmp.netId = ev->netId; tmp.pos = a;
+                net_fx_saw(SAWE_CATCH, &tmp, -1, SAW_HOW_PARRIED);
+            }
+            return;
+        }
+        if (botMode) netlog("scie : paree par %s", pname(ev->from));
+    }
+    if (!p) {
+        if (owner < 0 || owner >= MAXP) return;
+        p = spawn_proj(PR_SAW, a, b);
+        if (!p) return;
+        p->netId = ev->netId; p->owner = owner;
+    }
+    p->kind = PR_SAW;
+    p->sawState = SAW_PARRIED; p->sawBy = ev->from; p->pos = a; p->vel = b; p->sawT = 0; p->parries = ev->sub;
+    p->sawAxis = saw_axis(vnorm(b));
+    for (int k = 0; k < 20; k++) add_part(a, vmul(rand_dir(), 8), v3(1, 1, 0.85f), 0.35f, 0.1f, 0);
+    play(S_PARRY, 0.8f * atten(a), 1.0f);
+}
+/* --- fin Scie : reception --- */
 
 static void pickup_taken(int i, int who) {
     PU[i].t = PICKUP_RESPAWN;
@@ -2688,6 +3239,7 @@ static void apply_event(const NetEvent *ev) {
     }
     case EV_PARRY: {
         Proj *p = find_proj(ev->netId);
+        if ((p && p->kind == PR_SAW) || (!p && ((ev->netId >> 20) & 0xF) == PR_SAW)) { saw_parry_apply(ev); break; }   /* Scie */
         if (!p) p = spawn_proj(PR_PARRIED, a, b);
         if (p) {
             p->kind = PR_PARRIED; p->owner = ev->from; p->netId = ev->netId; p->pos = a; p->vel = b; p->life = 4;
@@ -2707,6 +3259,10 @@ static void apply_event(const NetEvent *ev) {
             P.hurtFlash = 0.6f; shake += 0.25f;
             play(S_HURT, 0.8f, frange(0.9f, 1.1f));
             if (ev->from != myId && ev->from < MAXP) { hurtFrom = np_center(ev->from); hurtDirT = 1.2f; }
+            {                                             /* Scie : ma scie paree m'a touche, je la rattrape d'office */
+                Proj *s = saw_mine();
+                if (s && ev->sub == W_PARRY && s->sawState == SAW_PARRIED && s->sawBy == ev->from) saw_catch(s, SAW_HOW_PARRIED);
+            }
         } else if (t < MAXP && NP[t].active) {
             burst(np_center(t), v3(1, 0.35f, 0.3f), 14, 6, 0.3f, 0.1f);
             NP[t].flashT = 0.12f;
@@ -2745,6 +3301,7 @@ static void apply_event(const NetEvent *ev) {
         if (k == myId && v != myId) { impact_frame(at, 0.08f); killMarkT = 0.45f; }
         play(S_EXPLO, 0.7f * atten(at), 1.3f);
         NP[v].alive = 0;
+        saw_remove_owner(v);                              /* Scie : disparait avec son lanceur */
         if (v == myId) {
             P.dead = 1; P.deathT = 0; P.hook = HOOK_NONE; P.hookEnemy = P.hookPlayer = 0;
             killerOfMe = k;
@@ -2763,6 +3320,7 @@ static void apply_event(const NetEvent *ev) {
         int t = ev->target;
         if (t >= MAXP) break;
         NP[t].alive = 1; NP[t].disp = a; vf(NP[t].st.pos, a);
+        saw_remove_owner(t);                              /* Scie : pas de fantome d'une vie precedente */
         if (t == myId) {
             P.pos = P.prevPos = a; P.vel = v3(0, 0, 0);
             P.dead = 0; P.hp = 100; P.hook = HOOK_NONE; P.hookEnemy = P.hookPlayer = 0;
@@ -2801,6 +3359,9 @@ static void apply_event(const NetEvent *ev) {
                     CO[i].pos = a; CO[i].vel = b; CO[i].life = 4; CO[i].spin = 0;
                     break;
                 }
+        } else if (ev->sub == 3) {                        /* relancee par une scie */
+            for (int i = 0; i < MAXCOIN; i++)
+                if (CO[i].alive && CO[i].netId == ev->netId) { CO[i].pos = a; CO[i].vel = b; CO[i].life = ev->f[6]; }
         } else {
             for (int i = 0; i < MAXCOIN; i++)
                 if (CO[i].alive && CO[i].netId == ev->netId) {
@@ -2849,7 +3410,11 @@ static void apply_event(const NetEvent *ev) {
     case EV_PICKUP_TAKEN:
         if (ev->sub < npu) pickup_taken(ev->sub, ev->target);
         break;
+    case EV_SAW:
+        saw_apply(ev);
+        break;
     case EV_INFO:
+        if (ev->sub && ev->target < MAXP) saw_remove_owner(ev->target);   /* depart : ses scies disparaissent */
         kfeed_add(-1, ev->target, 0, ev->sub ? 2 : 1);
         netlog("%s %s", pname(ev->target), ev->sub ? "a quitte la partie" : "a rejoint la partie");
         break;
@@ -2885,6 +3450,7 @@ static int hitCount[W_COUNT], parryCount;                       /* statistiques 
 static double lifeFirstHitT[MAXP], ttkSum;                /* temps pour tuer : du premier degat (a pleine vie) au kill */
 static int ttkN, oneShots, meleeParries, clashes;
 static int slamParried, slamRailCombos;                   /* Enclume : ondes parees, onde puis rail sur la meme cible */
+static int sawHostStat[6], sawHostBounceHits;             /* Scie : EV_SAW par sous-type, touches apres renvoi */
 static double slamLastHitT[MAXP];
 static int slamLastBy[MAXP];
 
@@ -2911,6 +3477,7 @@ static int host_handle(const NetEvent *ev) {
         int v = ev->target;
         if (ev->sub >= W_COUNT) return 1;
         hitCount[ev->sub]++;
+        if (ev->sub == W_SAW && ev->f[4] > 0) sawHostBounceHits++;   /* Scie : touche apres un renvoi */
         netlog("degats : %s -> %s, %.0f (arme %d), PV avant %.0f", pname(ev->from), pname(v), ev->f[0], ev->sub, NP[v < MAXP ? v : 0].hp);
         if (v >= MAXP || !NP[v].active || !NP[v].alive || matchOver) return 1;
         /* coup de melee ou impact de grappin pendant la fenetre de parry de la victime : c'est pare */
@@ -2941,6 +3508,8 @@ static int host_handle(const NetEvent *ev) {
             }
             host_kill(ev->from, v, ev->sub);
         }
+    } else if (ev->kind == EV_SAW && ev->sub < 6) {
+        sawHostStat[ev->sub]++;                           /* Scie : compteurs du journal, rien a arbitrer */
     } else if (ev->kind == EV_PARRY && ev->from < MAXP) {
         parryCount++;
         NP[ev->from].hp = fminf(100, NP[ev->from].hp + PARRY_HEAL);
@@ -3877,7 +4446,8 @@ static void bot_think(float dt) {
     static int parryGo;
     for (int i = 0; i < MAXPR; i++) {
         Proj *p = &PR[i];
-        if (!p->alive || (p->kind != PR_ROCKET && p->kind != PR_PARRIED) || p->owner == myId) continue;
+        int sawIn = p->kind == PR_SAW && p->sawState == SAW_FLY;   /* Scie adverse en vol : meme reflexe */
+        if (!p->alive || (p->kind != PR_ROCKET && p->kind != PR_PARRIED && !sawIn) || p->owner == myId) continue;
         V3 to = vsub(eye_pos(), p->pos);
         float d = vlen(to);
         if (d > 10 || vdot(p->vel, to) <= 0) continue;
@@ -3888,8 +4458,42 @@ static void bot_think(float dt) {
             P.pitch = asinf(clampf(back.y, -1, 1));
             botPress[A_MELEE] = 1;
             botHeld[A_JUMP] = 1;
-            netlog("parry tente sur une roquette de %s (%.1f m)", pname(p->owner), d);
+            netlog("parry tente sur une %s de %s (%.1f m)", sawIn ? "scie" : "roquette", pname(p->owner), d);
             return;
+        }
+    }
+
+    /* Scie : ma scie revient ; une fois sur deux, on se tourne vers une cible visible pour la renvoyer */
+    {
+        static unsigned int bounceKey;
+        static int bounceGo;
+        Proj *s = saw_mine();
+        int st = s ? s->sawState : -1;
+        if (s && (st == SAW_RETURN || st == SAW_RECALL || st == SAW_PARRIED) && s->sawBounces < SAW_BOUNCE_CHAIN && P.meleeCd <= 0) {
+            V3 eye = eye_pos(), to = vsub(s->pos, eye);
+            float d = vlen(to);
+            unsigned int key = s->netId ^ ((unsigned int)s->sawBounces << 28) ^ ((unsigned int)st << 25) ^ sawCounter;
+            if (d < 6) {
+                if (bounceKey != key) { bounceKey = key; bounceGo = frand() < 0.5f; }
+                int tg = -1;
+                float td = SAW_BOUNCE_AIM_RANGE;
+                for (int i = 0; i < MAXP; i++) {
+                    if (!np_target(i)) continue;
+                    float dd = vlen(vsub(np_center(i), eye));
+                    if (dd < td && los(eye, np_center(i))) { td = dd; tg = i; }
+                }
+                if (bounceGo && tg >= 0 && d < MELEE_RANGE + 1.7f) {
+                    V3 c = np_center(tg), dt2 = vnorm(vsub(c, eye));
+                    if (vdot(vmul(to, 1.0f / fmaxf(d, 0.01f)), dt2) >= 0.34f) {   /* la scie arrive dans un cone de 70 degres */
+                        float err = 0.02f * sinf(botT * 7.3f + botMode);
+                        P.yaw = atan2f(dt2.x, -dt2.z) + err; P.pitch = asinf(clampf(dt2.y, -1, 1)) + err * 0.6f;
+                        botPress[A_MELEE] = 1; bounceGo = 0;
+                        sawStat[SS_TRY]++;
+                        netlog("scie : renvoi tente (%d) vers %s", s->sawBounces + 1, pname(tg));
+                        return;
+                    }
+                }
+            }
         }
     }
 
@@ -3918,7 +4522,8 @@ static void bot_think(float dt) {
 
     /* une arme a sec et personne de proche : on va chercher une cellule (les grandes d'abord) */
     int seek = -1;
-    if ((!wp_has_ammo(P.loadout[0]) || !wp_has_ammo(P.loadout[1])) && (best < 0 || bd > 25)) {
+    if (((P.loadout[0] != WP_SAW && !wp_has_ammo(P.loadout[0])) || (P.loadout[1] != WP_SAW && !wp_has_ammo(P.loadout[1]))) &&
+        (best < 0 || bd > 25)) {                          /* la Scie n'a pas de jauge : les cellules ne la rendent pas */
         float sd = 90;
         for (int i = 0; i < npu; i++) {
             if (PU[i].t > 0 || PU[i].pos.y - P.pos.y > 3) continue;   /* seulement celles a portee de saut */
@@ -3931,6 +4536,21 @@ static void bot_think(float dt) {
         aimYaw = atan2f(d.x, -d.z);
         aimPitch = asinf(clampf(d.y / fmaxf(vlen(d), 0.01f), -1, 1));
         best = -1; bd = 1e9f; see = 0;
+    }
+    {   /* Scie plantee et personne a moins de 8 m : rappel au grappin si on la voit, sinon on va la ramasser */
+        Proj *bs = saw_mine();
+        if (bs && bs->sawState == SAW_PLANTED && (best < 0 || bd > 8)) {
+            V3 eye = eye_pos(), d = vsub(bs->pos, eye);
+            float l = vlen(d), sy2 = atan2f(d.x, -d.z), sp2 = asinf(clampf(d.y / fmaxf(l, 0.01f), -1, 1));
+            if (l < GRAPPLE_RANGE - 2 && P.hook == HOOK_NONE && P.hookCd <= 0 && los(eye, vadd(bs->pos, vmul(bs->sawN, 0.25f)))) {
+                P.yaw = sy2; P.pitch = sp2;
+                botPress[A_HOOK] = 1; botHeld[A_HOOK] = 1;
+                netlog("scie : rappel tente (%.1f m)", l);
+                return;
+            }
+            aimYaw = sy2; aimPitch = sp2;
+            best = -1; bd = 1e9f; see = 0; seek = -1;
+        }
     }
 
     /* comme un humain : temps de reaction, et une visee moins precise de loin */
@@ -4035,6 +4655,8 @@ static void bot_think(float dt) {
     /* le bot alterne ses deux armes (la 2e seulement de pres), et prend l'autre si l'une est a sec */
     int la = P.loadout[0], lb = P.loadout[1];
     int pref = (bd < 20 && ((int)(botT / 5 + botMode)) % 2) ? lb : la;
+    if (pref == WP_SAW && (bd >= 30 || !see)) pref = pref == la ? lb : la;   /* Scie : seulement a moins de 30 m */
+    if ((la == WP_SAW || lb == WP_SAW) && see && bd < 30 && wp_has_ammo(WP_SAW) && P.sawCd <= 0) pref = WP_SAW;
     if (!wp_has_ammo(pref)) pref = pref == la ? lb : la;
     if (P.meleeKind == MK_ANVIL && P.anvilLandT < 1.0f && P.swingHitPts && wp_has_ammo(WP_RAIL) && (la == WP_RAIL || lb == WP_RAIL))
         pref = WP_RAIL;                                   /* onde qui touche : la cible vole ~1 s, le rail l'acheve */
@@ -4078,8 +4700,17 @@ static void bot_think(float dt) {
         }
     }
     if (!dry && !coinPlan && see && seeT > 0.3f && bd < 55 && P.fireCd <= 0 && P.switchT <= 0 &&
-        P.weapon != WP_KINETIC) {                         /* recale la visee pour tirer (l'Elan a sa regle plus bas) */
+        P.weapon != WP_KINETIC && P.weapon != WP_SAW) {   /* recale la visee pour tirer (l'Elan et la Scie ont leur regle) */
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1;
+    }
+    if (P.weapon == WP_SAW && best >= 0 && see && seeT > 0.3f && bd < 30 && P.sawCd <= 0 && P.fireCd <= 0 &&
+        wp_has_ammo(WP_SAW)) {                            /* Scie : on vise devant la cible, et un peu au-dessus (gravite) */
+        V3 eye = eye_pos(), c = np_center(best), d = vsub(c, eye);
+        float l = vlen(d), sp = fmaxf(SAW_SPEED + vdot(P.vel, vmul(d, 1.0f / fmaxf(l, 0.01f))), SAW_MIN_SPEED), tt = l / sp;
+        V3 lead = vsub(vadd(vadd(c, vmul(np_vel(best), tt)), v3(0, 0.5f * SAW_GRAVITY * tt * tt, 0)), eye);
+        P.yaw = atan2f(lead.x, -lead.z) + aimErrYaw;
+        P.pitch = asinf(clampf(lead.y / fmaxf(vlen(lead), 0.01f), -1, 1)) + aimErrPitch;
+        botHeld[A_FIRE] = 1;
     }
 
     if (best >= 0 && bd > (dry ? 4 : 14) && P.dashCharge >= 1 && botT > botNextDash) {    /* dash vers la cible */
@@ -4182,6 +4813,7 @@ static void fire_weapon(void) {
     case WP_RAIL:   fire_rail(); break;
     case WP_ROCKET: fire_rocket(); break;
     case WP_KINETIC: fire_kinetic(); break;
+    case WP_SAW:    fire_saw(); break;
     }
 }
 /* chargeur vide : clic sec, puis l'autre arme si elle peut tirer, sinon on pousse au contact */
@@ -4192,6 +4824,14 @@ static void dry_fire(void) {
     if (wp_has_ammo(o)) { snprintf(popText, sizeof popText, "%s A SEC", ammoDef[P.weapon].name); weapon_select(o); }
     else { snprintf(popText, sizeof popText, "A SEC : VA AU CONTACT !"); dryHintT = 2; }
     popT = 1.0f;
+}
+/* Scie dehors : clic sec seulement si elle est plantee (elle ne reviendra pas seule), puis bascule de l'infra ;
+ * en vol, en retour ou perdue, rien : le clic tenu la relancera des qu'elle revient */
+static void saw_dry(int press) {
+    Proj *s = saw_mine();
+    if (!press || !s || s->sawState != SAW_PLANTED) return;
+    dry_fire();
+    snprintf(popText, sizeof popText, "SCIE PLANTEE (%d m)", (int)vlen(vsub(s->pos, pcenter())));
 }
 static void cfg_save(void);
 static void loadout_cycle(int slot) {                     /* ecran de mort : arme prete suivante, echange si doublon */
@@ -4253,9 +4893,12 @@ static void game_tick(float dt) {
 
     P.fireCd -= dt; P.switchT -= dt;
     P.kinT -= dt;                                         /* Elan : decharge du viewmodel */
+    P.sawCd -= dt;                                        /* Scie : delai entre deux lancers */
     P.recoil *= expf(-dt * 9);
     if (!P.dead && (act[A_FIRE] || lmbp) && P.fireCd <= 0 && P.switchT <= 0) {
-        if (wp_has_ammo(P.weapon)) fire_weapon(); else dry_fire();
+        if (wp_has_ammo(P.weapon)) fire_weapon();
+        else if (P.weapon == WP_SAW) saw_dry(lmbp);
+        else dry_fire();
     }
     if (!P.dead && !wp_has_ammo(P.loadout[0]) && !wp_has_ammo(P.loadout[1])) dryT += dt;
     ammoGainT -= dt; dryHintT -= dt;
@@ -4543,6 +5186,48 @@ static void draw_anvil_vm(void) {
     glPopMatrix();
 }
 
+/* --- Scie : rendu du disque ------------------------------------------- */
+/* disque perpendiculaire a axis : lame (fan), 12 dents decalees de spin, moyeu a la couleur du joueur */
+static void draw_saw_disc(V3 c, V3 axis, float R, float spin, V3 col, const float *hub) {
+    V3 a = vnorm(vcross(axis, fabsf(axis.y) < 0.9f ? v3(0, 1, 0) : v3(1, 0, 0))), b = vcross(axis, a);
+    glColor3f(col.x, col.y, col.z);
+    glBegin(GL_TRIANGLE_FAN);
+    glVertex3f(c.x, c.y, c.z);
+    for (int k = 0; k <= 16; k++) {
+        float ang = spin + k * (2 * PI / 16);
+        V3 q = vadd(c, vadd(vmul(a, cosf(ang) * R), vmul(b, sinf(ang) * R)));
+        glVertex3f(q.x, q.y, q.z);
+    }
+    glEnd();
+    glColor3f(col.x * 0.75f, col.y * 0.75f, col.z * 0.8f);
+    glBegin(GL_TRIANGLES);
+    for (int k = 0; k < 12; k++) {                        /* dents en crochet : base sur le bord, pointe a 1,25 R */
+        float a0 = spin + k * (2 * PI / 12), a1 = a0 + PI / 12;
+        V3 q0 = vadd(c, vadd(vmul(a, cosf(a0) * R * 0.95f), vmul(b, sinf(a0) * R * 0.95f)));
+        V3 q1 = vadd(c, vadd(vmul(a, cosf(a1) * R * 0.95f), vmul(b, sinf(a1) * R * 0.95f)));
+        V3 tip = vadd(c, vadd(vmul(a, cosf(a0) * R * 1.25f), vmul(b, sinf(a0) * R * 1.25f)));
+        glVertex3f(q0.x, q0.y, q0.z); glVertex3f(q1.x, q1.y, q1.z); glVertex3f(tip.x, tip.y, tip.z);
+    }
+    glEnd();
+    glColor3f(hub[0], hub[1], hub[2]);
+    for (int side = -1; side <= 1; side += 2) {           /* moyeu des deux cotes, decolle de la lame */
+        V3 hc = vadd(c, vmul(axis, side * R * 0.03f));
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex3f(hc.x, hc.y, hc.z);
+        for (int k = 0; k <= 10; k++) {
+            float ang = k * (2 * PI / 10);
+            V3 q = vadd(hc, vadd(vmul(a, cosf(ang) * R * 0.3f), vmul(b, sinf(ang) * R * 0.3f)));
+            glVertex3f(q.x, q.y, q.z);
+        }
+        glEnd();
+    }
+}
+static int saw_out_of(int id) {                           /* le joueur id a-t-il une scie dehors ? */
+    for (int i = 0; i < MAXPR; i++) if (PR[i].alive && PR[i].kind == PR_SAW && PR[i].owner == id) return 1;
+    return 0;
+}
+/* --- fin Scie : rendu --- */
+
 static void draw_viewmodel(float aspect) {
     glClear(GL_DEPTH_BUFFER_BIT);
     set_frustum(60, aspect, 0.01f, 10);
@@ -4600,6 +5285,7 @@ static void draw_viewmodel(float aspect) {
         glEnable(GL_LIGHTING);
     }
     float ready = P.fireCd <= 0 ? 1.0f : 0.35f;
+    if (P.weapon == WP_SAW) ready = P.sawCd <= 0 ? 1.0f : 0.35f;
     if (P.weapon == WP_RAIL) {
         glColor3f(0.25f, 0.27f, 0.32f);
         box_faces(v3(-0.05f, -0.06f, -0.42f), v3(0.05f, 0.04f, 0.12f));
@@ -4635,6 +5321,23 @@ static void draw_viewmodel(float aspect) {
         glColor3f(c.x * lit * 0.8f, c.y * lit * 0.8f, c.z * lit * 0.8f);
         box_faces(v3(-0.062f, 0.02f, -0.26f), v3(0.062f, 0.032f, 0.0f));
         glPopMatrix();
+    } else if (P.weapon == WP_SAW) {                      /* Scie : disque a plat dans la main, ou main vide */
+        static const float hubVm[3] = { 1.0f, 0.8f, 0.35f };
+        Proj *sw = saw_mine();
+        if (P.ammo[WP_SAW] > 0) {
+            glDisable(GL_LIGHTING);
+            draw_saw_disc(v3(0, -0.02f, -0.32f), v3(0, 1, 0), 0.25f, gameTime * 3, v3(0.78f * (0.6f + 0.4f * ready),
+                          0.8f * (0.6f + 0.4f * ready), 0.86f * (0.6f + 0.4f * ready)), hubVm);
+        } else {
+            glColor3f(0.2f, 0.18f, 0.17f);                /* gant */
+            box_faces(v3(-0.035f, -0.07f, -0.15f), v3(0.035f, -0.03f, -0.05f));
+            if (sw && (sw->sawState == SAW_RETURN || sw->sawState == SAW_RECALL || sw->sawState == SAW_PARRIED)) {
+                glDisable(GL_LIGHTING);                   /* lueur cyan : elle revient, c'est le moment du renvoi */
+                float pl = 0.6f + 0.4f * sinf(gameTime * 20);
+                glColor3f(0.3f * pl, 0.8f * pl, 1.0f * pl);
+                box_faces(v3(-0.03f, -0.03f, -0.14f), v3(0.03f, -0.022f, -0.06f));
+            }
+        }
     } else {
         glColor3f(0.32f, 0.36f, 0.22f);
         box_faces(v3(-0.055f, -0.055f, -0.5f), v3(0.055f, 0.055f, 0.05f));
@@ -5086,6 +5789,23 @@ static void draw_name_tags(void) {
     }
 }
 
+/* Scie : disques en monde */
+static const float sawWhite[3] = { 0.9f, 0.9f, 0.9f };
+/* scies en monde (passe opaque, sans eclairage) ; une scie plantee vibre a l'impact */
+static void draw_saws(void) {
+    for (int i = 0; i < MAXPR; i++) {
+        Proj *p = &PR[i];
+        if (!p->alive || p->kind != PR_SAW || p->sawState == SAW_LOST) continue;
+        V3 ax = p->sawAxis;
+        if (p->sawState == SAW_PLANTED) {
+            float ang = 0.15f * sinf(p->sawT * 60) * expf(-p->sawT * 8), c = cosf(ang), sn = sinf(ang);
+            V3 k = p->sawN;                               /* rotation de l'axe autour de la normale (Rodrigues) */
+            ax = vadd(vadd(vmul(ax, c), vmul(vcross(k, ax), sn)), vmul(k, vdot(k, ax) * (1 - c)));
+        }
+        draw_saw_disc(p->pos, ax, SAW_RADIUS, p->sawSpin, saw_col(p), p->owner >= 0 && p->owner < MAXP ? pcol[p->owner] : sawWhite);
+    }
+}
+
 static void draw_remote_players(void) {
     glEnable(GL_LIGHTING);
     for (int i = 0; i < MAXP; i++) {
@@ -5111,7 +5831,13 @@ static void draw_remote_players(void) {
         glRotatef(n->st.pitch * 180 / PI, 1, 0, 0);
         { const AmmoDef *wd = &ammoDef[n->st.weapon < WP_COUNT ? n->st.weapon : WP_RAIL]; glColor3f(wd->r * 0.9f, wd->g * 0.9f, wd->b * 0.9f); }
         if (n->st.weapon == WP_KINETIC) glColor3f(0.95f, 0.3f, 0.85f);   /* Elan : magenta, comme son rayon */
-        box_faces(v3(-0.06f, -0.06f, -0.7f), v3(0.06f, 0.06f, 0.05f));
+        if (n->st.weapon == WP_SAW) {                     /* Scie : petit disque dans la main, rien si elle est dehors */
+            if (!saw_out_of(i)) {
+                glDisable(GL_LIGHTING);
+                draw_saw_disc(v3(0, 0, -0.35f), v3(0, 1, 0), 0.22f, gameTime * 3, v3(0.78f, 0.8f, 0.86f), c);
+                glEnable(GL_LIGHTING);
+            }
+        } else box_faces(v3(-0.06f, -0.06f, -0.7f), v3(0.06f, 0.06f, 0.05f));
         glPopMatrix();
         if ((n->st.pad & 15) == MK_ANVIL) {               /* Enclume : leve pendant le pique, abattu par le coup */
             int slam = (n->st.pad & ST_SLAM) != 0;
@@ -5195,6 +5921,75 @@ static void draw_spec_hud(float cx, float cy) {
         draw_scoreboard(cx, cy);
     }
 }
+
+/* --- Scie : HUD ------------------------------------------------------- */
+static void saw_hud_name(char *out, int n) {              /* panneau d'arme : ou est la scie */
+    Proj *s = saw_mine();
+    if (!s) { snprintf(out, n, "SCIE  EN MAIN"); return; }
+    switch (s->sawState) {
+    case SAW_PLANTED: snprintf(out, n, "SCIE  PLANTEE %d m", (int)vlen(vsub(s->pos, pcenter()))); break;
+    case SAW_RETURN: case SAW_RECALL: snprintf(out, n, "SCIE  RETOUR"); break;
+    case SAW_PARRIED: snprintf(out, n, "SCIE  PAREE"); break;
+    case SAW_LOST: snprintf(out, n, "SCIE  PERDUE %.1f s", fmaxf(0, SAW_LOST_T - s->sawT)); break;
+    default: snprintf(out, n, "SCIE  EN VOL"); break;
+    }
+}
+/* renvois restants, indicateur de renvoi autour du viseur, direction de la scie plantee, rappel au grappin */
+static void draw_saw_hud(float cx, float cy) {
+    if (P.dead || (P.loadout[0] != WP_SAW && P.loadout[1] != WP_SAW)) return;
+    Proj *s = saw_mine();
+    int left = SAW_BOUNCE_CHAIN - (s ? s->sawBounces : 0);
+    if (P.weapon == WP_SAW)                               /* pastilles : renvois encore possibles */
+        for (int i = 0; i < SAW_BOUNCE_CHAIN; i++)
+            rect(winW - 276.0f + i * 14.0f, winH - 41.0f, 10, 10, i < left ? 1.0f : 0.15f, i < left ? 0.6f : 0.12f,
+                 i < left ? 0.3f : 0.15f, 0.9f);
+    if (!s) return;
+    V3 eye = eye_pos(), vd = view_dir();
+    int st = s->sawState;
+    if ((st == SAW_RETURN || st == SAW_RECALL || st == SAW_PARRIED) && left > 0 && P.meleeCd <= 0) {
+        float r = (MELEE_RANGE + 1.5f) * powf(PARRY_RANGE_SHRINK, (float)s->sawBounces);
+        float win = r + (st == SAW_RECALL ? SAW_RECALL_SPEED : SAW_RETURN_SPEED) * PARRY_WINDOW;
+        V3 d = vsub(s->pos, eye);
+        float dist = vlen(d);
+        if (dist < win) {                                 /* le cercle se resserre ; blanc = a portee de parry */
+            int inRange = dist <= r && vdot(vmul(d, 1.0f / fmaxf(dist, 0.01f)), vd) >= 0.3f;
+            float rr = 14 + 26 * clampf((dist - r) / (win - r), 0, 1);
+            glLineWidth(2);
+            if (inRange) glColor4f(1, 1, 1, 1); else glColor4f(0.4f, 0.85f, 1, 0.9f);
+            glBegin(GL_LINE_LOOP);
+            for (int k = 0; k < 24; k++) glVertex2f(cx + rr * cosf(k * PI / 12), cy + rr * sinf(k * PI / 12));
+            glEnd();
+        }
+    }
+    if (st != SAW_PLANTED) return;
+    float sx, sy, dm = vlen(vsub(s->pos, pcenter()));
+    char b[24];
+    snprintf(b, sizeof b, "%d m", (int)dm);
+    if (project(s->pos, &sx, &sy) && sx > 20 && sx < winW - 20 && sy > 20 && sy < winH - 20) {
+        glLineWidth(2);                                   /* losange dore, meme a travers les murs */
+        glColor4f(1, 0.8f, 0.3f, 0.95f);
+        glBegin(GL_LINE_LOOP);
+        glVertex2f(sx, sy - 9); glVertex2f(sx + 9, sy); glVertex2f(sx, sy + 9); glVertex2f(sx - 9, sy);
+        glEnd();
+        text_c(0, sx, sy + 24, b, 1, 0.8f, 0.3f, 0.95f);
+    } else {                                              /* hors de l'ecran : fleche doree sur un cercle */
+        V3 d = vsub(s->pos, P.pos);
+        float ang = atan2f(d.x, -d.z) - P.yaw, dx = sinf(ang), dy = -cosf(ang);
+        glColor4f(1, 0.8f, 0.3f, 0.9f);
+        glBegin(GL_TRIANGLES);
+        glVertex2f(cx + dx * 150, cy + dy * 150);
+        glVertex2f(cx + dx * 128 - dy * 14, cy + dy * 128 + dx * 14);
+        glVertex2f(cx + dx * 128 + dy * 14, cy + dy * 128 - dx * 14);
+        glEnd();
+        text_c(0, cx + dx * 110, cy + dy * 110 + 6, b, 1, 0.8f, 0.3f, 0.9f);
+    }
+    if (P.hook == HOOK_NONE && P.hookCd <= 0) {           /* le grappin rappellerait la scie */
+        float t;
+        if (ray_sphere(eye, vd, s->pos, SAW_HOOK_R, GRAPPLE_RANGE, &t) && los(eye, vadd(s->pos, vmul(s->sawN, 0.25f))))
+            text_c(0, cx, cy + 46, "GRAPPIN -> RAPPEL SCIE", 1, 0.8f, 0.3f, 1);
+    }
+}
+/* --- fin Scie : HUD --- */
 
 static void draw_hud(void) {
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
@@ -5406,13 +6201,16 @@ static void draw_hud(void) {
     char wnBuf[32];
     const AmmoDef *ad = &ammoDef[P.weapon];
     if (P.weapon == WP_TESLA) snprintf(wnBuf, sizeof wnBuf, "TESLA %d%%", P.ammo[WP_TESLA]);
+    else if (P.weapon == WP_SAW) saw_hud_name(wnBuf, (int)sizeof wnBuf);
     else snprintf(wnBuf, sizeof wnBuf, "%s %d/%d", ad->name, P.ammo[P.weapon], ad->max);
     const char *wn = wnBuf;
     int dryW = !wp_has_ammo(P.weapon);
+    if (P.weapon == WP_SAW) dryW = saw_mine() && saw_mine()->sawState == SAW_PLANTED;   /* elle ne reviendra pas seule */
     text(1, winW - 30.0f - fontW[1] * (float)strlen(wn), winH - 60.0f, wn, dryW ? 1.0f : ad->r, dryW ? 0.3f : ad->g,
          dryW ? 0.3f : ad->b, 1);
     rect(winW - 230.0f, winH - 40.0f, 200, 8, 0.1f, 0.1f, 0.15f, 0.7f);
-    rect(winW - 230.0f, winH - 40.0f, 200 * clampf(1 - P.fireCd / wpCd[P.weapon], 0, 1), 8, 1, 1, 1, 0.8f);
+    rect(winW - 230.0f, winH - 40.0f, 200 * clampf(1 - (P.weapon == WP_SAW ? P.sawCd / SAW_CD : P.fireCd / wpCd[P.weapon]), 0, 1), 8,
+         1, 1, 1, 0.8f);
     if (ad->gauge > 0) {                                  /* jauge : la melee et les cellules la remplissent */
         float gf = P.weapon == WP_TESLA ? P.ammo[WP_TESLA] / 100.0f : gauge_frac(P.weapon);
         int gain = ammoGainT > 0 && (ammoGainSlot == 2 || ammoGainSlot == cur_slot());
@@ -5451,6 +6249,7 @@ static void draw_hud(void) {
             rect(cx - 30, cy + 20, 60 * k2, 3, 0.6f, 0.6f, 0.65f, 0.85f);
         }
     }
+    draw_saw_hud(cx, cy);                                 /* Scie */
     for (int i = 0; i < COIN_MAX; i++) {                 /* pieces disponibles */
         float fill = clampf(P.coins - i, 0, 1), x = winW - 30.0f - (COIN_MAX - i) * 20.0f, y = winH - 96.0f;
         rect(x, y, 14, 14, 0.15f, 0.12f, 0.05f, 0.7f);
@@ -5716,6 +6515,7 @@ static void render(float alpha, float frameDt) {
         box_faces(v3(-0.16f, -0.16f, -0.025f), v3(0.16f, 0.16f, 0.025f));
         glPopMatrix();
     }
+    draw_saws();                                          /* Scie */
     for (int i = 0; i < npu; i++) {                      /* cellules de munitions : les grandes sont plus grosses et violettes */
         if (PU[i].t > 0) continue;
         int big = PU[i].pts >= PICKUP_BIG;
@@ -5773,6 +6573,17 @@ static void render(float alpha, float frameDt) {
     }
     for (int i = 0; i < MAXPR; i++) {
         if (!PR[i].alive) continue;
+        if (PR[i].kind == PR_SAW) {                       /* Scie : halo selon l'etat */
+            Proj *q = &PR[i];
+            int st = q->sawState;
+            if (st == SAW_LOST || (st == SAW_PLANTED && (q->owner != myId || spectating))) continue;
+            if (st == SAW_PLANTED) glColor4f(1, 0.8f, 0.3f, 0.5f + 0.3f * sinf(gameTime * 4));   /* la mienne : a retrouver de loin */
+            else if (st == SAW_RETURN || st == SAW_RECALL) glColor4f(0.4f, 0.85f, 1, 0.8f);
+            else if (q->sawBounces || st == SAW_PARRIED) glColor4f(1, 0.95f, 0.7f, 0.9f);
+            else glColor4f(1, 0.6f, 0.2f, 0.8f);
+            billboard(q->pos, st == SAW_PLANTED ? 0.9f : 0.6f);
+            continue;
+        }
         if (PR[i].kind == PR_ROCKET) { glColor4f(1, 0.6f, 0.2f, 1); billboard(PR[i].pos, 0.55f); glColor4f(1, 1, 0.8f, 1); billboard(PR[i].pos, 0.2f); }
         else if (PR[i].kind == PR_PARRIED) { glColor4f(1, 0.85f, 0.4f, 1); billboard(PR[i].pos, 1.0f); glColor4f(1, 1, 1, 1); billboard(PR[i].pos, 0.3f); }
         else { glColor4f(1, 0.25f, 0.9f, 1); billboard(PR[i].pos, 0.7f); glColor4f(1, 0.9f, 1, 1); billboard(PR[i].pos, 0.22f); }
@@ -5978,6 +6789,23 @@ static void test_slam_drop(V3 from, V3 vel) {
     P.pos = P.prevPos = from; P.vel = vel; P.grounded = 0;
     anvil_press();
     for (int i = 0; i < 600 && P.anvilState == ANVIL_DIVE; i++) player_tick(TICK, 0, 0);
+}
+
+/* tests de la Scie : remise a zero, scie dans le loadout, en main */
+static void saw_test_reset(V3 pos, float yaw, float pitch) {
+    reset_game();
+    dmMode = 0; hitstop = 0;
+    memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);   /* entrees des tests d'avant */
+    P.pos = P.prevPos = pos; P.yaw = yaw; P.pitch = pitch; P.vel = v3(0, 0, 0);
+    P.loadout[0] = WP_SAW; P.loadout[1] = WP_RAIL; P.weapon = WP_SAW; P.ammo[WP_SAW] = 1; P.switchT = 0;
+}
+/* place une scie (la mienne si owner == myId) dans l'etat st */
+static Proj *saw_test_put(V3 pos, V3 vel, int st, int owner) {
+    Proj *p = spawn_proj(PR_SAW, pos, vel);
+    p->sawState = st; p->owner = owner; p->sawAxis = v3(0, 1, 0); p->sawN = v3(0, 1, 0);
+    p->netId = ((unsigned int)(owner + 1) << 24) | ((unsigned int)PR_SAW << 20) | 77;
+    if (owner == myId) { P.sawIdx = (int)(p - PR) + 1; P.ammo[WP_SAW] = 0; }
+    return p;
 }
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
@@ -6574,6 +7402,256 @@ static void run_tests(const char *path) {
                 dived, slamWaveHits - wavesBefore, NP[1].hp);
     }
 
+    /* --- Scie --- */
+    {
+        int savedBot = botMode;
+        botMode = 0;                                       /* pas de journal du bot dans les resultats */
+        float pv[6];
+        static const float rels[4] = { 0, 32, 41.5f, 51 };
+        for (int k = 0; k < 4; k++) pv[k] = saw_dmg(rels[k]);
+        fprintf(f, "scie formule : %.2f/%.2f %.2f/%.2f %.2f/%.2f %.2f/%.2f (attendu 30.00/21.00 60.00/42.00 74.25/51.97 88.50/60.00)\n",
+                pv[0], fminf(pv[0] * PVP_SCALE, PVP_HIT_CAP), pv[1], fminf(pv[1] * PVP_SCALE, PVP_HIT_CAP),
+                pv[2], fminf(pv[2] * PVP_SCALE, PVP_HIT_CAP), pv[3], fminf(pv[3] * PVP_SCALE, PVP_HIT_CAP));
+        pv[4] = saw_dmg(48) * SAW_RETURN_PARRY_DMG_MULT; pv[5] = saw_dmg(57.5f) * SAW_RETURN_PARRY_DMG_MULT;
+        fprintf(f, "scie renvoi : %.2f/%.2f a 48 m/s, %.2f/%.2f a 57.5 m/s (attendu 75.60/52.92 88.42/60.00)\n",
+                pv[4], fminf(pv[4] * PVP_SCALE, PVP_HIT_CAP), pv[5], fminf(pv[5] * PVP_SCALE, PVP_HIT_CAP));
+
+        /* 2. lancer et plantage dans le mur nord (18,4 m) */
+        saw_test_reset(v3(-20, 0, 60), PI, 0);
+        fire_saw();
+        Proj *sp = saw_mine();
+        V3 from = eye_pos();
+        for (int i = 0; i < 600 && sp->sawState == SAW_FLY; i++) proj_tick(TICK);
+        float dz = sp->pos.z - SAW_EMBED - from.z, drop = from.y - sp->pos.y;
+        fprintf(f, "scie plantee : etat %d, normale (%.0f %.0f %.0f), distance %.1f m, chute %.2f m (calcul %.2f), munition %d, cd %.2f "
+                   "(attendu %d, (0 0 -1), 18.4, chute ~ calcul, 0, 0.40)\n",
+                sp->sawState, sp->sawN.x, sp->sawN.y, sp->sawN.z, dz, drop, 0.5f * SAW_GRAVITY * (dz / SAW_SPEED) * (dz / SAW_SPEED),
+                P.ammo[WP_SAW], P.sawCd, SAW_PLANTED);
+
+        /* 6. rappel au grappin : le joueur ne bouge pas */
+        for (int i = 0; i < 30; i++) player_tick(TICK, 0, 0);
+        {
+            V3 p0 = P.pos, d = vsub(sp->pos, eye_pos());
+            float dist0 = vlen(vsub(sp->pos, pcenter()));
+            P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
+            hookPressIn = 1; hookHeldIn = 1;
+            int recallTick = -1, caughtTick = -1, hookAfter = -1;
+            float vAt = -1, moved = -1, cdAt = 0;
+            for (int i = 0; i < 240 && caughtTick < 0; i++) {
+                player_tick(TICK, 0, 0); hookPressIn = 0;
+                if (recallTick < 0 && saw_mine() && saw_mine()->sawState == SAW_RECALL) {
+                    recallTick = i; hookAfter = P.hook; vAt = vlen(P.vel); moved = vlen(vsub(P.pos, p0)); cdAt = P.hookCd;
+                }
+                proj_tick(TICK);
+                if (recallTick >= 0 && !saw_mine()) caughtTick = i;
+            }
+            hookHeldIn = 0;
+            fprintf(f, "scie rappel : crochet %d, vitesse %.2f, deplacement %.3f m, recharge %.2f, rattrapee apres %.2f s (calcul %.2f), "
+                       "munition %d (attendu 0, 0.00, 0.000, 0.50, ~calcul, 1)\n",
+                    hookAfter, vAt, moved, cdAt, (caughtTick - recallTick) * TICK, (dist0 - SAW_CATCH_R) / SAW_RECALL_SPEED,
+                    P.ammo[WP_SAW]);
+        }
+        /* 7. la scie plantee d'un autre est ignoree : le crochet s'accroche au mur derriere */
+        saw_test_reset(v3(-20, 0, 60), PI, 0);
+        {
+            Proj *o = saw_test_put(v3(-20, 1.0f, 78.4f + SAW_EMBED), v3(0, 0, 0), SAW_PLANTED, 1);   /* dans la face -z du mur */
+            o->sawN = v3(0, 0, -1);
+            V3 d = vsub(o->pos, eye_pos());
+            P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
+            hookPressIn = 1; hookHeldIn = 1;
+            for (int i = 0; i < 30 && P.hook != HOOK_ATTACHED; i++) { player_tick(TICK, 0, 0); hookPressIn = 0; }
+            int hk = P.hook;
+            hookHeldIn = 0;
+            player_tick(TICK, 0, 0);
+            fprintf(f, "scie d'un autre au grappin : crochet %d, scie toujours plantee %d (attendu %d, 1)\n", hk,
+                    o->alive && o->sawState == SAW_PLANTED, HOOK_ATTACHED);
+        }
+
+        /* 3. touche sur un drone immobile a 10 m, retour, rattrapage (+0,5 dash) ; 4. lancer en courant a 10 m/s */
+        for (int pass = 0; pass < 2; pass++) {
+            saw_test_reset(v3(-20, 0, 40), 0, 0);
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.7f, 30);
+            P.dashCharge = 1;
+            if (pass) P.vel = v3(0, 0, -10);
+            fire_saw();
+            float speed0 = vlen(saw_mine()->vel), hpHit = -1;
+            int retTick = -1, catchTick = -1;
+            for (int i = 0; i < 240 && catchTick < 0; i++) {
+                proj_tick(TICK);
+                Proj *q = saw_mine();
+                if (retTick < 0 && q && q->sawState == SAW_RETURN) { retTick = i; hpHit = E[0].hp; }
+                if (!q) catchTick = i;
+            }
+            if (!pass)
+                fprintf(f, "scie touche un drone a 10 m : PV %.1f, retour=%d, rattrapee=%d, munition %d, sawIdx %d, dash %.1f "
+                           "(attendu ~39.9, 1, 1, 1, 0, 1.5)\n",
+                        hpHit, retTick >= 0, catchTick >= 0, P.ammo[WP_SAW], P.sawIdx, P.dashCharge);
+            else
+                fprintf(f, "scie lancee a 10 m/s : vitesse %.1f, degats %.1f (attendu 42.0, ~75)\n", speed0, 100 - hpHit);
+        }
+
+        /* 5. ramassage a pied : 1,4 m -> rattrapee, 1,6 m -> toujours plantee */
+        {
+            int got[2];
+            for (int k = 0; k < 2; k++) {
+                float r = k ? 1.6f : 1.4f, dy = 0.9f + SAW_EMBED;
+                saw_test_reset(v3(-20, 0, 35 + sqrtf(r * r - dy * dy)), 0, 0);
+                saw_test_put(v3(-20, -SAW_EMBED, 35), v3(0, 0, 0), SAW_PLANTED, myId);
+                proj_tick(TICK);
+                got[k] = P.ammo[WP_SAW] == 1 && !saw_mine();
+            }
+            fprintf(f, "scie ramassee a pied : a 1.4 m %d, a 1.6 m %d (attendu 1, 0)\n", got[0], got[1]);
+        }
+
+        /* 9. renvoi avec aide a la visee : drone a 18 m, ma scie revient a 3 m */
+        {
+            float hp0 = 0, dash0 = 0, hpAfter = -1;
+            int stAfter = -1, bnc = 0, stEnd = -1;
+            float spd = 0;
+            saw_test_reset(v3(-20, 0, 40), 0, 0);
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.7f, 22);
+            { V3 d = vsub(E[0].pos, eye_pos()); P.pitch = asinf(d.y / vlen(d)); }
+            P.hp = 50; P.dashCharge = 1; hp0 = P.hp; dash0 = P.dashCharge;
+            Proj *q = saw_test_put(v3(-20, 1.6f, 37), v3(0, 0, 36), SAW_RETURN, myId);
+            melee();
+            stAfter = q->sawState; spd = vlen(q->vel); bnc = q->sawBounces;
+            for (int i = 0; i < 60 && q->alive && q->sawState == SAW_FLY; i++) proj_tick(TICK);
+            hpAfter = E[0].hp; stEnd = q->sawState;
+            fprintf(f, "scie renvoi : etat %d, vitesse %.1f, renvois %d, PV joueur %+.0f, dash %+.1f, PV drone %.1f, etat %d "
+                       "(attendu %d, 48.0, 1, +0, +0.0, ~24.4, %d)\n",
+                    stAfter, spd, bnc, P.hp - hp0, P.dashCharge - dash0, hpAfter, stEnd, SAW_FLY, SAW_RETURN);
+        }
+        /* 10. cone de l'aide : drone a 5 degres (aide), puis a 10 degres (tout droit dans le viseur) */
+        {
+            float res[2];
+            for (int k = 0; k < 2; k++) {
+                float ang = (k ? 10.0f : 5.0f) * PI / 180;
+                saw_test_reset(v3(-20, 0, 40), 0, 0);
+                E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20 + 18 * tanf(ang), 1.6f, 22);
+                Proj *q = saw_test_put(v3(-20, 1.6f, 37), v3(0, 0, 36), SAW_RETURN, myId);
+                melee();
+                V3 v = vnorm(q->vel), td = vsub(E[0].pos, q->pos);
+                if (!k) res[k] = fabsf(atan2f(v.x, -v.z) - atan2f(td.x, -td.z)) * 180 / PI;   /* ecart horizontal avec le drone */
+                else res[k] = acosf(clampf(vdot(v, view_dir()), -1, 1)) * 180 / PI;            /* ecart avec le viseur */
+            }
+            fprintf(f, "scie aide au renvoi : drone a 5 deg -> ecart %.2f deg avec le drone ; a 10 deg -> ecart %.2f deg avec le viseur "
+                       "(attendu < 0.3, 0.00)\n", res[0], res[1]);
+        }
+        /* 11. garde-fous : 3 renvois deja faits, scie plantee, scie rappelee */
+        {
+            saw_test_reset(v3(-20, 0, 40), 0, 0);
+            Proj *q = saw_test_put(v3(-20, 1.6f, 37), v3(0, 0, 36), SAW_RETURN, myId);
+            q->sawBounces = SAW_BOUNCE_CHAIN;
+            melee();
+            int st3 = q->sawState;
+            for (int i = 0; i < 60 && saw_mine(); i++) proj_tick(TICK);
+            int caught = !saw_mine() && P.ammo[WP_SAW] == 1;
+            saw_test_reset(v3(-20, 0, 40), 0, 0);
+            q = saw_test_put(v3(-20, 1.6f, 38), v3(0, 0, 0), SAW_PLANTED, myId);
+            melee();
+            int stP = q->sawState;
+            saw_test_reset(v3(-20, 0, 40), 0, 0);
+            q = saw_test_put(v3(-20, 1.6f, 37), v3(0, 0, 45), SAW_RECALL, myId);
+            melee();
+            fprintf(f, "scie garde-fous : apres 3 renvois etat %d puis rattrapee %d ; plantee %d ; rappelee -> etat %d "
+                       "(attendu %d 1, %d, %d)\n", st3, caught, stP, q->sawState, SAW_RETURN, SAW_PLANTED, SAW_FLY);
+        }
+        /* 12. piece frolee : relancee vers le haut, +2 s de vie, la scie ne devie pas */
+        {
+            saw_test_reset(v3(-20, 0, 40), 0, 0);
+            CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 3; CO[0].pos = v3(-19.5f, 1.55f, 35); CO[0].vel = v3(0, 0, 0);
+            fire_saw();
+            Proj *q = saw_mine();
+            V3 v0 = q->vel;
+            for (int i = 0; i < 30 && !(q->sawCoins & 1u); i++) proj_tick(TICK);
+            fprintf(f, "scie et piece : vy piece %.1f, vie %.1f, scie etat %d, vx %.2f (attendu 11.0, 5.0, %d, %.2f)\n",
+                    CO[0].vel.y, CO[0].life, q->sawState, q->vel.x, SAW_FLY, v0.x);
+        }
+        /* 13. perdue sous le plan de mort, rendue apres 3 s */
+        {
+            saw_test_reset(v3(-20, 0, 40), 0, 0);
+            Proj *q = saw_test_put(v3(-20, -25, 30), v3(0, 0, -10), SAW_FLY, myId);
+            proj_tick(TICK);
+            int stL = q->sawState;
+            int t2 = -1;
+            for (int i = 0; i < 400 && t2 < 0; i++) { proj_tick(TICK); if (!saw_mine()) t2 = i + 1; }
+            fprintf(f, "scie perdue : etat %d, rendue apres %.2f s, munition %d (attendu %d, 3.00, 1)\n", stL, t2 * TICK,
+                    P.ammo[WP_SAW], SAW_LOST);
+        }
+        /* clic avec la scie plantee : clic sec, message, bascule sur l'autre arme */
+        {
+            saw_test_reset(v3(-20, 0, 40), 0, 0);
+            saw_test_put(v3(-20, -SAW_EMBED, 22), v3(0, 0, 0), SAW_PLANTED, myId);
+            P.ammo[WP_RAIL] = 2; P.fireCd = 0;
+            botPress[A_FIRE] = 1;
+            game_tick(TICK);
+            fprintf(f, "scie plantee, clic : arme %s, message \"%s\" (attendu RAILGUN, SCIE PLANTEE (18 m))\n", ammoDef[P.weapon].name, popText);
+        }
+
+        /* LAN simule (hote) */
+        reset_game();
+        dmMode = 1;
+        memset(NP, 0, sizeof NP);
+        NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi");
+        NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Lanceur");
+        NP[1].disp = v3(-20, 0, 24); vf(NP[1].st.pos, NP[1].disp);
+        matchOver = 0;
+        {   /* 1 bis. combo lancer + renvoi, arbitre par l'hote */
+            net_hit_saw(1, saw_dmg(32) * PVP_SCALE, v3(0, 0, 0), W_SAW, 0);
+            net_hit_saw(1, saw_dmg(48) * SAW_RETURN_PARRY_DMG_MULT * PVP_SCALE, v3(0, 0, 0), W_SAW, 1);
+            float hpStatic = NP[1].hp; int aliveStatic = NP[1].alive;
+            NP[1].hp = 100;
+            net_hit_saw(1, saw_dmg(32) * PVP_SCALE, v3(0, 0, 0), W_SAW, 0);
+            net_hit_saw(1, saw_dmg(57.5f) * SAW_RETURN_PARRY_DMG_MULT * PVP_SCALE, v3(0, 0, 0), W_SAW, 1);
+            fprintf(f, "scie combo PvP : lancer + renvoi a l'arret -> PV %.1f vivant %d ; renvoi en course -> vivant %d (attendu 5.1 1, 0)\n",
+                    hpStatic, aliveStatic, NP[1].alive);
+            NP[1].alive = 1; NP[1].hp = 100;
+        }
+        {   /* 8. parry d'une scie adverse : elle repart vers son lanceur a 40 m/s ; celui qui a pare juge la touche */
+            P.pos = P.prevPos = v3(-20, 0, 41); P.yaw = 0; P.pitch = 0; hitstop = 0;
+            Proj *q = saw_test_put(v3(-20, 1.6f, 39), v3(0, 0, SAW_SPEED), SAW_FLY, 1);
+            melee();
+            V3 to = vnorm(vsub(np_center(1), q->pos));
+            int st8 = q->sawState, by = q->sawBy;
+            float sp8 = vlen(q->vel), al = vdot(vnorm(q->vel), to);
+            for (int i = 0; i < 120 && q->alive; i++) proj_tick(TICK);
+            fprintf(f, "scie paree par moi : etat %d, par %d, vitesse %.1f, alignement vers le lanceur %.3f, PV du lanceur %.1f "
+                       "(attendu %d, 0, 40.0, 1.000, ~49.5)\n", st8, by, sp8, al, NP[1].hp, SAW_PARRIED);
+            NP[1].hp = 100;
+        }
+        {   /* reception : scie plantee d'un autre, puis rattrapee */
+            NetEvent e = ev_new(EV_SAW);
+            e.from = 1; e.sub = SAWE_PLANT; e.netId = (2u << 24) | ((unsigned int)PR_SAW << 20) | 9;
+            vf(e.f, v3(-10, 1, 78.3f)); vf(e.f + 3, v3(1, 0, 0)); e.f[6] = 4;   /* face -z */
+            apply_event(&e);
+            Proj *q = find_proj(e.netId);
+            int okP = q && q->kind == PR_SAW && q->owner == 1 && q->sawState == SAW_PLANTED && q->sawN.z < -0.5f;
+            e.sub = SAWE_CATCH; e.eid++;
+            apply_event(&e);
+            fprintf(f, "scie reseau : copie plantee %d, retiree au rattrapage %d (attendu 1, 1)\n", okP, find_proj(e.netId) == NULL);
+        }
+        {   /* 15. netId distinct de la roquette, type PR_SAW dans les bits 20-23 */
+            P.loadout[0] = WP_SAW; P.loadout[1] = WP_ROCKET; P.ammo[WP_SAW] = 1; P.ammo[WP_ROCKET] = 4; P.sawCd = 0; P.sawIdx = 0;
+            P.pos = P.prevPos = v3(-20, 0, 41); P.yaw = PI; P.pitch = 0;
+            fire_rocket();
+            unsigned int rid = 0;
+            for (int i = 0; i < MAXPR; i++) if (PR[i].alive && PR[i].kind == PR_ROCKET) rid = PR[i].netId;
+            fire_saw();
+            unsigned int sid = saw_mine() ? saw_mine()->netId : 0;
+            /* 14. mort du lanceur (EV_KILL sur moi) : la scie disparait */
+            NetEvent e = ev_new(EV_KILL);
+            e.actor = 1; e.target = 0; e.sub = W_SAW;
+            apply_event(&e);
+            int sawsLeft = 0;
+            for (int i = 0; i < MAXPR; i++) sawsLeft += PR[i].alive && PR[i].kind == PR_SAW && PR[i].owner == myId;
+            fprintf(f, "scie netId : roquette %08X, scie %08X, type %u ; apres ma mort : scies %d, sawIdx %d (attendu differents, %d ; 0, 0)\n",
+                    rid, sid, (sid >> 20) & 0xF, sawsLeft, P.sawIdx, PR_SAW);
+        }
+        memset(NP, 0, sizeof NP);
+        dmMode = 0;
+        botMode = savedBot;
+    }
+
     /* reglages : sauvegarde puis rechargement de velocity.ini */
     {
         int savedBot = botMode;
@@ -6880,6 +7958,18 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             anvil_press();
             for (int i = 0; i < 6; i++) player_tick(TICK, 0, 0);
         }
+        if (strstr(shotPath, "scie")) {                   /* Scie : la mienne plantee, une adverse en vol (2 renvois) */
+            hook_release(0);
+            memset(PA, 0, sizeof PA); memset(PR, 0, sizeof PR); memset(BM, 0, sizeof BM); memset(E, 0, sizeof E);
+            P.loadout[0] = WP_SAW; P.weapon = WP_SAW; P.switchT = 0; P.meleeT = 0; P.recoil = 0; shotStreak = 0;
+            P.pos = P.prevPos = v3(-20, 0, 50); P.yaw = 0.15f; P.pitch = -0.12f; P.vel = v3(0, 0, -6);
+            P.sawIdx = 0;
+            Proj *a = saw_test_put(v3(-18.5f, -SAW_EMBED, 43), v3(0, 0, 0), SAW_PLANTED, myId);
+            a->sawAxis = vnorm(v3(1, 0, 1)); a->sawT = 5;
+            Proj *b = saw_test_put(v3(-21.2f, 1.3f, 45.5f), v3(0, 0, 30), SAW_FLY, 1);
+            b->sawAxis = vnorm(v3(0, 1, 0.5f)); b->sawBounces = 2; b->sawSpin = 0.3f;
+            if (strstr(shotPath, "main")) { a->alive = 0; P.sawIdx = 0; P.ammo[WP_SAW] = 1; }   /* variante : la scie en main */
+        }
         render(1, TICK);
         save_bmp(shotPath);
         return 0;
@@ -6970,6 +8060,15 @@ done:
                    "immobilisations %d ; arbitre : touches %d, ondes parees %d, combos onde + rail %d",
                    slamDives, slamWaveHits, slamWaves, slamVySum / (slamWaves ? slamWaves : 1),
                    slamDmgSum / (slamWaves ? slamWaves : 1), slamStuns, hitCount[W_SLAM], slamParried, slamRailCombos);
+        if (sawStat[SS_THROW] || sawStat[SS_BOUNCE])
+            netlog("scie (moi) : %d lancers, %d touches (rel moyenne %.1f m/s), %d plantages, %d rappels, %d ramassages a pied, "
+                   "%d pertes ; renvois tentes %d, reussis %d, qui touchent %d",
+                   sawStat[SS_THROW], sawStat[SS_HIT], sawRelSum / (sawStat[SS_HIT] ? sawStat[SS_HIT] : 1), sawStat[SS_PLANT],
+                   sawStat[SS_RECALL], sawStat[SS_FOOT], sawStat[SS_LOST], sawStat[SS_TRY], sawStat[SS_BOUNCE], sawStat[SS_BHIT]);
+        if (netMode == NET_HOST && (sawHostStat[SAWE_THROW] || hitCount[W_SAW]))
+            netlog("scie (arbitre) : lancers %d, touches %d (dont %d apres renvoi), plantages %d, rattrapages %d, rappels %d, renvois %d",
+                   sawHostStat[SAWE_THROW], hitCount[W_SAW], sawHostBounceHits, sawHostStat[SAWE_PLANT], sawHostStat[SAWE_CATCH],
+                   sawHostStat[SAWE_RECALL], sawHostStat[SAWE_BOUNCE]);
     }
     net_shutdown();
     if (botLog) fclose(botLog);
