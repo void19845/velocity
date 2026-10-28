@@ -248,6 +248,36 @@ enum { SAWE_THROW, SAWE_PLANT, SAWE_HIT, SAWE_CATCH, SAWE_RECALL, SAWE_BOUNCE };
 enum { SAW_HOW_RETURN, SAW_HOW_FOOT, SAW_HOW_RECALL, SAW_HOW_LOST, SAW_HOW_PARRIED };   /* EV_SAW.actor (rattrapage) */
 /* --- fin Scie --- */
 
+/* --- Lance de joute : estoc a l'appui, lance couchee si la touche reste tenue ; la joute part toute seule --- */
+#define LANCE_TAP          0.15f   /* relache avant : estoc seul ; tenu apres : lance couchee */
+#define LANCE_HOLD_MAX     2.0f    /* duree maximale de la lance couchee (depuis l'appui) */
+#define LANCE_REACH        3.5f    /* portee de la lance couchee (bord de la cible) */
+#define LANCE_CONE         0.92f   /* cos du demi-angle (~23 degres), autour de la vue */
+#define LANCE_VC_MIN       10.0f   /* vitesse de rapprochement minimale pour toucher */
+#define LANCE_VC_CAP       30.0f   /* plafond de v_c pour les degats (160 PvE) */
+#define LANCE_DMG          10.0f
+#define LANCE_DMG_PER_MS   5.0f    /* degats en plus par m/s de rapprochement */
+#define LANCE_GIVE         0.6f    /* part de ta vitesse transmise a la cible */
+#define LANCE_KEEP         0.5f    /* part de ta vitesse que tu gardes */
+#define LANCE_KNOCK_MAX    28.0f   /* norme maximale du recul transmis */
+#define LANCE_HIT_CD       1.0f    /* recharge apres une joute reussie */
+#define LANCE_MISS_CD      0.5f    /* recharge apres une lance couchee sans touche */
+#define LANCE_PARRIED_CD   1.5f    /* lance paree ou joute perdue */
+#define LANCE_THRUST_DMG   30.0f   /* estoc */
+#define LANCE_THRUST_PER_MS 2.0f
+#define LANCE_THRUST_RANGE 3.0f
+#define LANCE_THRUST_CONE  0.80f   /* estoc : cone plus etroit que l'epee */
+#define LANCE_THRUST_CD    0.5f
+#define LANCE_CLASH_DIFF   2.0f    /* ecart de vitesse pour gagner un choc de joute */
+#define LANCE_CLASH_COS    0.85f   /* hote : la lance adverse doit viser l'attaquant (tolerance) */
+#define LANCE_CLASH_GRACE  0.15f   /* hote : tolerance de latence sur ST_LANCE */
+#define LANCE_JOUST_LOCK   0.3f    /* hote : une joute resolue ignore la touche reciproque */
+#define LANCE_UNHORSE      11.0f   /* recul des deux joueurs desarconnes */
+#define LANCE_PREVIEW      30.0f   /* HUD : distance max de l'apercu de v_c */
+#define ST_LANCE           0x20    /* NetPState.pad : lance couchee */
+enum { LS_IDLE, LS_THRUST, LS_COUCH };
+/* --- fin Lance --- */
+
 /* Axe tir : chaque touche successive augmente degats et cadence, un tir rate remet a zero */
 #define STREAK_MAX        8
 #define STREAK_DMG        0.15f   /* +15% de degats par touche */
@@ -286,7 +316,7 @@ static const AmmoDef ammoDef[WP_COUNT] = {
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
 static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 0, 0 };   /* chaque arme codee passe sa case a 1 */
-static unsigned char mkReady[MK_COUNT] = { 1, 1, 0, 0, 0, 0 };
+static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 0, 0, 0 };
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
@@ -302,6 +332,7 @@ enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_ANVIL_DIVE, S_ANVIL_SLAM, S_ANVIL_CLANG,
        S_SG_FIRE, S_SG_PUMP,                              /* Eventail */
        S_SAW_THROW, S_SAW_PLANT, S_SAW_HIT, S_SAW_CATCH, S_SAW_BOUNCE,   /* Scie */
+       S_LANCE_COUCH, S_LANCE_THRUST, S_LANCE_HIT, S_LANCE_CLASH,        /* Lance */
        S_COUNT };
 typedef struct { short *data; int len; } Sound;
 typedef struct { int snd, active; float pos, step, vol; } Voice;
@@ -622,6 +653,60 @@ static void make_sounds(void) {
                (t < 0.01f ? noise() * 0.5f : 0);
     }
     sounds[S_SAW_BOUNCE] = mksound(b, n);
+
+    /* --- Lance --- */
+    /* lance couchee : glissando metallique 300 -> 900 Hz, deux sinus desaccordes de 1,5 % */
+    b = sbuf(0.4f, &n); ph = 0;
+    {
+        float ph2 = 0;
+        for (int i = 0; i < n; i++) {
+            t = (float)i / SR;
+            float fq = 300 + 600 * (t / 0.4f);
+            ph += fq / SR; ph2 += fq * 1.015f / SR;
+            float env = t < 0.05f ? t / 0.05f : expf(-(t - 0.05f) * 6);
+            b[i] = (sinf(ph * 2 * PI) + sinf(ph2 * 2 * PI)) * 0.22f * env;
+        }
+    }
+    sounds[S_LANCE_COUCH] = mksound(b, n);
+    /* estoc : bruit passe-bande a montee rapide ("fsst") */
+    b = sbuf(0.15f, &n); lp = 0;
+    {
+        float bp = 0;
+        for (int i = 0; i < n; i++) {
+            t = (float)i / SR;
+            a = 1 - expf(-2 * PI * 4000 / SR);
+            lp += a * (noise() - lp);
+            bp += 0.15f * (lp - bp);
+            float env = t < 0.02f ? t / 0.02f : expf(-(t - 0.02f) * 22);
+            b[i] = (lp - bp) * 1.3f * env;
+        }
+    }
+    sounds[S_LANCE_THRUST] = mksound(b, n);
+    /* joute : coup grave 140 -> 60 Hz + cloche 620 / 930 / 1480 Hz + craquement de bois */
+    b = sbuf(0.5f, &n); lp = 0; ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        lp += 0.12f * (noise() - lp);
+        ph += (140 - 160 * t) / SR;
+        b[i] = sinf(ph * 2 * PI) * 0.8f * expf(-t * 10) + lp * 1.6f * expf(-t * 35) +
+               (sinf(t * 2 * PI * 620) * 0.25f + sinf(t * 2 * PI * 930) * 0.18f + sinf(t * 2 * PI * 1480) * 0.12f) * expf(-t * 7) +
+               (t < 0.03f ? noise() * 0.6f * (1 - t / 0.03f) : 0);
+    }
+    sounds[S_LANCE_HIT] = mksound(b, n);
+    /* choc de joute : deux cloches desaccordees decalees de 30 ms + bruit large */
+    b = sbuf(0.8f, &n);
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        float s = noise() * 0.7f * expf(-t * 25);
+        for (int c = 0; c < 2; c++) {
+            float dc = t - c * 0.03f, fb = c ? 1.03f : 1.0f;
+            if (dc >= 0) s += (sinf(dc * 2 * PI * 880 * fb) * 0.22f + sinf(dc * 2 * PI * 1390 * fb) * 0.15f +
+                               sinf(dc * 2 * PI * 2210 * fb) * 0.1f) * expf(-dc * 4.5f);
+        }
+        b[i] = s;
+    }
+    sounds[S_LANCE_CLASH] = mksound(b, n);
+    /* --- fin Lance --- */
 }
 
 static void audio_init(void) {
@@ -860,6 +945,10 @@ typedef struct {
     int sgLastPellets; float sgLastT;                     /* Eventail : HUD "7/10" apres un tir qui touche */
     int sawIdx;                                           /* Scie : 0 = en main (ou pas de scie), sinon index PR + 1 */
     float sawCd;                                          /* Scie : delai avant le prochain lancer */
+    /* --- Lance : etat LS_*, temps depuis l'appui, v_c de la meilleure cible du cone (HUD),
+     * temps depuis la derniere joute et joueur touche + 1 (anti-doublon EV_LANCE) --- */
+    int lanceState, lanceHitWho;
+    float lanceT, lanceVc, lanceHitT;
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -942,6 +1031,8 @@ typedef struct {
     float flashT;                                         /* flash blanc quand il est touche */                 /* lastParryT : derniere fois vu en fenetre de parry */
     unsigned char anvilPrevPad;                           /* Enclume : pad du tick precedent (debut d'un pique adverse) */
     float sgFireT;                                        /* Eventail : recul visuel du fusil d'un joueur distant */
+    double lastLanceT;                                    /* Lance : derniere fois vu lance couchee (hote) */
+    unsigned char lanceSeen;                              /* Lance : ST_LANCE au tick precedent (front montant -> son) */
     struct sockaddr_in addr;      /* hote seulement */
 } NetPlayer;
 
@@ -978,6 +1069,7 @@ static void net_fx_melee(V3 pos, V3 dir, float sp);
 static void net_fx_slam(V3 pos, float radius, float vy, int hits);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
 static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed);
+static void net_hit_lance(int target, float dmg, V3 knock, float spd, float vc, int couched);   /* Lance : net_hit + f[4..6] */
 /* Scie : definies apres les roquettes */
 static void net_fx_saw(int sub, Proj *p, int target, int actor);
 static int saw_hook_test(float *t);                       /* grappin : le crochet touche ma scie plantee ? */
@@ -1752,6 +1844,8 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     P.kinT = 0; P.kinDashT = 1; P.kinPreDash = 0;          /* Elan : ni fenetre de dash-tir ni malus */
     P.sgPumpT = P.sgPumpMax = 0; P.sgLastT = 0;           /* Eventail : pompe au repos */
     P.sawIdx = 0; P.sawCd = 0;                            /* Scie : neuve, en main */
+    P.lanceState = LS_IDLE; P.lanceT = P.lanceVc = 0;     /* Lance : levee, prete */
+    P.lanceHitT = 10; P.lanceHitWho = 0; P.meleeCd = 0;
     melee_start_swing();
 }
 static void weapon_select(int w) { if (w != P.weapon) { P.weapon = w; P.switchT = SWITCH_TIME; } }
@@ -2037,6 +2131,183 @@ static void anvil_remote_tick(void) {
         NP[i].anvilPrevPad = pad;
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* --- Lance --- de joute : estoc a l'appui (fenetre de parry normale) ; */
+/* touche tenue 0,15 s : lance couchee (2 s max, sans parry). A chaque   */
+/* tick, la premiere cible du cone qui se rapproche a 10 m/s ou plus est */
+/* touchee toute seule : 10 + 5 x v_c. Elle recoit 60 % de ta vitesse,   */
+/* tu en gardes la moitie. Le grappin sert de monture : la joute part    */
+/* avant l'impact du crochet et le consomme.                             */
+/* ------------------------------------------------------------------ */
+static int lanceThrusts, lanceThrustHits, lanceCouches, lanceJousts, lanceJoustHook, lanceWhiffs;   /* journal du bot */
+static float lanceVcSum;
+
+static float lance_dmg(float vc) { return LANCE_DMG + LANCE_DMG_PER_MS * fminf(vc, LANCE_VC_CAP); }
+static float lance_thrust_dmg(float rel) { return LANCE_THRUST_DMG + LANCE_THRUST_PER_MS * rel; }
+
+/* effets visuels et sonores d'une joute reussie */
+static void lance_juice(V3 c, V3 dir, float vc) {
+    if (vc >= 15) impact_frame(c, 0.08f);
+    hitstop = fmaxf(hitstop, fminf(0.06f + 0.002f * vc, 0.14f));
+    shake += 0.3f; P.fovKick += 10; hitMarker = 0.18f;
+    for (int k = 0; k < 40; k++)
+        add_part(c, vadd(vmul(dir, frange(4, 14)), vmul(rand_dir(), 4)), (k & 1) ? v3(1, 0.7f, 0.3f) : v3(1, 0.95f, 0.8f),
+                 0.4f, 0.1f, 4);
+    shards(c, v3(0.75f, 0.6f, 0.4f), 10, 12);
+    play(S_LANCE_HIT, 0.95f, frange(0.95f, 1.05f));
+}
+
+/* la lance se releve apres une joute : tu gardes la moitie de ta vitesse, recharge, +1 dash, points de joute */
+static void lance_win(void) {
+    P.vel = vmul(P.vel, LANCE_KEEP);
+    P.lanceState = LS_IDLE; P.meleeCd = LANCE_HIT_CD; P.lanceVc = 0;
+    P.dashCharge = fminf(2, P.dashCharge + 1);
+    melee_hit_points(PTS_LANCE_JOUST);
+}
+
+/* joute annulee par l'hote (choc perdu, double desarconnement) : la touche ne compte plus, on rend ses points */
+static void lance_refund(void) {
+    if (nowT - P.undoT >= REFUND_UNDO_T) return;
+    gauge_remove(P.loadout[0], P.undoPts[0]); gauge_remove(P.loadout[1], P.undoPts[1]);
+    P.undoPts[0] = P.undoPts[1] = 0;
+}
+
+/* appui : l'estoc part tout de suite (une seule cible, la plus proche du cone). Si la touche reste
+ * tenue 0,15 s, lance_tick couche la lance : sa fenetre de parry (0,12 s) est deja fermee. */
+static void lance_press(void) {
+    V3 eye = eye_pos(), f = view_dir();
+    float sp = vlen(P.vel), bd = 1e9f;
+    int best = -1, bestP = 0, hit = 0, parried;
+
+    melee_start_swing();
+    parried = try_parry();
+    for (int k = 0; k < MAXE + MAXP; k++) {
+        int pl = k >= MAXE, i = pl ? k - MAXE : k;
+        V3 c; float rad;
+        if (!pl) { if (!E[i].alive) continue; c = E[i].pos; rad = enemy_radius(E[i].type); }
+        else { if (!np_target(i)) continue; c = np_center(i); rad = 0.5f; }
+        V3 d = vsub(c, eye);
+        float dist = fmaxf(vlen(d), 0.01f), reach = dist - rad;
+        if (reach > LANCE_THRUST_RANGE || reach >= bd) continue;
+        if (reach > 0.8f && vdot(vmul(d, 1.0f / dist), f) < LANCE_THRUST_CONE) continue;
+        bd = reach; best = i; bestP = pl;
+    }
+    P.lanceState = LS_THRUST; P.lanceT = 0; P.lanceVc = 0;
+    P.meleeT = 0.2f; P.parryWin = PARRY_WINDOW;
+    lanceThrusts++;
+    if (best >= 0 && !bestP) {                            /* drone ou kamikaze */
+        Enemy *e = &E[best];
+        float rel = rel_speed(e->vel);
+        if (e->type == EN_RUSHER) {                       /* kamikaze pare : explose dans sa face */
+            V3 at = e->pos;
+            damage_enemy(best, 9999, vmul(f, 10));
+            parry_feedback(at);
+            melee_parry_points(PTS_PARRY);
+            parried++;
+        } else {
+            damage_enemy(best, lance_thrust_dmg(rel), vmul(f, 8 + rel * 0.5f));
+            if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
+        }
+        hit = 1;
+    } else if (best >= 0) hit = 1;
+    for (int k = 0; k < 14; k++)                          /* trait de l'estoc */
+        add_part(vadd(eye, vmul(f, 0.8f + k * 0.18f)), vmul(f, 4), v3(0.9f, 0.9f, 1), 0.12f, 0.06f, 0);
+    if (dmMode) net_fx_melee(eye, f, sp);                 /* EV_MELEE : le recepteur lit meleeKind dans pad */
+    P.swingLanded = hit || parried;
+    play(S_LANCE_THRUST, 0.6f, 1.0f);
+    if (hit) {                                            /* effets locaux d'abord : chez l'hote, un parry revient tout de suite */
+        lanceThrustHits++;
+        P.dashCharge = fminf(2, P.dashCharge + 1);
+        melee_hit_points(meleePts[P.meleeKind]);
+        hitMarker = 0.18f; shake += 0.15f;
+        if (!parried) hitstop = fmaxf(hitstop, 0.04f);
+        play(S_PUNCH, 0.9f, 0.8f);
+    }
+    if (best >= 0 && bestP) {                             /* LAN : un autre joueur */
+        float rel = rel_speed(np_vel(best));
+        V3 c = np_center(best);
+        burst(c, v3(1, 0.85f, 0.6f), 16, 8, 0.3f, 0.1f);
+        net_hit_lance(best, lance_thrust_dmg(rel) * PVP_SCALE, vadd(vmul(f, 8 + rel * 0.5f), v3(0, 3, 0)), sp, rel, 0);
+    }
+}
+
+/* joute : la cible i (joueur si isP) est touchee par la lance couchee a la vitesse de rapprochement vc */
+static void lance_strike(int i, int isP, float vc) {
+    V3 eye = eye_pos(), c = isP ? np_center(i) : E[i].pos, tv = isP ? np_vel(i) : E[i].vel;
+    V3 dir = vnorm(vsub(c, eye));
+    float dmg = lance_dmg(vc), spd = vlen(P.vel);
+    /* la cible recoit 60 % de ta vitesse, et perd sa composante d'approche : elle est desarconnee */
+    V3 knock = vsub(vmul(P.vel, LANCE_GIVE), vmul(dir, fminf(0, vdot(tv, dir))));
+    knock.y += 3;
+    if (vlen(knock) > LANCE_KNOCK_MAX) knock = vmul(vnorm(knock), LANCE_KNOCK_MAX);
+    if ((isP && P.hookPlayer == i + 1) || (!isP && P.hookEnemy == i + 1)) {   /* la joute consomme le grappin */
+        P.hook = HOOK_NONE; P.hookEnemy = P.hookPlayer = 0; P.hookCd = 0; P.airJumps = 1;
+        lanceJoustHook++;
+    }
+    lanceJousts++; lanceVcSum += vc;
+    lance_win();                                          /* effets locaux avant l'envoi (voir lance_press) */
+    lance_juice(c, dir, vc);
+    if (!isP) {
+        damage_enemy(i, dmg, knock);
+        if (!E[i].alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
+    } else {
+        if (botMode) netlog("joute : v_c %.1f -> %s", vc, NP[i].name);
+        P.lanceHitT = 0; P.lanceHitWho = i + 1;           /* avant l'envoi : chez l'hote, EV_LANCE revient tout de suite */
+        net_hit_lance(i, dmg * PVP_SCALE, knock, spd, vc, 1);
+    }
+}
+
+/* machine a etats de la lance, apres player_tick (donc apres le grappin). held = touche de melee tenue */
+static void lance_tick(float dt, int held) {
+    if (P.dead || P.lanceState == LS_IDLE) { P.lanceState = LS_IDLE; P.lanceVc = 0; return; }
+    P.lanceT += dt;
+    if (P.lanceState == LS_THRUST) {
+        if (P.swingLanded || !held) {                     /* estoc seul (ou estoc qui a touche) */
+            P.lanceState = LS_IDLE;
+            P.meleeCd = fmaxf(P.meleeCd, P.swingLanded ? LANCE_THRUST_CD : MELEE_WHIFF_CD - P.lanceT);
+            return;
+        }
+        if (P.lanceT < LANCE_TAP) return;
+        P.lanceState = LS_COUCH;                          /* l'estoc dans le vide devient la lance couchee, sans penalite */
+        lanceCouches++;
+        play(S_LANCE_COUCH, 0.7f, 1.0f);
+    }
+    if (!held || P.lanceT >= LANCE_HOLD_MAX - 1e-4f) {    /* relevee sans toucher (marge : somme de 240 ticks en float) */
+        P.lanceState = LS_IDLE; P.meleeCd = fmaxf(P.meleeCd, LANCE_MISS_CD); P.lanceVc = 0;
+        lanceWhiffs++;
+        return;
+    }
+    V3 eye = eye_pos(), f = view_dir();
+    int bi = -1, isP = 0;
+    float br = 1e9f, bvc = 0;
+    P.lanceVc = 0;
+    for (int k = 0; k < MAXE + MAXP; k++) {               /* une seule cible par joute : la premiere sur la lance */
+        int pl = k >= MAXE, i = pl ? k - MAXE : k;
+        V3 c, tv; float rad;
+        if (!pl) { if (!E[i].alive) continue; c = E[i].pos; tv = E[i].vel; rad = enemy_radius(E[i].type); }
+        else { if (!np_target(i)) continue; c = np_center(i); tv = np_vel(i); rad = 0.5f; }
+        V3 d = vsub(c, eye);
+        float dist = fmaxf(vlen(d), 0.01f), reach = dist - rad;
+        V3 dir = vmul(d, 1.0f / dist);
+        if (vdot(dir, f) < LANCE_CONE) continue;          /* le cone suit la vue, pas la vitesse */
+        float vc = vdot(vsub(P.vel, tv), dir);
+        if (reach < LANCE_PREVIEW) P.lanceVc = fmaxf(P.lanceVc, vc);   /* apercu (HUD, pointe) */
+        if (reach > LANCE_REACH || vc < LANCE_VC_MIN || reach >= br) continue;
+        br = reach; bi = i; isP = pl; bvc = vc;
+    }
+    if (bi >= 0) lance_strike(bi, isP, bvc);
+}
+
+/* lances couchees des autres joueurs : le son de la lance qui s'abaisse (front montant de ST_LANCE) */
+static void lance_remote_tick(void) {
+    for (int i = 0; i < MAXP; i++) {
+        int on = np_target(i) && (NP[i].st.pad & ST_LANCE) != 0;
+        if (on && !NP[i].lanceSeen) play(S_LANCE_COUCH, 0.7f * atten(NP[i].disp), 1.0f);
+        NP[i].lanceSeen = (unsigned char)on;
+    }
+}
+/* --- fin Lance --- */
 
 static void melee(void) {
     if (P.meleeKind == MK_ANVIL) { anvil_press(); return; }
@@ -2555,7 +2826,7 @@ static unsigned int sawCounter;
 enum { SS_THROW, SS_HIT, SS_PLANT, SS_RECALL, SS_FOOT, SS_LOST, SS_BOUNCE, SS_BHIT, SS_TRY, SS_COUNT };
 static int sawStat[SS_COUNT];                             /* journal du lanceur (bots) */
 static float sawRelSum;                                   /* somme des vitesses relatives des touches */
-static void net_hit_saw(int target, float dmg, V3 knock, int w, int bounces);   /* reseau : definies plus loin */
+static void net_hit_saw(int target, float dmg, V3 knock, int w, int bounces);   /* reseau: definies plus loin */
 static void net_fx_coin_kick(const Coin *c);
 
 static float saw_dmg(float rel) { return SAW_DMG + fmaxf(0, rel - SAW_REL_OFFSET) * SAW_DMG_PER_MS; }
@@ -3064,13 +3335,14 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   7
+#define NET_VER   8
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
        EV_PICKUP_TAKEN, EV_COIN, EV_MELEE_PARRY,
        EV_SHOT = 15,                                      /* Eventail : un tir = un evenement (graine des plombs) */
        EV_SAW = 16,                                       /* Scie */
+       EV_LANCE = 20,                                     /* Lance : choc de joute, emis par l'hote seulement */
        EV_SLAM = 21 };                                    /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
 
 #pragma pack(push, 1)
@@ -3202,9 +3474,11 @@ static void pack_state(NetPState *s) {
                                (P.hook != HOOK_NONE ? NF_HOOK : 0) | (P.dead ? NF_DEAD : 0) |
                                (P.parryWin > 0 ? NF_PARRY : 0));
     s->weapon = (unsigned char)P.weapon;
-    s->melee = (unsigned char)(clampf(P.meleeT / (P.meleeKind == MK_ANVIL ? ANVIL_SWING_T : 0.25f), 0, 1) * 255);
+    float swingT = P.meleeKind == MK_ANVIL ? ANVIL_SWING_T : P.meleeKind == MK_LANCE ? 0.2f : 0.25f;   /* Lance : estoc */
+    s->melee = (unsigned char)(clampf(P.meleeT / swingT, 0, 1) * 255);
     s->pad = (unsigned char)(P.meleeKind & 0x0F);      /* bits 4-7 : etats d'arme (ST_*), ajoutes par chaque arme */
     if (P.anvilState == ANVIL_DIVE) s->pad |= ST_SLAM;
+    if (P.lanceState == LS_COUCH) s->pad |= ST_LANCE;   /* Lance couchee : la pointe brille chez les autres */
 }
 
 static void find_local_ip(void) {
@@ -3343,6 +3617,16 @@ static void net_fx_coin_kick(const Coin *c) {
     net_emit(&e);
 }
 /* --- fin Scie : evenements --- */
+/* --- Lance : evenements --- */
+/* comme net_hit, avec f[4] = |P.vel| avant le transfert, f[5] = v_c (ou v_rel de l'estoc), f[6] = 1 lance couchee, 0 estoc */
+static void net_hit_lance(int target, float dmg, V3 knock, float spd, float vc, int couched) {
+    if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
+    NetEvent e = ev_new(EV_HIT);
+    e.target = (unsigned char)target; e.sub = W_LANCE;
+    e.f[0] = dmg; vf(&e.f[1], knock); e.f[4] = spd; e.f[5] = vc; e.f[6] = couched ? 1.0f : 0.0f;
+    net_emit(&e);
+}
+/* --- fin Lance : evenements --- */
 
 static void kfeed_add(int killer, int victim, int kind, int info) {
     memmove(&kfeed[1], &kfeed[0], sizeof kfeed - sizeof kfeed[0]);
@@ -3521,6 +3805,11 @@ static void apply_event(const NetEvent *ev) {
             play(S_DASH, 0.45f * atten(a), 0.8f);
             break;
         }
+        if (ev->from < MAXP && (NP[ev->from].st.pad & 15) == MK_LANCE) {   /* estoc de la Lance : trait droit */
+            for (int k = 0; k < 14; k++) add_part(vadd(a, vmul(b, 0.8f + k * 0.18f)), vmul(b, 4), v3(0.9f, 0.9f, 1), 0.12f, 0.06f, 0);
+            play(S_LANCE_THRUST, 0.6f * atten(a), 1.0f);
+            break;
+        }
         for (int k = 0; k < 10; k++) add_part(vadd(a, vmul(b, 1.5f + k * 0.15f)), vmul(b, 3), v3(0.9f, 0.9f, 1), 0.15f, 0.08f, 0);
         play(S_DASH, 0.4f * atten(a), 1.8f);
         break;
@@ -3567,6 +3856,7 @@ static void apply_event(const NetEvent *ev) {
         saw_remove_owner(v);                              /* Scie : disparait avec son lanceur */
         if (v == myId) {
             P.dead = 1; P.deathT = 0; P.hook = HOOK_NONE; P.hookEnemy = P.hookPlayer = 0;
+            P.lanceState = LS_IDLE;                       /* Lance : relevee */
             killerOfMe = k;
         }
         if (k == myId && v != myId) {
@@ -3662,18 +3952,65 @@ static void apply_event(const NetEvent *ev) {
                 P.vel = vadd(v3(P.vel.x, 0, P.vel.z), vadd(vmul(vnorm(vsub(pa, pd)), 6), v3(0, SLAM_PARRIED_UP, 0)));
                 P.meleeCd = fmaxf(P.meleeCd, MELEE_PARRIED_CD);
             } else {
+                int lance = (int)ev->f[0] == W_LANCE;     /* Lance paree : indisponible 1,5 s, relevee */
                 P.vel = vadd(P.vel, vadd(vmul(vnorm(vsub(pa, pd)), clash ? 8.0f : 11.0f), v3(0, 3, 0)));
-                P.meleeCd = fmaxf(P.meleeCd, clash ? MELEE_CD : MELEE_PARRIED_CD);
+                P.meleeCd = fmaxf(P.meleeCd, clash ? MELEE_CD : lance ? LANCE_PARRIED_CD : MELEE_PARRIED_CD);
+                if (lance) { P.lanceState = LS_IDLE; P.lanceVc = 0; }
             }
             P.grounded = 0;
             hitstop = fmaxf(hitstop, 0.1f);
             shake += 0.3f;
-            snprintf(popText, sizeof popText, clash ? "CHOC D'EPEES !" : wave ? "ONDE PAREE PAR %s" : "PARE PAR %s", pname(def));
+            snprintf(popText, sizeof popText, clash ? "CHOC D'EPEES !" : wave ? "ONDE PAREE PAR %s" :
+                     (int)ev->f[0] == W_LANCE ? "LANCE PAREE PAR %s" : "PARE PAR %s", pname(def));
             popT = 1.2f;
         }
-        netlog("%s : %s -> %s", clash ? "choc d'epees" : (int)ev->f[0] == W_SLAM ? "enclume paree" : "epee paree", pname(att), pname(def));
+        netlog("%s : %s -> %s", clash ? "choc d'epees" : (int)ev->f[0] == W_SLAM ? "enclume paree" :
+               (int)ev->f[0] == W_LANCE ? "lance paree" : "epee paree", pname(att), pname(def));
         break;
     }
+    case EV_LANCE: {                                      /* --- Lance : choc de joute arbitre par l'hote --- */
+        int w = ev->actor, l = ev->target;                /* sub 1 : w gagne contre l ; sub 2 : les deux desarconnes */
+        V3 at = fv(ev->f + 4);
+        if (w >= MAXP || l >= MAXP) break;
+        for (int k = 0; k < 40; k++) add_part(at, vmul(rand_dir(), 12), v3(1, 1, 0.95f), 0.35f, 0.1f, 0);
+        play(S_LANCE_CLASH, atten(at), 1.0f);
+        if (ev->sub == 2) {
+            if (w == myId || l == myId) {                 /* double desarconnement : chacun repart en arriere */
+                V3 o = np_center(w == myId ? l : w);
+                P.vel = vadd(vmul(vnorm(vsub(pcenter(), o)), LANCE_UNHORSE), v3(0, 3, 0));
+                P.grounded = 0; P.meleeCd = fmaxf(P.meleeCd, LANCE_HIT_CD); P.lanceState = LS_IDLE; P.lanceVc = 0;
+                lance_refund();
+                snprintf(popText, sizeof popText, "DESARCONNES !"); popT = 1.2f;
+                hitstop = fmaxf(hitstop, 0.1f); shake += 0.3f;
+                impact_frame(at, 0.1f);
+            }
+            NP[w].flashT = 0.12f;
+        } else {
+            if (l == myId) {                              /* joute perdue : recul du vainqueur, lance indisponible 1,5 s */
+                P.vel = vadd(P.vel, fv(ev->f + 1));
+                if (ev->f[2] > 2) P.grounded = 0;
+                P.meleeCd = fmaxf(P.meleeCd, LANCE_PARRIED_CD); P.lanceState = LS_IDLE; P.lanceVc = 0;
+                lance_refund();
+                if (ev->f[0] > 0) {                       /* degats portes par cet evenement (sinon par l'EV_HIT du vainqueur) */
+                    P.hurtFlash = 0.6f; shake += 0.25f;
+                    play(S_HURT, 0.8f, 1.0f);
+                    hurtFrom = np_center(w); hurtDirT = 1.2f;
+                }
+                snprintf(popText, sizeof popText, "DESARCONNE PAR %s", pname(w)); popT = 1.2f;
+                impact_frame(at, 0.1f);
+            }
+            if (w == myId && !(P.lanceHitT < LANCE_JOUST_LOCK && P.lanceHitWho == l + 1)) {
+                /* vainqueur designe par l'hote sans avoir detecte sa propre touche : effets de lance_strike */
+                lance_win();
+                lance_juice(at, vnorm(vsub(at, eye_pos())), vlen(P.vel) * 2);
+                P.lanceHitT = 0; P.lanceHitWho = l + 1;
+            }
+            if (w == myId) { snprintf(popText, sizeof popText, "JOUTE GAGNEE"); popT = 1.0f; }
+        }
+        NP[l].flashT = 0.12f;
+        netlog("choc de joute (%s) : %s / %s", ev->sub == 2 ? "double desarconnement" : "gagne", pname(w), pname(l));
+        break;
+    }                                                     /* --- fin Lance --- */
     case EV_PICKUP_TAKEN:
         if (ev->sub < npu) pickup_taken(ev->sub, ev->target);
         break;
@@ -3728,6 +4065,63 @@ static double parry_grace(int w, int victimMK) {
     return MELEE_PARRY_GRACE;
 }
 
+/* --- Lance : arbitrage du choc de joute ----------------------------- */
+static double joustT[MAXP][MAXP];                         /* derniere joute resolue entre a et b */
+static int lanceHostCouch, lanceHostThrust, lanceHostParried, lanceClashWins, lanceClashDouble;
+static float lanceHostVcSum;
+
+static V3 dir_of(float yaw, float pitch) {                /* meme formule que view_dir */
+    float cp = cosf(pitch);
+    return v3(sinf(yaw) * cp, sinf(pitch), -cosf(yaw) * cp);
+}
+
+/* touche de lance couchee de a sur b : si b avait aussi sa lance couchee vers a, c'est un choc de joute.
+ * Le plus rapide (vitesse propre, de plus de 2 m/s) gagne, sinon les deux sont desarconnes.
+ * Renvoie 1 si la touche de a est annulee (b gagne, double desarconnement, ou touche reciproque d'une joute jugee). */
+static int lance_host_joust(const NetEvent *ev) {
+    int a = ev->from, b = ev->target;
+    if (a >= MAXP || b >= MAXP) return 0;
+    if (nowT - joustT[a][b] < LANCE_JOUST_LOCK) { netlog("joute reciproque ignoree : %s -> %s", pname(a), pname(b)); return 1; }
+    V3 ca = np_center(a), cb = np_center(b);
+    V3 fb = dir_of(NP[b].st.yaw, NP[b].st.pitch), ba = vnorm(vsub(ca, cb));
+    if (nowT - NP[b].lastLanceT >= LANCE_CLASH_GRACE || vdot(fb, ba) < LANCE_CLASH_COS) return 0;
+    float sa = ev->f[4], sb = vlen(np_vel(b));
+    joustT[a][b] = joustT[b][a] = nowT;
+    NetEvent e = ev_new(EV_LANCE);
+    vf(e.f + 4, vlerp(ca, cb, 0.5f));                     /* point de choc */
+    if (sa > sb + LANCE_CLASH_DIFF) {                     /* a gagne : sa touche s'applique normalement (degats et recul) */
+        e.sub = 1; e.actor = (unsigned char)a; e.target = (unsigned char)b;
+        lanceClashWins++;
+        net_emit(&e);
+        apply_event(&e);
+        return 0;
+    }
+    if (sb > sa + LANCE_CLASH_DIFF) {                     /* b gagne : la touche de a est annulee, b le touche a sa place */
+        float dmg = fminf(lance_dmg(ev->f[5]) * PVP_SCALE, PVP_HIT_CAP), before = NP[a].hp;
+        V3 kn = vmul(np_vel(b), LANCE_GIVE);              /* v_c est symetrique : on reprend celui de a */
+        kn.y += 3;
+        if (vlen(kn) > LANCE_KNOCK_MAX) kn = vmul(vnorm(kn), LANCE_KNOCK_MAX);
+        e.sub = 1; e.actor = (unsigned char)b; e.target = (unsigned char)a; e.f[0] = dmg; vf(e.f + 1, kn);
+        lanceClashWins++;
+        if (before >= 99.9f) lifeFirstHitT[a] = nowT;
+        NP[a].hp -= dmg;
+        net_emit(&e);
+        apply_event(&e);
+        if (NP[a].hp <= 0 && NP[a].alive) {
+            ttkSum += nowT - lifeFirstHitT[a]; ttkN++;
+            if (before >= 99.9f) oneShots++;
+            host_kill(b, a, W_LANCE);
+        }
+        return 1;
+    }
+    e.sub = 2; e.actor = (unsigned char)a; e.target = (unsigned char)b;   /* ni l'un ni l'autre */
+    clashes++; lanceClashDouble++;
+    net_emit(&e);
+    apply_event(&e);
+    return 1;
+}
+/* --- fin Lance : arbitrage --- */
+
 static void host_take_pickup(int i, int who) {
     if (i >= npu || PU[i].t > 0 || who >= MAXP || !NP[who].alive) return;   /* premier arrive, premier servi */
     NetEvent e = ev_new(EV_PICKUP_TAKEN);
@@ -3746,11 +4140,17 @@ static int host_handle(const NetEvent *ev) {
         hitCount[ev->sub]++;
         if (ev->sub == W_SAW && ev->f[4] > 0) sawHostBounceHits++;   /* Scie : touche apres un renvoi */
         netlog("degats : %s -> %s, %.0f (arme %d), PV avant %.0f", pname(ev->from), pname(v), ev->f[0], ev->sub, NP[v < MAXP ? v : 0].hp);
+        int couched = ev->sub == W_LANCE && ev->f[6] > 0.5f;   /* Lance couchee : pas de fenetre de parry chez l'attaquant */
+        if (ev->sub == W_LANCE) {
+            if (couched) { lanceHostCouch++; lanceHostVcSum += ev->f[5]; } else lanceHostThrust++;
+            netlog("lance %s : v %.1f, vitesse %.1f", couched ? "couchee" : "estoc", ev->f[5], ev->f[4]);
+        }
         if (v >= MAXP || !NP[v].active || !NP[v].alive || matchOver) return 1;
         /* coup de melee ou impact de grappin pendant la fenetre de parry de la victime : c'est pare */
         if (is_parryable_w(ev->sub) && nowT - NP[v].lastParryT < parry_grace(ev->sub, NP[v].st.pad & 15)) {
-            int clash = is_melee_w(ev->sub) && ev->from < MAXP && nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
+            int clash = is_melee_w(ev->sub) && !couched && ev->from < MAXP && nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
             if (ev->sub == W_SLAM) slamParried++;
+            if (ev->sub == W_LANCE) lanceHostParried++;
             NetEvent e = ev_new(EV_MELEE_PARRY);
             e.actor = (unsigned char)v; e.target = ev->from; e.sub = (unsigned char)clash;
             e.f[0] = (float)ev->sub;                      /* arme paree : l'attaquant rend ses points de melee */
@@ -3760,6 +4160,7 @@ static int host_handle(const NetEvent *ev) {
             apply_event(&e);
             return 1;
         }
+        if (couched && lance_host_joust(ev)) return 1;   /* Lance : choc de joute */
         float before = NP[v].hp;
         float dmg = ev->sub == W_SELF ? ev->f[0] : fminf(ev->f[0], PVP_HIT_CAP);   /* plafond par touche */
         if (before >= 99.9f) lifeFirstHitT[v] = nowT;
@@ -3843,6 +4244,7 @@ static void host_send_roster(void) {
 static void host_tick(float dt) {
     pack_state(&NP[myId].st);
     if (P.parryWin > 0) NP[myId].lastParryT = nowT;
+    if (P.lanceState == LS_COUCH) NP[myId].lastLanceT = nowT;   /* Lance : choc de joute */
     NP[myId].disp = P.pos;
     P.hp = NP[myId].hp;
     if (!matchOver) {
@@ -3934,6 +4336,7 @@ static void host_recv(PkHead *h, int n, struct sockaddr_in *from) {
         if (id >= 0 && n >= (int)sizeof(PkState)) {
             NP[id].st = ((PkState *)h)->st; NP[id].recvT = nowT;
             if (NP[id].st.flags & NF_PARRY) NP[id].lastParryT = nowT;
+            if (NP[id].st.pad & ST_LANCE) NP[id].lastLanceT = nowT;   /* Lance couchee */
         }
         break;
     case PK_EVENT:
@@ -4650,7 +5053,9 @@ static int join_busy(void) { return joining || reqKind || nowT - reqSentT < 4; }
 static float botTime = 20, botT, botNextHook, botNextDash, botSpeedSum, botAliveT, botMaxSpeed;
 static char botShot[260];
 static int botSpec;                                       /* --spec : le bot client regarde la partie au lieu d'y jouer */
-static float bot_melee_reach(float rel) { return P.meleeKind == MK_ANVIL ? anvil_range(rel) : melee_range(rel); }
+static float bot_melee_reach(float rel) {
+    return P.meleeKind == MK_ANVIL ? anvil_range(rel) : P.meleeKind == MK_LANCE ? LANCE_THRUST_RANGE : melee_range(rel);
+}
 
 /* Le bot joue comme un joueur de movement shooter : bhop permanent, air-strafe en balancant
  * la vue autour de la cible (en tenant le strafe du cote ou il tourne), dash et grappin pour
@@ -4679,6 +5084,45 @@ static void bot_think(float dt) {
             return;
         }
     }
+
+    /* --- Lance --- adverse couchee qui me vise : une fois sur deux on pare sur l'approche (la pointe brille),
+     * sinon 3 fois sur 10 un pas de cote (dash lateral) pour sortir du cone */
+    {
+        static double lanceSeenT[MAXP];
+        static int lancePlan[MAXP], lanceSide[MAXP];      /* 1 = parer, 2 = pas de cote, 3 = rien, 4 = pas de cote en cours */
+        for (int i = 0; i < MAXP; i++) {
+            if (!np_target(i) || !(NP[i].st.pad & ST_LANCE)) continue;
+            V3 d = vsub(pcenter(), np_center(i));
+            float l = fmaxf(vlen(d), 0.01f), reach = l - 0.5f;
+            V3 dir = vmul(d, 1.0f / l);
+            if (l > 14 || vdot(dir_of(NP[i].st.yaw, NP[i].st.pitch), dir) < LANCE_CLASH_COS) continue;
+            if (nowT - lanceSeenT[i] > 1.5) {
+                float r = frand();
+                lancePlan[i] = r < 0.5f ? 1 : r < 0.8f ? 3 : 2;
+                lanceSide[i] = frand() < 0.5f ? A_LEFT : A_RIGHT;
+            }
+            lanceSeenT[i] = nowT;
+            float vc = vdot(vsub(np_vel(i), P.vel), dir);
+            if (P.meleeKind == MK_LANCE && P.lanceState == LS_COUCH) continue;   /* deux lances couchees : choc de joute */
+            if (lancePlan[i] == 1 && vc > 8 && reach - LANCE_REACH < vc * 0.12f && P.meleeCd <= 0 && P.lanceState == LS_IDLE &&
+                (P.meleeKind != MK_ANVIL || P.grounded || anvil_ground_dist(P.pos) < SLAM_MIN_H)) {
+                V3 back = vmul(dir, -1);
+                P.yaw = atan2f(back.x, -back.z); P.pitch = asinf(clampf(back.y, -1, 1));
+                botPress[A_MELEE] = 1; lancePlan[i] = 0;
+                netlog("parry de la lance tente contre %s (v_c %.1f, %.1f m)", pname(i), vc, reach);
+                return;
+            }
+            if ((lancePlan[i] == 2 || lancePlan[i] == 4) && reach < 8 && vc > 4) {
+                V3 back = vmul(dir, -1);
+                P.yaw = atan2f(back.x, -back.z); P.pitch = 0;
+                botHeld[lanceSide[i]] = 1; botHeld[A_JUMP] = 1;
+                if (P.dashCharge >= 1 && botT > botNextDash) { botPress[A_DASH] = 1; botNextDash = botT + 1.2f; }
+                if (lancePlan[i] == 2) { lancePlan[i] = 4; netlog("pas de cote devant la lance de %s (%.1f m)", pname(i), reach); }
+                return;
+            }
+        }
+    }
+    /* --- fin Lance --- */
 
     /* Enclume adverse : un pique tombe pres de nous. Juste avant l'impact, une fois sur deux on pare l'onde ;
      * sinon on saute (un saut simple passe au-dessus de l'onde) ou, deja en l'air, on sort du rayon par un dash */
@@ -5036,7 +5480,31 @@ static void bot_think(float dt) {
         botHeld[A_FIRE] = 1; sgJumpDone = 1;
         netlog("shotgun jump vers la cellule %d", seek);
     }
-    if (best >= 0 && bd < bot_melee_reach(rel_speed(np_vel(best))) + 0.5f && P.meleeCd <= 0) { P.yaw = aimYaw; botPress[A_MELEE] = 1; }
+    if (P.meleeKind == MK_LANCE) {                        /* --- Lance --- : joute (le grappin sert de monture), estoc au contact */
+        if (best >= 0) {
+            V3 dl = vsub(np_center(best), eye_pos());
+            V3 dirB = vmul(dl, 1.0f / fmaxf(vlen(dl), 0.01f));
+            float vc = vdot(vsub(P.vel, np_vel(best)), dirB);
+            int mounted = P.hookPlayer == best + 1;
+            int holding = P.lanceState != LS_IDLE && see && bd < 25;
+            int start = P.lanceState == LS_IDLE && P.meleeCd <= 0 && see && bd < 20 && bd > LANCE_THRUST_RANGE + 1 &&
+                        (vc > 6 || mounted);
+            if (holding || start) {                       /* lance couchee : on vise la cible, on fonce */
+                float err = 0.03f * sinf(botT * 3.1f + botMode);
+                P.yaw = aimYaw + err; P.pitch = aimPitch;
+                botHeld[A_LEFT] = botHeld[A_RIGHT] = 0; botHeld[A_FWD] = 1;
+                botHeld[A_MELEE] = 1;
+                if (start) botPress[A_MELEE] = 1;
+                if (P.lanceState == LS_COUCH && bd < 12 && vc < 12 && P.dashCharge >= 1 && P.hook == HOOK_NONE) {
+                    botPress[A_DASH] = 1;                 /* dash droit sur la cible pour armer la lance */
+                    botNextDash = botT + 1.2f;
+                }
+            } else if (P.lanceState == LS_IDLE && bd < LANCE_THRUST_RANGE + 0.5f && vc < LANCE_VC_MIN && P.meleeCd <= 0) {
+                P.yaw = aimYaw; botPress[A_MELEE] = 1;   /* estoc au contact (tap) */
+            }
+        }
+    } else if (best >= 0 && bd < bot_melee_reach(rel_speed(np_vel(best))) + 0.5f && P.meleeCd <= 0) { P.yaw = aimYaw; botPress[A_MELEE] = 1; }
+    /* --- fin Lance --- */
     static float logT;
     if ((logT += dt) > 1) {
         logT = 0;
@@ -5089,6 +5557,7 @@ static void spec_tick(float dt) {
     proj_tick(dt);                                        /* roquettes et pieces des autres, sans degats pour nous (P.dead) */
     coin_tick(dt);
     anvil_remote_tick();                                  /* trainee des piques */
+    lance_remote_tick();                                  /* son des lances couchees */
     if (matchOver) matchEndT -= dt;
     fx_tick(dt);
 }
@@ -5166,17 +5635,23 @@ static void game_tick(float dt) {
     coin_tick(dt);
 
     P.meleeCd -= dt; P.meleeT -= dt;
-    if (!P.dead && meleePress && P.meleeCd <= 0) melee();
+    if (P.lanceHitT < 10) P.lanceHitT += dt;
+    if (P.meleeKind == MK_LANCE) {                        /* Lance : appui = estoc, maintien = lance couchee */
+        if (!P.dead && meleePress && P.meleeCd <= 0 && P.lanceState == LS_IDLE) lance_press();
+        lance_tick(dt, act[A_MELEE]);                     /* maintenu : act, pas actP */
+    } else if (!P.dead && meleePress && P.meleeCd <= 0) melee();
     if (P.parryWin > 0) {
         if (!P.dead) try_parry();
         P.parryWin -= dt;
-        if (P.parryWin <= 0 && !P.swingLanded) {          /* coup dans le vide : on paie le risque */
+        /* coup dans le vide : on paie le risque (la Lance, elle, decide a 0,15 s : estoc seul ou lance couchee) */
+        if (P.parryWin <= 0 && !P.swingLanded && P.lanceState != LS_THRUST) {
             int anvil = P.meleeKind == MK_ANVIL;
             P.meleeCd = fmaxf(P.meleeCd, anvil ? ANVIL_WHIFF_CD - ANVIL_PARRY_WINDOW : MELEE_WHIFF_CD - PARRY_WINDOW);
         }
     }
     if (P.anvilLandT < 10) P.anvilLandT += dt;            /* Enclume : sert a reconnaitre un parry de l'onde */
     anvil_remote_tick();
+    lance_remote_tick();                                  /* Lance : son des lances couchees adverses */
 
     P.fireCd -= dt; P.switchT -= dt;
     P.kinT -= dt;                                         /* Elan : decharge du viewmodel */
@@ -5522,6 +5997,60 @@ static int saw_out_of(int id) {                           /* le joueur id a-t-il
 }
 /* --- fin Scie : rendu --- */
 
+/* --- Lance : rendu --------------------------------------------------- */
+/* lance le long de -z : talon en z = 0.35, pointe (non eclairee, couleur tip) en z = -len.
+ * wave >= 0 : fanion qui ondule (temps) ; bar > 0 : barre de duree restante le long de la hampe */
+static void lance_model(float len, V3 tip, float wave, float bar) {
+    glColor3f(0.45f, 0.32f, 0.2f);                        /* hampe en bois */
+    box_faces(v3(-0.025f, -0.025f, -len + 0.25f), v3(0.025f, 0.025f, 0.35f));
+    glColor3f(0.55f, 0.57f, 0.62f);                       /* rondelle (vamplate) */
+    box_faces(v3(-0.08f, -0.08f, -0.07f), v3(0.08f, 0.08f, 0.0f));
+    glColor3f(0.3f, 0.3f, 0.34f);                         /* collet de la pointe */
+    box_faces(v3(-0.04f, -0.04f, -len + 0.3f), v3(0.04f, 0.04f, -len + 0.22f));
+    glDisable(GL_LIGHTING);
+    glColor3f(tip.x, tip.y, tip.z);
+    glBegin(GL_TRIANGLES);                                /* pointe : pyramide */
+    {
+        float z0 = -len + 0.25f, s = 0.045f;
+        V3 q[4] = { v3(-s, -s, z0), v3(s, -s, z0), v3(s, s, z0), v3(-s, s, z0) };
+        for (int k = 0; k < 4; k++) {
+            V3 a = q[k], b = q[(k + 1) % 4];
+            glVertex3f(a.x, a.y, a.z); glVertex3f(b.x, b.y, b.z); glVertex3f(0, 0, -len);
+        }
+    }
+    glEnd();
+    if (wave >= 0) {                                      /* fanion rouge, l'extremite libre ondule */
+        float z0 = -len + 0.36f, z1 = -len + 0.75f, w = sinf(wave * 20) * 0.04f;
+        glColor3f(0.85f, 0.15f, 0.15f);
+        glBegin(GL_TRIANGLES);
+        glVertex3f(0, 0.03f, z0); glVertex3f(w, 0.2f, z1); glVertex3f(0, 0.03f, z1);
+        glVertex3f(0, 0.03f, z0); glVertex3f(0, 0.03f, z1); glVertex3f(w, 0.2f, z1);
+        glEnd();
+    }
+    if (bar > 0) {                                        /* barre des 2 s de lance couchee */
+        glColor3f(1, 0.6f, 0.2f);
+        box_faces(v3(-0.012f, 0.026f, -0.08f - (len - 0.6f) * bar), v3(0.012f, 0.034f, -0.08f));
+    }
+    glEnable(GL_LIGHTING);
+}
+static V3 lance_tip_col(float vc) {                       /* bleu, orange quand la lance est armee, blanc au plafond PvP */
+    return vc >= 15 ? v3(1, 1, 1) : vc >= LANCE_VC_MIN ? v3(1, 0.55f, 0.15f) : v3(0.3f, 0.6f, 1);
+}
+/* viewmodel : levee a gauche au repos, translation avant pour l'estoc, abaissee sur l'axe de visee en 0,1 s */
+static void draw_lance_vm(void) {
+    float cf = P.lanceState == LS_COUCH ? clampf((P.lanceT - LANCE_TAP) / 0.1f, 0, 1) : 0;
+    float k = P.meleeT > 0 ? clampf(1 - P.meleeT / 0.2f, 0, 1) : 0;
+    float thrust = (P.lanceState != LS_COUCH && P.meleeT > 0) ? -0.5f * sinf(PI * k) : 0;
+    V3 tip = P.lanceState == LS_COUCH ? lance_tip_col(P.lanceVc) : v3(0.75f, 0.78f, 0.85f);
+    glPushMatrix();
+    glTranslatef(-1.25f + 0.95f * cf, -0.3f + 0.24f * cf, 0.2f + 0.1f * cf + thrust);
+    glRotatef(60 * (1 - cf) + 2 * cf, 1, 0, 0);
+    glRotatef(20 * (1 - cf), 0, 0, 1);                    /* levee : la pointe penche vers la gauche, hors du centre */
+    lance_model(2.4f, tip, cf > 0 ? gameTime : -1, cf > 0 ? 1 - P.lanceT / LANCE_HOLD_MAX : 0);
+    glPopMatrix();
+}
+/* --- fin Lance : rendu --- */
+
 static void draw_viewmodel(float aspect) {
     glClear(GL_DEPTH_BUFFER_BIT);
     set_frustum(60, aspect, 0.01f, 10);
@@ -5542,6 +6071,7 @@ static void draw_viewmodel(float aspect) {
     glLightfv(GL_LIGHT0, GL_POSITION, lp);
     glEnable(GL_LIGHTING);
     if (P.meleeKind == MK_ANVIL) draw_anvil_vm();
+    else if (P.meleeKind == MK_LANCE) draw_lance_vm();    /* Lance : toujours visible */
     else if (P.meleeT > 0) {                              /* coup d'epee : balayage de droite a gauche */
         float k = clampf(1 - P.meleeT / 0.25f, 0, 1), heat = clampf(vlen(P.vel) / 30, 0, 1);
         glPushMatrix();
@@ -6172,6 +6702,29 @@ static void draw_remote_players(void) {
             glRotatef(ang, 1, 0, 0);
             hammer_model(slam ? 1.0f : 0.0f);
             glPopMatrix();
+        } else if ((n->st.pad & 15) == MK_LANCE) {        /* Lance : couchee (pointe orange = signal pour parer), sinon au flanc */
+            int couch = (n->st.pad & ST_LANCE) != 0;
+            float k = n->st.melee ? 1 - n->st.melee / 255.0f : 0;
+            glPushMatrix();
+            if (couch || n->st.melee) {                   /* horizontale, suit la visee ; estoc : translation avant */
+                glTranslatef(-0.35f, h - 0.65f, -0.1f - (couch ? 0 : 0.6f * sinf(PI * k)));
+                glRotatef(n->st.pitch * 180 / PI, 1, 0, 0);
+            } else {                                      /* levee, verticale au flanc */
+                glTranslatef(-0.45f, 0.45f, 0.05f);
+                glRotatef(80, 1, 0, 0);
+            }
+            float pl = 0.75f + 0.25f * sinf(gameTime * 18);
+            lance_model(2.6f, couch ? v3(1, 0.55f * pl, 0.15f) : v3(0.75f, 0.78f, 0.85f), couch ? gameTime : -1, 0);
+            if (couch) {                                  /* halo additif autour de la pointe */
+                glDisable(GL_LIGHTING);
+                glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE); glDepthMask(GL_FALSE);
+                float s = 0.12f + 0.05f * pl;
+                glColor4f(1, 0.5f, 0.1f, 0.55f);
+                box_faces(v3(-s, -s, -2.6f - s), v3(s, s, -2.6f + 0.3f));
+                glDepthMask(GL_TRUE); glDisable(GL_BLEND);
+                glEnable(GL_LIGHTING);
+            }
+            glPopMatrix();
         } else if (n->st.melee) {                         /* epee en plein balayage */
             float k = 1 - n->st.melee / 255.0f;
             glPushMatrix();
@@ -6215,6 +6768,23 @@ static float melee_preview(int *hasTarget) {
         best = vdot(vmul(d, 1 / l), f); rel = rel_speed(np_vel(i)); *hasTarget = 1;
     }
     return rel;
+}
+/* Lance : vitesse de rapprochement v_c vers la cible visee dans le cone de la lance (sinon sa propre vitesse) */
+static float lance_preview(int *hasTarget) {
+    V3 eye = eye_pos(), f = view_dir();
+    float best = LANCE_CONE, vc = vlen(P.vel);
+    *hasTarget = 0;
+    for (int k = 0; k < MAXE + MAXP; k++) {
+        int pl = k >= MAXE, i = pl ? k - MAXE : k;
+        V3 c, tv;
+        if (!pl) { if (!E[i].alive) continue; c = E[i].pos; tv = E[i].vel; }
+        else { if (!np_target(i)) continue; c = np_center(i); tv = np_vel(i); }
+        V3 d = vsub(c, eye);
+        float l = fmaxf(vlen(d), 0.01f), cs = vdot(vmul(d, 1 / l), f);
+        if (l > LANCE_PREVIEW || cs < best) continue;
+        best = cs; vc = vdot(vsub(P.vel, tv), vmul(d, 1 / l)); *hasTarget = 1;
+    }
+    return vc;
 }
 
 /* interface du spectateur : classement en direct, qui on suit, minuteur */
@@ -6474,6 +7044,9 @@ static void draw_hud(void) {
         char mt[64];
         int blink = dryHintT > 0 && fmodf(dryHintT, 0.4f) < 0.2f;   /* a sec : le panneau de melee clignote */
         if (dryHintT > 0) snprintf(mt, sizeof mt, "A SEC : MELEE = MUNITIONS");
+        else if (P.meleeKind == MK_LANCE)                 /* Lance : estoc / joute */
+            snprintf(mt, sizeof mt, P.lanceState == LS_COUCH ? "LANCE COUCHEE +%d" : "LANCE  +%d pts",
+                     P.lanceState == LS_COUCH ? PTS_LANCE_JOUST : meleePts[MK_LANCE]);
         else snprintf(mt, sizeof mt, "%s%s  +%d pts", meleeNames[P.meleeKind], aimed ? " (vs cible)" : "", meleePts[P.meleeKind]);
         text(0, mx, by - 78.0f, mt, blink ? 1.0f : 0.75f, blink ? 0.6f : 0.75f, blink ? 0.2f : 0.85f, 0.9f);
     }
@@ -6486,6 +7059,13 @@ static void draw_hud(void) {
             float fall = (P.anvilState == ANVIL_DIVE ? P.anvilStartY : P.pos.y) - at.y;
             snprintf(buf, sizeof buf, "PIQUE %d dmg R %.1fm", (int)(slam_dmg(vy, fall) * pvp), R);
         } else snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(anvil_dmg(sp3) * pvp), anvil_range(sp3));
+    } else if (P.meleeKind == MK_LANCE) {                 /* Lance : v_c vers la cible visee, degats de la joute (plafond PvP) */
+        int la;
+        float vc = lance_preview(&la), jd = lance_dmg(fmaxf(vc, 0)) * pvp;
+        if (dmMode) jd = fminf(jd, PVP_HIT_CAP);
+        mk = clampf(vc / 20, 0, 1); mcd = LANCE_HIT_CD;
+        if (vc >= LANCE_VC_MIN) snprintf(buf, sizeof buf, "JOUTE v%.0f %d dmg", vc, (int)jd);
+        else snprintf(buf, sizeof buf, "v%.0f/%.0f estoc %d", fmaxf(vc, 0), LANCE_VC_MIN, (int)(lance_thrust_dmg(sp3) * pvp));
     } else snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(melee_dmg(sp3) * pvp), melee_range(sp3));
     text(1, mx, by - 48.0f, buf, 1, 1 - mk * 0.45f, 1 - mk * 0.85f, 1);
     rect(mx, by - 36.0f, 180, 6, 0.1f, 0.1f, 0.15f, 0.7f);
@@ -6588,6 +7168,27 @@ static void draw_hud(void) {
             snprintf(buf, sizeof buf, "%d/%d", P.sgLastPellets, SG_PELLETS);
             text_c(0, cx, cy + r + 10, buf, 1, 0.75f, 0.35f, clampf(P.sgLastT / 0.2f, 0, 1));
         }
+    }
+    if (P.lanceState == LS_COUCH && !P.dead) {            /* Lance couchee : anneau du cone (plein si une cible y est armee), duree */
+        float r = tanf(acosf(LANCE_CONE)) / tanf(fminf(P.fovCur, 150.0f) * PI / 360.0f) * winW * 0.5f;
+        int armed = P.lanceVc >= LANCE_VC_MIN;
+        V3 tc = lance_tip_col(P.lanceVc);
+        if (armed) {
+            glColor4f(tc.x, tc.y, tc.z, 0.12f);
+            glBegin(GL_TRIANGLE_FAN);
+            glVertex2f(cx, cy);
+            for (int s = 0; s <= 40; s++) glVertex2f(cx + r * cosf(s * PI / 20), cy + r * sinf(s * PI / 20));
+            glEnd();
+        }
+        glLineWidth(armed ? 3.0f : 1.5f);
+        glColor4f(tc.x, tc.y, tc.z, armed ? 0.9f : 0.5f);
+        glBegin(GL_LINE_LOOP);
+        for (int s = 0; s < 40; s++) glVertex2f(cx + r * cosf(s * PI / 20), cy + r * sinf(s * PI / 20));
+        glEnd();
+        rect(cx - 40, cy + 26, 80, 4, 0.1f, 0.1f, 0.15f, 0.7f);
+        rect(cx - 40, cy + 26, 80 * clampf(1 - P.lanceT / LANCE_HOLD_MAX, 0, 1), 4, 1, 0.6f, 0.2f, 0.9f);
+        snprintf(buf, sizeof buf, "v%.0f", P.lanceVc);
+        text_c(0, cx, cy + 50, buf, tc.x, tc.y, tc.z, 0.9f);
     }
     draw_saw_hud(cx, cy);                                 /* Scie */
     for (int i = 0; i < COIN_MAX; i++) {                 /* pieces disponibles */
@@ -7149,6 +7750,25 @@ static void test_slam_drop(V3 from, V3 vel) {
     P.pos = P.prevPos = from; P.vel = vel; P.grounded = 0;
     anvil_press();
     for (int i = 0; i < 600 && P.anvilState == ANVIL_DIVE; i++) player_tick(TICK, 0, 0);
+}
+
+/* tests de la Lance : remise a zero, Lance en melee, immobile en pos, vue vers -z */
+static void lance_test_reset(V3 pos) {
+    reset_game();
+    hitstop = 0;
+    memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+    P.meleeKind = MK_LANCE; P.pos = P.prevPos = pos; P.yaw = 0; P.pitch = 0; P.vel = v3(0, 0, 0);
+}
+/* LAN simule : moi (hote, 0) et NP[1] a la position t, ni parry ni lance couchee recents */
+static void lance_test_lan(V3 t) {
+    dmMode = 1; matchOver = 0;
+    memset(NP, 0, sizeof NP);
+    memset(joustT, 0, sizeof joustT);
+    NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi");
+    NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
+    NP[1].disp = t; vf(NP[1].st.pos, t);
+    NP[0].disp = P.pos;
+    nowT += 1;
 }
 
 /* tests de la Scie : remise a zero, scie dans le loadout, en main */
@@ -8159,6 +8779,181 @@ static void run_tests(const char *path) {
         botMode = savedBot;
     }
 
+    /* --- Lance (solo) : couloir degage x = -20, lance_press / lance_tick appeles directement --- */
+    dmMode = 0;
+    {   /* 1. joute contre un drone immobile a 20 m/s */
+        lance_test_reset(v3(-20, 0, 40));
+        P.vel = v3(0, 0, -20); P.dashCharge = 0.2f;
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.6f, 30); E[0].vel = v3(0, 0, 0);
+        float reachHit = -1;
+        lance_press();
+        for (int i = 0; i < 300 && P.lanceState != LS_IDLE; i++) {
+            float reach = vlen(vsub(E[0].pos, eye_pos())) - enemy_radius(EN_DRONE);
+            lance_tick(TICK, 1);
+            if (!E[0].alive && reachHit < 0) reachHit = reach;
+            P.pos = P.prevPos = vadd(P.pos, vmul(P.vel, TICK));
+        }
+        hitstop = 0;
+        fprintf(f, "lance joute drone a 20 m/s : portee a la touche %.2f, drone vivant %d, vitesse apres %.1f, recharge %.2f, dash %.1f "
+                   "(attendu <= 3.50, 0, 10.0, 1.00, 1.2)\n", reachHit, E[0].alive, vlen(P.vel), P.meleeCd, P.dashCharge);
+    }
+    {   /* 2. v_c insuffisante (8 m/s) : aucune touche en 2 s, puis relevee avec 0,5 s de recharge */
+        lance_test_reset(v3(-20, 0, 40));
+        P.vel = v3(0, 0, -8);
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.6f, 30); E[0].vel = v3(0, 0, 0);
+        lance_press();
+        int ticks = 0;
+        for (; ticks < 300 && P.lanceState != LS_IDLE; ticks++) {
+            lance_tick(TICK, 1);
+            P.pos = P.prevPos = vadd(P.pos, vmul(P.vel, TICK));
+        }
+        fprintf(f, "lance a 8 m/s : PV drone %.0f, relevee apres %.2f s, etat %d, recharge %.2f (attendu 100, 2.00, 0, 0.50)\n",
+                E[0].hp, ticks * TICK, P.lanceState, P.meleeCd);
+    }
+    {   /* 3. cone : drone decale de 2 m a 3 m devant (33,7 degres), v_c et portee suffisantes */
+        lance_test_reset(v3(-20, 0, 40));
+        P.vel = v3(0, 0, -20); P.lanceState = LS_COUCH; P.lanceT = 0.5f;
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-18, 1.6f, 37); E[0].vel = v3(0, 0, 0);
+        lance_tick(TICK, 1);
+        fprintf(f, "lance hors du cone (33.7 deg) : PV drone %.0f, etat %d (attendu 100, 2)\n", E[0].hp, P.lanceState);
+    }
+    {   /* 4. tap = estoc : drone a 2,5 m, touche relachee au tick suivant */
+        lance_test_reset(v3(-20, 0, 40));
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.6f, 37.5f); E[0].vel = v3(0, 0, 0);
+        lance_press();
+        float pw = P.parryWin;
+        lance_tick(TICK, 0);
+        hitstop = 0;
+        fprintf(f, "lance estoc (tap) : PV drone %.0f, fenetre de parry %.2f, etat %d, recharge %.2f (attendu 70, 0.12, 0, 0.50)\n",
+                E[0].hp, pw, P.lanceState, P.meleeCd);
+    }
+    {   /* 5. kamikaze a 10,5 m/s contre une lance couchee a l'arret */
+        lance_test_reset(v3(-20, 0, 40));
+        E[0].alive = 1; E[0].type = EN_RUSHER; E[0].hp = 50; E[0].pos = v3(-20, 1.6f, 32); E[0].vel = v3(0, 0, 10.5f);
+        lance_press();
+        int jo = lanceJousts;
+        for (int i = 0; i < 240 && E[0].alive; i++) {
+            lance_tick(TICK, 1);
+            if (E[0].alive) E[0].pos = vadd(E[0].pos, vmul(E[0].vel, TICK));
+        }
+        hitstop = 0;
+        fprintf(f, "lance contre kamikaze : kamikaze vivant %d, joute %d, PV joueur %.0f (attendu 0, 1, 100)\n",
+                E[0].alive, lanceJousts - jo, P.hp);
+    }
+    memset(E, 0, sizeof E);
+
+    /* --- Lance en LAN simule (je suis l'hote) --- */
+    {   /* 6. joute a v_c 15 puis 20 : x 0,7, plafond 60 */
+        float hpL[2];
+        for (int s = 0; s < 2; s++) {
+            lance_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 37));
+            V3 dir = vnorm(vsub(np_center(1), eye_pos()));
+            P.vel = vmul(dir, s ? 20.0f : 15.0f); P.lanceState = LS_COUCH; P.lanceT = 0.5f;
+            lance_tick(TICK, 1);
+            hpL[s] = NP[1].hp; hitstop = 0;
+        }
+        fprintf(f, "lance PvP a v_c 15 / 20 : PV cible %.1f / %.1f (attendu 40.5 / 40.0)\n", hpL[0], hpL[1]);
+    }
+    {   /* 7. la victime pare la lance couchee ; puis je pare une lance couchee : pas de recul */
+        lance_test_reset(v3(-20, 0, 40));
+        lance_test_lan(v3(-20, 0, 37));
+        NP[1].lastParryT = nowT;
+        int mp = meleeParries;
+        V3 dir = vnorm(vsub(np_center(1), eye_pos()));
+        P.vel = vmul(dir, 15); P.lanceState = LS_COUCH; P.lanceT = 0.5f;
+        lance_tick(TICK, 1);
+        hitstop = 0;
+        float hpP = NP[1].hp, cdP = P.meleeCd;
+        int stP = P.lanceState;
+        mp = meleeParries - mp;
+        lance_test_reset(v3(-20, 0, 40));
+        lance_test_lan(v3(-20, 0, 37));
+        P.parryWin = 0.1f;
+        host_tick(TICK);
+        NetEvent e = ev_new(EV_HIT);
+        e.eid = 0x0277AA01u; e.from = 1; e.target = 0; e.sub = W_LANCE; e.f[0] = 59.5f; vf(&e.f[1], v3(0, 3, 20));
+        e.f[4] = 15; e.f[5] = 15; e.f[6] = 1;
+        P.vel = v3(0, 0, 0);
+        host_event_in(&e);
+        hitstop = 0;
+        fprintf(f, "lance paree : PV cible %.0f, parries +%d, recharge attaquant %.2f, etat %d ; je pare : PV %.0f, recul %.1f m/s "
+                   "(attendu 100, +1, 1.50, 0 ; 100, 0.0)\n", hpP, mp, cdP, stP, NP[0].hp, vlen(P.vel));
+    }
+    {   /* 8. choc de joute : NP[1] lance couchee vers moi, vitesse propre 15 / 19 / 25 contre mes 20 m/s */
+        static const float sb[3] = { 15, 19, 25 };
+        float hpOther[3], hpMe[3];
+        int cl[3];
+        lance_test_reset(v3(-20, 0, 41));
+        lance_test_lan(v3(-20, 0, 38));
+        for (int s = 0; s < 3; s++) {
+            nowT += 1;
+            NP[0].hp = 100; NP[1].hp = 100; NP[1].alive = 1; NP[0].alive = 1;
+            NP[0].disp = P.pos; vf(NP[0].st.vel, v3(0, 0, -20));
+            NP[1].st.yaw = PI; NP[1].st.pitch = 0; vf(NP[1].st.vel, v3(0, 0, sb[s]));
+            NP[1].lastLanceT = nowT;
+            int c0 = clashes;
+            NetEvent e = ev_new(EV_HIT);
+            e.target = 1; e.sub = W_LANCE; e.f[0] = 60; vf(&e.f[1], v3(0, 3, -12));
+            e.f[4] = 20; e.f[5] = s == 2 ? 15.0f : 20.0f; e.f[6] = 1;
+            net_emit(&e);
+            hitstop = 0;
+            hpOther[s] = NP[1].hp; hpMe[s] = NP[0].hp; cl[s] = clashes - c0;
+        }
+        NetEvent r = ev_new(EV_HIT);                      /* touche reciproque de NP[1] juste apres sa victoire */
+        r.eid = 0x0277AA02u; r.from = 1; r.target = 0; r.sub = W_LANCE; r.f[0] = 60; r.f[4] = 25; r.f[5] = 15; r.f[6] = 1;
+        host_event_in(&r);
+        hitstop = 0;
+        fprintf(f, "choc de joute 20 contre 15 : PV %.0f / %.0f ; 20 contre 19 : PV %.0f / %.0f, chocs +%d ; 20 contre 25 : PV %.0f / %.1f ; "
+                   "reciproque ignoree : mes PV %.1f (attendu 40 / 100 ; 100 / 100, +1 ; 100 / 40.5 ; 40.5)\n",
+                hpOther[0], hpMe[0], hpOther[1], hpMe[1], cl[1], hpOther[2], hpMe[2], NP[0].hp);
+        (void)cl[0];
+    }
+    {   /* 9. grappin + lance : la joute part avant l'impact et consomme le crochet ; sans viser : impact du grappin */
+        int dL[2], dH[2], hk[2];
+        float cd[2];
+        for (int s = 0; s < 2; s++) {
+            lance_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 25));
+            V3 d = vsub(np_center(1), eye_pos());
+            P.pitch = asinf(d.y / vlen(d));
+            P.lanceState = LS_COUCH; P.lanceT = 0.2f;
+            int l0 = hitCount[W_LANCE], h0 = hitCount[W_HOOK], attached = 0;
+            hookPressIn = 1; hookHeldIn = 1;
+            for (int i = 0; i < 240; i++) {
+                nowT += TICK;
+                player_tick(TICK, 0, 0);
+                hookPressIn = 0;
+                if (P.hook == HOOK_ATTACHED) { attached = 1; if (s) P.yaw = 1.2f; }   /* 2e passe : on regarde ailleurs */
+                lance_tick(TICK, 1);
+                if (attached && P.hook == HOOK_NONE) break;
+            }
+            hookHeldIn = 0; hitstop = 0;
+            dL[s] = hitCount[W_LANCE] - l0; dH[s] = hitCount[W_HOOK] - h0; hk[s] = P.hook; cd[s] = P.hookCd;
+        }
+        fprintf(f, "grappin + lance : touches lance %d, grappin %d, crochet %d, recharge %.2f ; sans viser : lance %d, grappin %d "
+                   "(attendu 1, 0, 0, 0.00 ; 0, 1)\n", dL[0], dH[0], hk[0], cd[0], dL[1], dH[1]);
+    }
+    {   /* 10. bot a la Lance : la cible fonce a 10 m/s, le bot a 10 m/s depuis 10 m */
+        lance_test_reset(v3(-20, 0, 41));
+        lance_test_lan(v3(-20, 0, 31));
+        vf(NP[1].st.vel, v3(0, 0, 10));
+        P.vel = v3(0, 0, -10); P.dashCharge = 0.2f; P.fireCd = 10;
+        int l0 = hitCount[W_LANCE];
+        for (int i = 0; i < 180 && hitCount[W_LANCE] == l0; i++) {
+            nowT += TICK;
+            bot_think(TICK);
+            game_tick(TICK);
+        }
+        hitstop = 0;
+        fprintf(f, "bot lance : touches lance %d, PV cible %.0f (attendu >= 1, 40)\n", hitCount[W_LANCE] - l0, NP[1].hp);
+        memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+        reset_game();
+        dmMode = 0;
+        memset(NP, 0, sizeof NP);
+    }
+    /* --- fin Lance --- */
+
     /* reglages : sauvegarde puis rechargement de velocity.ini */
     {
         int savedBot = botMode;
@@ -8416,6 +9211,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             NP[1].st.pad = MK_ANVIL;
             NP[2].st.pad = MK_ANVIL | ST_SLAM; NP[2].disp = v3(-2, 5, 12); vf(NP[2].st.vel, v3(0, -34, 0));
         }
+        if (strstr(shotPath, "lance")) {                  /* Lance : Rival lance couchee vers moi (pointe orange), Ninja au repos */
+            NP[1].st.pad = MK_LANCE | ST_LANCE; NP[1].st.melee = 0; NP[1].st.flags = 0;
+            NP[1].st.yaw = atan2f(6.5f, -7.0f);
+            NP[2].st.pad = MK_LANCE;
+            P.meleeKind = MK_LANCE;                       /* et ma lance levee */
+        }
         P.pos = P.prevPos = v3(0, 0, 24); P.yaw = -0.1f; P.pitch = 0.08f; P.hp = 100;
         if (strstr(shotPath, "eventail")) {               /* Rival a l'Eventail : son tir recu (traceurs recalcules) */
             NP[1].st.weapon = WP_SHOTGUN; NP[1].st.flags = 0; NP[1].st.melee = 0;
@@ -8484,6 +9285,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             memset(PA, 0, sizeof PA); memset(PR, 0, sizeof PR); memset(BM, 0, sizeof BM);
             anvil_press();
             for (int i = 0; i < 6; i++) player_tick(TICK, 0, 0);
+        }
+        if (strstr(shotPath, "lance")) {                  /* Lance couchee armee vers un drone : anneau du cone, pointe orange */
+            hook_release(0);
+            memset(PA, 0, sizeof PA); memset(PR, 0, sizeof PR); memset(BM, 0, sizeof BM); memset(E, 0, sizeof E);
+            P.meleeKind = MK_LANCE; P.meleeT = 0; P.weapon = P.loadout[0]; P.switchT = 0; shotStreak = 0;
+            P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0.05f; P.pitch = -0.05f; P.vel = v3(0, 0, -14);
+            P.lanceState = LS_COUCH; P.lanceT = 0.8f;
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.4f, 31);
+            P.lanceVc = vdot(P.vel, vnorm(vsub(E[0].pos, eye_pos())));
         }
         if (strstr(shotPath, "scie")) {                   /* Scie : la mienne plantee, une adverse en vol (2 renvois) */
             hook_release(0);
@@ -8601,6 +9411,16 @@ done:
             netlog("scie (arbitre) : lancers %d, touches %d (dont %d apres renvoi), plantages %d, rattrapages %d, rappels %d, renvois %d",
                    sawHostStat[SAWE_THROW], hitCount[W_SAW], sawHostBounceHits, sawHostStat[SAWE_PLANT], sawHostStat[SAWE_CATCH],
                    sawHostStat[SAWE_RECALL], sawHostStat[SAWE_BOUNCE]);
+        if (lanceThrusts || hitCount[W_LANCE])            /* --- Lance --- */
+            netlog("lance (moi) : %d estocs (%d touchent), %d lances couchees, %d joutes (v_c moyen %.1f, %d au grappin), "
+                   "%d relevees sans toucher",
+                   lanceThrusts, lanceThrustHits, lanceCouches, lanceJousts, lanceVcSum / (lanceJousts ? lanceJousts : 1),
+                   lanceJoustHook, lanceWhiffs);
+        if (netMode == NET_HOST && hitCount[W_LANCE])
+            netlog("lance (arbitre) : touches couchees %d (v_c moyen %.1f), estocs %d, parees %d, chocs de joute gagnes %d, "
+                   "doubles desarconnements %d",
+                   lanceHostCouch, lanceHostVcSum / (lanceHostCouch ? lanceHostCouch : 1), lanceHostThrust, lanceHostParried,
+                   lanceClashWins, lanceClashDouble);
     }
     net_shutdown();
     if (botLog) fclose(botLog);
