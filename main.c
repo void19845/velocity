@@ -246,6 +246,31 @@ enum { ANVIL_IDLE, ANVIL_DIVE, ANVIL_STUN };
 enum { SAW_FLY, SAW_PARRIED, SAW_PLANTED, SAW_RETURN, SAW_RECALL, SAW_LOST };
 enum { SAWE_THROW, SAWE_PLANT, SAWE_HIT, SAWE_CATCH, SAWE_RECALL, SAWE_BOUNCE };       /* EV_SAW.sub */
 enum { SAW_HOW_RETURN, SAW_HOW_FOOT, SAW_HOW_RECALL, SAW_HOW_LOST, SAW_HOW_PARRIED };   /* EV_SAW.actor (rattrapage) */
+
+/* --- Tesla : arc electrique, faisceau continu, chaine, relais sur piece --- */
+#define TESLA_PULSE        0.1f    /* 10 impulsions par seconde (P.fireCd) */
+#define TESLA_COST         2       /* batterie par impulsion : 20 par seconde, aucune recharge passive */
+#define TESLA_RANGE        14.0f   /* portee de base */
+#define TESLA_RANGE_PER_MS 0.3f    /* portee en plus par m/s de vitesse (vitesse totale) */
+#define TESLA_RANGE_MAX    28.0f
+#define TESLA_AIM_PAD      0.4f    /* aide a la visee : les cibles grossissent de 0,4 m (cylindre, pas un cone) */
+#define TESLA_DMG          7.0f    /* par impulsion, cible principale */
+#define TESLA_CHAIN_N      2       /* sauts en plus */
+#define TESLA_CHAIN_R      6.0f    /* distance max d'un saut */
+#define TESLA_CHAIN_MULT   0.6f
+#define TESLA_RELAY_T      2.0f    /* duree du relais, puis la piece grille */
+#define TESLA_RELAY_R      6.0f
+#define TESLA_RELAY_DMG    5.0f
+#define TESLA_RELAY_MAX    3       /* relais actifs par joueur */
+#define TESLA_AGG          0.2f    /* cumul : un envoi (net_hit / damage_enemy) par cible toutes les 0,2 s */
+#define TESLA_KNOCK_PVE    0.3f    /* petit recul par impulsion sur les drones (aucun en PvP) */
+#define TESLA_STUN         0.4f    /* tireur dont la decharge est paree : plus de tir a distance */
+#define TESLA_REFLECT_DMG  15.0f   /* PvP direct, ni multiplie ni plafonne */
+#define TESLA_PARRY_GRACE  0.25f   /* tolerance de l'hote : fenetre de cumul + latence */
+#define TESLA_LOCK_T       0.3f    /* victime : l'arc dessine finit sur moi apres un EV_HIT W_TESLA */
+#define ST_ZAP             0x80    /* NetPState.pad : arc Tesla actif */
+enum { TK_NONE, TK_MUZZLE, TK_HAND, TK_ENEMY, TK_PLAYER, TK_COIN, TK_POINT };   /* extremites d'un lien d'arc */
+/* --- fin Tesla --- */
 /* --- fin Scie --- */
 
 /* Axe tir : chaque touche successive augmente degats et cadence, un tir rate remet a zero */
@@ -285,7 +310,7 @@ static const AmmoDef ammoDef[WP_COUNT] = {
     { "TESLA",     60, 100, 2.5f, 0.60f, 0.70f, 1.00f },  /* 1 point = 0,4 de batterie */
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
-static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 0, 0 };   /* chaque arme codee passe sa case a 1 */
+static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 0, 1 };   /* chaque arme codee passe sa case a 1 */
 static unsigned char mkReady[MK_COUNT] = { 1, 1, 0, 0, 0, 0 };
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
 
@@ -302,9 +327,11 @@ enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_ANVIL_DIVE, S_ANVIL_SLAM, S_ANVIL_CLANG,
        S_SG_FIRE, S_SG_PUMP,                              /* Eventail */
        S_SAW_THROW, S_SAW_PLANT, S_SAW_HIT, S_SAW_CATCH, S_SAW_BOUNCE,   /* Scie */
+       S_TESLA_LOOP, S_TESLA_ZAP,                         /* Tesla */
        S_COUNT };
 typedef struct { short *data; int len; } Sound;
-typedef struct { int snd, active; float pos, step, vol; } Voice;
+/* loop : voix en boucle (Tesla), jamais volee par play ; fade : baisse de volume par echantillon (arret sans clic) */
+typedef struct { int snd, active, loop; float pos, step, vol, fade; } Voice;
 static Sound sounds[S_COUNT];
 static Voice voices[MAXV];
 static HWAVEOUT wout;
@@ -313,16 +340,38 @@ static short wbuf[NBUF][BUFLEN];
 static int audio_ok;
 static float masterVol = 1.0f;
 
-static void play(int s, float vol, float pitch) {
-    if (!audio_ok) return;
+static int play_voice(int s, float vol, float pitch);
+static void play(int s, float vol, float pitch) { play_voice(s, vol, pitch); }
+static int play_voice(int s, float vol, float pitch) {    /* renvoie l'index de la voix, -1 si rien */
+    if (!audio_ok) return -1;
     int best = 0; float oldest = -1;
     for (int i = 0; i < MAXV; i++) {
         if (!voices[i].active) { best = i; break; }
+        if (voices[i].loop) continue;                     /* une boucle (Tesla) n'est jamais volee */
         if (voices[i].pos > oldest) { oldest = voices[i].pos; best = i; }
     }
+    if (voices[best].active && voices[best].loop) return -1;
     voices[best].snd = s; voices[best].active = 1; voices[best].pos = 0;
-    voices[best].step = pitch; voices[best].vol = vol;
+    voices[best].step = pitch; voices[best].vol = vol; voices[best].loop = 0; voices[best].fade = 0;
+    return best;
 }
+
+/* --- Tesla : voix en boucle (audio_fill tourne dans le thread principal : aucun verrou) --- */
+static int play_loop(int s, float vol, float pitch) {     /* renvoie index + 1, 0 si rien */
+    int v = play_voice(s, vol, pitch);
+    if (v < 0) return 0;
+    voices[v].loop = 1;
+    return v + 1;
+}
+static void loop_set(int v, float vol, float pitch) {
+    if (v > 0 && voices[v - 1].active && voices[v - 1].loop) { voices[v - 1].vol = vol; voices[v - 1].step = pitch; }
+}
+static void loop_stop(int v) {                            /* fin en 30 ms, sans clic */
+    if (v <= 0 || !voices[v - 1].active || !voices[v - 1].loop) return;
+    voices[v - 1].loop = 0;
+    voices[v - 1].fade = fmaxf(voices[v - 1].vol, 0.001f) / (0.03f * SR);
+}
+/* --- fin Tesla --- */
 
 static void audio_fill(short *out, int n) {
     for (int i = 0; i < n; i++) {
@@ -331,8 +380,13 @@ static void audio_fill(short *out, int n) {
             Voice *vo = &voices[v];
             if (!vo->active) continue;
             Sound *s = &sounds[vo->snd];
+            if (vo->fade > 0 && (vo->vol -= vo->fade) <= 0) { vo->active = 0; continue; }
             int p = (int)vo->pos;
-            if (p >= s->len - 1) { vo->active = 0; continue; }
+            if (p >= s->len - 1) {
+                if (!vo->loop) { vo->active = 0; continue; }
+                vo->pos -= (float)(s->len - 1);           /* boucle : retour au debut */
+                p = (int)vo->pos;
+            }
             float f = vo->pos - p;
             acc += (s->data[p] * (1 - f) + s->data[p + 1] * f) * vo->vol;
             vo->pos += vo->step;
@@ -622,6 +676,35 @@ static void make_sounds(void) {
                (t < 0.01f ? noise() * 0.5f : 0);
     }
     sounds[S_SAW_BOUNCE] = mksound(b, n);
+    /* --- Tesla --- */
+    /* boucle de 0,5 s : bourdonnement a 120 Hz (harmoniques 120, 240, 360 : nombre entier de cycles, raccord
+     * sans clic) + crepitement (bruit passe-haut hache par des fenetres de 2 a 6 ms, 15 % des tranches de 5 ms) */
+    b = sbuf(0.5f, &n); lp = 0;
+    {
+        int winEnd = -1, slice = (int)(0.005f * SR);
+        for (int i = 0; i < n; i++) {
+            t = (float)i / SR;
+            float hum = sinf(t * 2 * PI * 120) + 0.5f * sinf(t * 2 * PI * 240) + 0.33f * sinf(t * 2 * PI * 360);
+            if (i % slice == 0 && i > winEnd && frand() < 0.15f) {
+                int len = (int)(frange(0.002f, 0.006f) * SR);
+                if (i + len < n) winEnd = i + len;        /* jamais a cheval sur le raccord */
+            }
+            float x = noise();
+            lp += 0.3f * (x - lp);
+            b[i] = hum * 0.25f + (i <= winEnd ? (x - lp) * 0.35f : 0);
+        }
+    }
+    sounds[S_TESLA_LOOP] = mksound(b, n);
+    /* impulsion qui touche : bruit passe-haut + sinus a 1800 Hz, enveloppe tres courte */
+    b = sbuf(0.08f, &n); lp = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        float x = noise();
+        lp += 0.3f * (x - lp);
+        b[i] = ((x - lp) * 0.6f + sinf(t * 2 * PI * 1800) * 0.3f) * expf(-t * 60);
+    }
+    sounds[S_TESLA_ZAP] = mksound(b, n);
+    /* --- fin Tesla --- */
 }
 
 static void audio_init(void) {
@@ -860,6 +943,10 @@ typedef struct {
     int sgLastPellets; float sgLastT;                     /* Eventail : HUD "7/10" apres un tir qui touche */
     int sawIdx;                                           /* Scie : 0 = en main (ou pas de scie), sinon index PR + 1 */
     float sawCd;                                          /* Scie : delai avant le prochain lancer */
+    /* Tesla : arc actif ce tick (ST_ZAP, son en boucle), clic sec deja joue pour cet appui, "CHAINE x3" deja affiche ;
+     * etourdissement (decharge paree), temps avant l'envoi des cumuls, derniere impulsion qui touche (HUD, son) */
+    int teslaOn, teslaDry, teslaChain3;
+    float teslaStunT, teslaAggT, teslaHitT;
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -871,7 +958,8 @@ static Enemy E[MAXE];
 
 enum { PR_ROCKET, PR_ORB, PR_PARRIED, PR_SAW };
 
-typedef struct { V3 pos, vel; float life, spin; int alive, owner; unsigned int netId; } Coin;
+/* Tesla : teslaT > 0 = relais actif (temps restant), prochaine impulsion du relais, joueur qui l'a active */
+typedef struct { V3 pos, vel; float life, spin; int alive, owner; unsigned int netId; float teslaT, teslaPulse; int teslaBy; } Coin;
 #define MAXCOIN 24
 static Coin CO[MAXCOIN];
 static int lastChain;                                     /* longueur du dernier ricochet (tests, journal) */
@@ -942,6 +1030,11 @@ typedef struct {
     float flashT;                                         /* flash blanc quand il est touche */                 /* lastParryT : derniere fois vu en fenetre de parry */
     unsigned char anvilPrevPad;                           /* Enclume : pad du tick precedent (debut d'un pique adverse) */
     float sgFireT;                                        /* Eventail : recul visuel du fusil d'un joueur distant */
+    /* Tesla : hote = derniere decharge renvoyee vers ce tireur ; client = dernier EV_HIT W_TESLA de ce tireur sur moi
+     * (verrou visuel) ; prochain recalcul de son arc ; son arc touche-t-il quelqu'un (hauteur du son) */
+    double teslaReflT, teslaHitMeT;
+    float teslaVisT;
+    int teslaVisHit;
     struct sockaddr_in addr;      /* hote seulement */
 } NetPlayer;
 
@@ -984,6 +1077,8 @@ static int saw_hook_test(float *t);                       /* grappin : le croche
 static void saw_recall_start(void);
 static int saw_parry(Proj *p, V3 eye, V3 f, float range, float speedMult);
 static void saw_remove_owner(int id);
+/* Tesla : EV_TESLA (definie avec les autres net_fx_*) */
+static void net_fx_tesla(int sub, unsigned int netId, V3 pos, int actor, int target);
 
 /* ------------------------------------------------------------------ */
 /* Entrees                                                             */
@@ -1744,6 +1839,7 @@ static int loadout_valid(const int *l, int mk) {
     return l[0] >= 0 && l[0] < WP_COUNT && l[1] >= 0 && l[1] < WP_COUNT && l[0] != l[1] &&
            wpReady[l[0]] && wpReady[l[1]] && mk >= 0 && mk < MK_COUNT && mkReady[mk];
 }
+static void tesla_reset(void);                            /* Tesla : definie avec l'arme */
 static void loadout_apply(void) {                         /* (re)spawn : munitions de depart, jauges vides, arme 1 en main */
     if (!loadout_valid(wantLoadout, wantMelee)) { wantLoadout[0] = WP_RAIL; wantLoadout[1] = WP_ROCKET; wantMelee = MK_SWORD; }
     P.loadout[0] = wantLoadout[0]; P.loadout[1] = wantLoadout[1]; P.meleeKind = wantMelee;
@@ -1752,6 +1848,7 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     P.kinT = 0; P.kinDashT = 1; P.kinPreDash = 0;          /* Elan : ni fenetre de dash-tir ni malus */
     P.sgPumpT = P.sgPumpMax = 0; P.sgLastT = 0;           /* Eventail : pompe au repos */
     P.sawIdx = 0; P.sawCd = 0;                            /* Scie : neuve, en main */
+    tesla_reset();                                        /* Tesla : ni arc, ni cumuls, ni etourdissement */
     melee_start_swing();
 }
 static void weapon_select(int w) { if (w != P.weapon) { P.weapon = w; P.switchT = SWITCH_TIME; } }
@@ -2119,7 +2216,7 @@ static void throw_coin(void) {
         if (c->alive) continue;
         V3 f = view_dir();
         P.coins -= 1;
-        c->alive = 1; c->owner = myId; c->life = 4; c->spin = 0;
+        c->alive = 1; c->owner = myId; c->life = 4; c->spin = 0; c->teslaT = 0;
         c->pos = vadd(eye_pos(), vadd(vmul(f, 0.7f), v3(0, -0.2f, 0)));
         c->vel = vadd(P.vel, vadd(vmul(f, 9), v3(0, 6, 0)));   /* la piece garde ta vitesse : elle reste devant toi */
         c->netId = ((unsigned int)(myId + 1) << 24) | (++coinCounter & 0xFFFFFF);
@@ -2129,10 +2226,24 @@ static void throw_coin(void) {
     }
 }
 
+static void tesla_relay_zap(int ci, int mine);          /* Tesla : definie avec l'arme */
 static void coin_tick(float dt) {
     for (int i = 0; i < MAXCOIN; i++) {
         Coin *c = &CO[i];
         if (!c->alive) continue;
+        if (c->teslaT > 0) {                              /* --- Tesla : relais, la piece flotte et frappe tout autour --- */
+            c->teslaT -= dt; c->spin += dt * 3;
+            if ((c->teslaPulse -= dt) <= 0.5f * TICK) {
+                c->teslaPulse = TESLA_PULSE;
+                tesla_relay_zap(i, c->teslaBy == myId);   /* degats si c'est mon relais, sinon visuel seul */
+            }
+            if (c->teslaT <= 0.5f * TICK) {               /* la piece grille : un relais ne se renouvelle pas */
+                c->alive = 0; c->teslaT = 0;
+                burst(c->pos, v3(0.6f, 0.8f, 1), 16, 5, 0.3f, 0.08f);
+                if (dmMode && c->teslaBy == myId) net_fx_coin(1, c->netId, c->pos, v3(0, 0, 0));
+            }
+            continue;
+        }                                                 /* --- fin Tesla --- */
         c->life -= dt; c->spin += dt;
         c->vel.y -= COIN_GRAVITY * dt;
         V3 step = vmul(c->vel, dt);
@@ -2518,6 +2629,292 @@ static void fire_shotgun(void) {
     }
 }
 /* --- fin Eventail ------------------------------------------------------- */
+
+/* --- Tesla (arc electrique) --------------------------------------------- */
+/* Faisceau continu tant que le tir est tenu : 10 impulsions/s a 2 de batterie (aucune recharge passive ; la melee
+ * et les cellules la remplissent, 1 point = 0,4). Rayon sur la visee avec des cibles grossies de 0,4 m, chaine
+ * vers 2 cibles de plus a 6 m (60 %), relais sur les pieces traversees (2 s, 3 au plus, ne s'ajoute pas a l'arc).
+ * Les degats sont cumules par cible et envoyes toutes les 0,2 s (un net_hit W_TESLA par cible), plus tot si la
+ * cible va mourir ou pare. Ne compte pas dans la chaine de touches. Les autres clients recalculent l'arc (ST_ZAP). */
+typedef struct { int kind, idx; V3 at; } TeslaTgt;
+/* lien d'arc dessine : extremites resolues a chaque image (ap / bp : positions de secours) */
+typedef struct { int ak, ai, bk, bi; V3 ap, bp; float life, max; unsigned int seed; int gold; } TeslaLink;
+#define MAXTL 48
+static TeslaLink TL[MAXTL];
+static int tlNext;
+static unsigned int tlSeed;
+static float teslaArcE[MAXE], teslaRelE[MAXE], teslaArcP[MAXP], teslaRelP[MAXP];   /* cumuls de la fenetre */
+static V3 teslaKnE[MAXE];                                 /* recul PvE cumule */
+static int teslaVoice[MAXP];                              /* voix en boucle par joueur (index + 1, 0 = aucune) */
+static int teslaPulses, teslaPulseHits, teslaSpent, teslaRelays, teslaChains3, teslaReflects, teslaStuns;   /* journal */
+static int teslaArcPulses, teslaArcHits;                  /* arc en cours (journal du bot) */
+static double teslaArcStartT;
+static void dry_fire(void);
+
+static float tesla_range(V3 vel) { return fminf(TESLA_RANGE + TESLA_RANGE_PER_MS * vlen(vel), TESLA_RANGE_MAX); }
+/* etourdi : TESLA_STUN + un demi-tick a la reception, decompte avant le test : exactement 48 ticks sans tir */
+static int tesla_stunned(void) { return P.teslaStunT > 0; }
+static V3 yp_dir(float yaw, float pitch) { float cp = cosf(pitch); return v3(sinf(yaw) * cp, sinf(pitch), -cosf(yaw) * cp); }
+static V3 np_eye(int i) {
+    return v3(NP[i].disp.x, NP[i].disp.y + ((NP[i].st.flags & NF_CROUCH) ? EYE_CROUCH : EYE_STAND), NP[i].disp.z);
+}
+/* joueur ciblable par l'arc de `shooter` (moi compris si c'est un autre qui tire) */
+static int tesla_player_ok(int i, int shooter) {
+    if (i == shooter || !NP[i].active || !NP[i].alive) return 0;
+    return i != myId || !P.dead;
+}
+static V3 tesla_pcenter(int i) { return i == myId ? pcenter() : np_center(i); }
+static int tesla_has(const TeslaTgt *t, int n, int kind, int idx) {
+    for (int k = 0; k < n; k++) if (t[k].kind == kind && t[k].idx == idx) return 1;
+    return 0;
+}
+
+/* trace de l'arc : cible principale sur la visee (decor qui arrete), pieces traversees (relais, l'arc continue),
+ * puis la chaine (la plus proche a 6 m, en vue, deterministe). shooter : id exclu, -1 en solo.
+ * Renvoie le nombre de cibles (0 : out[0].at est le point d'arret) */
+static int tesla_trace(V3 eye, V3 d, float range, int shooter, TeslaTgt out[3], int *coins, int *nc) {
+    float tw = ray_world(eye, d, range, 0), t;
+    int n = 0;
+    out[0].kind = TK_POINT; out[0].idx = 0; out[0].at = vadd(eye, vmul(d, tw));
+    for (int i = 0; i < MAXE; i++)                        /* solo : drones et kamikazes */
+        if (E[i].alive && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type) + TESLA_AIM_PAD, tw, &t)) {
+            tw = t; out[0].kind = TK_ENEMY; out[0].idx = i; out[0].at = E[i].pos; n = 1;
+        }
+    for (int i = 0; dmMode && i < MAXP; i++) {
+        V3 mn, mx, g = v3(TESLA_AIM_PAD, TESLA_AIM_PAD, TESLA_AIM_PAD);
+        if (!tesla_player_ok(i, shooter)) continue;
+        if (i == myId) { paabb(P.pos, pheight(), &mn, &mx); mn = vsub(mn, g); mx = vadd(mx, g); }
+        else np_aabb(i, TESLA_AIM_PAD, &mn, &mx);
+        if (ray_box(eye, d, mn, mx, tw, &t, NULL) && t < tw) {
+            tw = t; out[0].kind = TK_PLAYER; out[0].idx = i; out[0].at = tesla_pcenter(i); n = 1;
+        }
+    }
+    if (nc) {
+        *nc = 0;
+        for (int i = 0; i < MAXCOIN; i++)
+            if (CO[i].alive && CO[i].teslaT <= 0 && ray_sphere(eye, d, CO[i].pos, COIN_RADIUS, tw, &t)) coins[(*nc)++] = i;
+    }
+    for (int k = 0; n && k < TESLA_CHAIN_N; k++) {
+        V3 from = out[n - 1].at;
+        float best = TESLA_CHAIN_R + 1e-3f;
+        TeslaTgt nx;
+        nx.kind = TK_NONE; nx.idx = 0; nx.at = from;
+        for (int i = 0; i < MAXE; i++) {
+            if (!E[i].alive || tesla_has(out, n, TK_ENEMY, i)) continue;
+            float dd = vlen(vsub(E[i].pos, from));
+            if (dd < best && los(from, E[i].pos)) { best = dd; nx.kind = TK_ENEMY; nx.idx = i; nx.at = E[i].pos; }
+        }
+        for (int i = 0; dmMode && i < MAXP; i++) {
+            if (!tesla_player_ok(i, shooter) || tesla_has(out, n, TK_PLAYER, i)) continue;
+            V3 c = tesla_pcenter(i);
+            float dd = vlen(vsub(c, from));
+            if (dd < best && los(from, c)) { best = dd; nx.kind = TK_PLAYER; nx.idx = i; nx.at = c; }
+        }
+        if (nx.kind == TK_NONE) break;
+        out[n++] = nx;
+    }
+    return n;
+}
+
+static void tesla_link(int ak, int ai, int bk, int bi, V3 ap, V3 bp, float life, int gold) {
+    TeslaLink *l = &TL[tlNext];
+    tlNext = (tlNext + 1) % MAXTL;
+    l->ak = ak; l->ai = ai; l->bk = bk; l->bi = bi; l->ap = ap; l->bp = bp;
+    l->life = l->max = life; l->seed = (++tlSeed) * 2654435761u; l->gold = gold;
+}
+
+/* --- cumuls : pas d'addition arc + relais, au plus 2 impulsions de relais par fenetre --- */
+static float tesla_total(float arc, float rel) { return fmaxf(arc, fminf(rel, 2 * TESLA_RELAY_DMG)); }
+static void tesla_flush_one(int kind, int idx) {          /* envoie et remet a zero le cumul d'une cible */
+    if (kind == TK_ENEMY) {
+        float tot = tesla_total(teslaArcE[idx], teslaRelE[idx]);
+        V3 kn = teslaKnE[idx];
+        teslaArcE[idx] = teslaRelE[idx] = 0; teslaKnE[idx] = v3(0, 0, 0);
+        if (tot > 0 && E[idx].alive) damage_enemy(idx, tot, kn);
+    } else if (kind == TK_PLAYER && idx >= 0 && idx < MAXP) {
+        float tot = tesla_total(teslaArcP[idx], teslaRelP[idx]);
+        teslaArcP[idx] = teslaRelP[idx] = 0;
+        if (tot > 0 && np_target(idx)) net_hit(idx, tot * PVP_SCALE, v3(0, 0, 0), W_TESLA);
+    }
+}
+static void tesla_flush(void) {                           /* fin de la fenetre de 0,2 s, arret de l'arc, mort */
+    for (int i = 0; i < MAXE; i++) if (teslaArcE[i] > 0 || teslaRelE[i] > 0) tesla_flush_one(TK_ENEMY, i);
+    for (int i = 0; i < MAXP; i++) if (teslaArcP[i] > 0 || teslaRelP[i] > 0) tesla_flush_one(TK_PLAYER, i);
+    P.teslaAggT = TESLA_AGG;
+}
+static void tesla_cancel(void) {                          /* decharge renvoyee : les cumuls ne partent pas */
+    memset(teslaArcE, 0, sizeof teslaArcE); memset(teslaRelE, 0, sizeof teslaRelE);
+    memset(teslaArcP, 0, sizeof teslaArcP); memset(teslaRelP, 0, sizeof teslaRelP);
+    memset(teslaKnE, 0, sizeof teslaKnE);
+}
+/* ajoute une impulsion au cumul ; envoi anticipe si la cible va mourir (PV connus) ou si elle pare */
+static void tesla_add(int kind, int idx, float dmg, int relay, V3 dir) {
+    if (kind == TK_ENEMY) {
+        if (relay) teslaRelE[idx] += dmg; else teslaArcE[idx] += dmg;
+        teslaKnE[idx] = vadd(teslaKnE[idx], vmul(dir, TESLA_KNOCK_PVE));
+        if (tesla_total(teslaArcE[idx], teslaRelE[idx]) >= E[idx].hp) tesla_flush_one(kind, idx);
+    } else if (kind == TK_PLAYER && idx >= 0 && idx < MAXP && idx != myId) {
+        if (relay) teslaRelP[idx] += dmg; else teslaArcP[idx] += dmg;
+        if (tesla_total(teslaArcP[idx], teslaRelP[idx]) * PVP_SCALE >= NP[idx].hp || (NP[idx].st.flags & NF_PARRY))
+            tesla_flush_one(kind, idx);
+    }
+}
+static void tesla_reset(void) {                           /* (re)spawn : ni arc, ni cumuls, ni liens */
+    P.teslaOn = P.teslaDry = P.teslaChain3 = 0;
+    P.teslaStunT = P.teslaAggT = P.teslaHitT = 0;
+    tesla_cancel();
+    memset(TL, 0, sizeof TL);
+}
+
+/* --- relais sur piece --- */
+static int tesla_relays_of(int id) {
+    int n = 0;
+    for (int i = 0; i < MAXCOIN; i++) n += CO[i].alive && CO[i].teslaT > 0 && CO[i].teslaBy == id;
+    return n;
+}
+static void tesla_relay_start(int ci) {                   /* n'importe quelle piece : une piece adverse devient MON relais */
+    if (tesla_relays_of(myId) >= TESLA_RELAY_MAX) return;
+    Coin *c = &CO[ci];
+    c->teslaT = TESLA_RELAY_T; c->teslaPulse = 0; c->teslaBy = myId; c->vel = v3(0, 0, 0);
+    teslaRelays++;
+    burst(c->pos, v3(0.5f, 0.75f, 1), 20, 6, 0.3f, 0.1f);
+    play(S_TESLA_ZAP, 0.5f, 0.7f);
+    if (dmMode) net_fx_tesla(0, c->netId, c->pos, myId, 0);
+}
+/* une impulsion du relais : toute cible a moins de 6 m en vue, sauf son activateur ; degats seulement si mine */
+static void tesla_relay_zap(int ci, int mine) {
+    Coin *c = &CO[ci];
+    for (int i = 0; i < MAXE; i++) {
+        if (!E[i].alive || vlen(vsub(E[i].pos, c->pos)) >= TESLA_RELAY_R || !los(c->pos, E[i].pos)) continue;
+        tesla_link(TK_COIN, ci, TK_ENEMY, i, c->pos, E[i].pos, 0.12f, 0);
+        if (mine) tesla_add(TK_ENEMY, i, TESLA_RELAY_DMG, 1, vnorm(vsub(E[i].pos, c->pos)));
+    }
+    for (int i = 0; dmMode && i < MAXP; i++) {
+        if (i == c->teslaBy || !tesla_player_ok(i, -1)) continue;
+        V3 pc = tesla_pcenter(i);
+        if (vlen(vsub(pc, c->pos)) >= TESLA_RELAY_R || !los(c->pos, pc)) continue;
+        tesla_link(TK_COIN, ci, TK_PLAYER, i, c->pos, pc, 0.12f, 0);
+        if (mine && np_target(i)) tesla_add(TK_PLAYER, i, TESLA_RELAY_DMG, 1, v3(0, 0, 0));
+    }
+    add_part(c->pos, vmul(rand_dir(), 3), v3(0.6f, 0.8f, 1), 0.15f, 0.08f, 0);
+}
+
+/* --- une impulsion de l'arc (10 par seconde) --- */
+static void tesla_pulse(void) {
+    V3 eye = eye_pos(), d = view_dir(), m = muzzle();
+    TeslaTgt t[3];
+    int coins[MAXCOIN], nc = 0;
+    int n = tesla_trace(eye, d, tesla_range(P.vel), dmMode ? myId : -1, t, coins, &nc);
+    int cost = P.ammo[WP_TESLA] < TESLA_COST ? P.ammo[WP_TESLA] : TESLA_COST;   /* le tir coute, pas la touche */
+    P.ammo[WP_TESLA] -= cost; teslaSpent += cost;
+    P.fireCd = TESLA_PULSE;
+    teslaPulses++; teslaArcPulses++;
+    for (int k = 0; k < nc; k++) tesla_relay_start(coins[k]);
+    if (!dmMode) {                                        /* solo : l'arc grille les orbes des drones qu'il traverse */
+        float reach = vlen(vsub(t[0].at, eye)), to;
+        for (int i = 0; i < MAXPR; i++)
+            if (PR[i].alive && PR[i].kind == PR_ORB && ray_sphere(eye, d, PR[i].pos, 0.5f, reach, &to)) {
+                PR[i].alive = 0;
+                burst(PR[i].pos, v3(0.8f, 0.4f, 1), 14, 5, 0.3f, 0.1f);
+            }
+    }
+    tesla_link(TK_MUZZLE, 0, n ? t[0].kind : TK_POINT, t[0].idx, m, t[0].at, 0.12f, 0);
+    for (int k = 0; k < n; k++) {
+        V3 from = k ? t[k - 1].at : eye;
+        tesla_add(t[k].kind, t[k].idx, k ? TESLA_DMG * TESLA_CHAIN_MULT : TESLA_DMG, 0, vnorm(vsub(t[k].at, from)));
+        if (k) tesla_link(t[k - 1].kind, t[k - 1].idx, t[k].kind, t[k].idx, t[k - 1].at, t[k].at, 0.12f, 0);
+        for (int s = 0; s < 3; s++) add_part(t[k].at, vmul(rand_dir(), 5), v3(0.6f, 0.8f, 1), 0.2f, 0.07f, 0);
+    }
+    if (!n && vlen(vsub(t[0].at, eye)) < tesla_range(P.vel) - 0.05f)   /* l'arc meurt sur le mur */
+        add_part(t[0].at, vmul(rand_dir(), 3), v3(0.6f, 0.8f, 1), 0.15f, 0.06f, 0);
+    if (n) {
+        hitMarker = fmaxf(hitMarker, 0.06f); P.teslaHitT = 0.15f;
+        teslaPulseHits++; teslaArcHits++;
+        play(S_TESLA_ZAP, 0.3f, frange(0.9f, 1.25f));
+    }
+    if (n == 3 && !P.teslaChain3) {                       /* une fois par appui */
+        snprintf(popText, sizeof popText, "CHAINE x3"); popT = 1.0f;
+        impact_frame(t[2].at, 0.04f);
+        P.teslaChain3 = 1; teslaChains3++;
+    }
+    P.recoil = fmaxf(P.recoil, 0.15f); shake += 0.01f; muzzleT = 0.03f;
+}
+
+/* tir maintenu : held = A_FIRE tenu, Tesla en main, vivant, pas en train de changer d'arme */
+static void tesla_tick(float dt, int held) {
+    int was = P.teslaOn;
+    P.teslaOn = 0;
+    if (P.teslaStunT > 0) P.teslaStunT -= dt;
+    P.teslaHitT -= dt;
+    if ((P.teslaAggT -= dt) <= 0.5f * TICK) tesla_flush();   /* fenetre de 0,2 s (relais compris, arc coupe ou non) */
+    if (!held) { P.teslaDry = 0; P.teslaChain3 = 0; }
+    else if (!tesla_stunned()) {
+        if (P.ammo[WP_TESLA] <= 0) {                      /* batterie vide : clic sec et bascule, une fois par appui */
+            if (!P.teslaDry && P.fireCd <= 0.5f * TICK) { P.teslaDry = 1; dry_fire(); }
+        } else {
+            P.teslaOn = 1;
+            if (!was) { P.teslaAggT = TESLA_AGG; teslaArcPulses = teslaArcHits = 0; teslaArcStartT = nowT; }
+            if (P.fireCd <= 0.5f * TICK) tesla_pulse();   /* premiere impulsion au tick de l'appui */
+        }
+    }
+    if (was && !P.teslaOn) {                              /* arret, changement d'arme, mort : les cumuls partent */
+        tesla_flush();
+        if (botMode && teslaArcPulses)
+            netlog("tesla : arc de %.1f s, %d impulsion(s) dont %d qui touchent, batterie %d", nowT - teslaArcStartT,
+                   teslaArcPulses, teslaArcHits, P.ammo[WP_TESLA]);
+    }
+    if (tesla_stunned() && ((int)(P.teslaStunT * 120)) % 5 == 0)   /* surcharge : fumee */
+        add_part(muzzle(), v3(0, 1.2f, 0), v3(0.35f, 0.35f, 0.38f), 0.5f, 0.1f, -1);
+    if (P.dead)                                           /* mort : mes relais s'eteignent (coin_tick les detruit) */
+        for (int i = 0; i < MAXCOIN; i++)
+            if (CO[i].alive && CO[i].teslaT > 0.5f * TICK && CO[i].teslaBy == myId) CO[i].teslaT = 0.001f;
+}
+
+/* effets (joueur et spectateur) : duree des liens, arcs des autres recalcules ici toutes les 0,1 s */
+static void tesla_fx_tick(float dt) {
+    for (int i = 0; i < MAXTL; i++) TL[i].life -= dt;
+    for (int i = 0; dmMode && i < MAXP; i++) {
+        NetPlayer *n = &NP[i];
+        if (i == myId || !n->active || !n->alive || !(n->st.pad & ST_ZAP) || n->st.weapon != WP_TESLA) {
+            n->teslaVisT = 0; n->teslaVisHit = 0;
+            continue;
+        }
+        if ((n->teslaVisT -= dt) > 0.5f * TICK) continue;
+        n->teslaVisT = TESLA_PULSE;
+        TeslaTgt t[3];
+        V3 eye = np_eye(i), d = yp_dir(n->st.yaw, n->st.pitch);
+        float range = tesla_range(np_vel(i));
+        int k = tesla_trace(eye, d, range, i, t, NULL, NULL);
+        /* verrou : celui qui perd des PV voit toujours l'arc qui le touche */
+        if (myId < MAXP && !P.dead && n->teslaHitMeT > 0 && nowT - n->teslaHitMeT < TESLA_LOCK_T &&
+            vlen(vsub(pcenter(), eye)) < range + 1 && !(k && t[0].kind == TK_PLAYER && t[0].idx == myId)) {
+            t[0].kind = TK_PLAYER; t[0].idx = myId; t[0].at = pcenter(); k = 1;
+        }
+        tesla_link(TK_HAND, i, k ? t[0].kind : TK_POINT, t[0].idx, eye, t[0].at, 0.12f, 0);
+        for (int j = 1; j < k; j++) tesla_link(t[j - 1].kind, t[j - 1].idx, t[j].kind, t[j].idx, t[j - 1].at, t[j].at, 0.12f, 0);
+        for (int j = 0; j < k; j++) add_part(t[j].at, vmul(rand_dir(), 4), v3(0.6f, 0.8f, 1), 0.18f, 0.07f, 0);
+        n->teslaVisHit = k > 0;
+    }
+}
+
+/* boucles sonores : la mienne et celle de chaque joueur distant dont l'arc est actif (appelee a chaque image) */
+static void tesla_audio(void) {
+    int run = appState == APP_GAME && (dmMode || captured);
+    for (int i = 0; i < MAXP; i++) {
+        int on, hit;
+        float vol;
+        if (i == myId) { on = P.teslaOn && !P.dead && !spectating; hit = P.teslaHitT > 0; vol = 0.4f; }
+        else {
+            on = dmMode && NP[i].active && NP[i].alive && (NP[i].st.pad & ST_ZAP) && NP[i].st.weapon == WP_TESLA;
+            hit = NP[i].teslaVisHit; vol = 0.5f * atten(NP[i].disp);
+        }
+        on = on && run;
+        if (on && !teslaVoice[i]) teslaVoice[i] = play_loop(S_TESLA_LOOP, vol, 1);
+        else if (!on && teslaVoice[i]) { loop_stop(teslaVoice[i]); teslaVoice[i] = 0; }
+        if (on) loop_set(teslaVoice[i], vol, hit ? 1.08f : 1.0f);
+    }
+}
+/* --- fin Tesla ---------------------------------------------------------- */
 
 static Proj *spawn_proj(int kind, V3 pos, V3 vel) {
     for (int i = 0; i < MAXPR; i++)
@@ -3064,13 +3461,14 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   7
+#define NET_VER   8
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
        EV_PICKUP_TAKEN, EV_COIN, EV_MELEE_PARRY,
        EV_SHOT = 15,                                      /* Eventail : un tir = un evenement (graine des plombs) */
        EV_SAW = 16,                                       /* Scie */
+       EV_TESLA = 18,                                     /* Tesla : relais (0) ou decharge renvoyee (1) */
        EV_SLAM = 21 };                                    /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
 
 #pragma pack(push, 1)
@@ -3205,6 +3603,7 @@ static void pack_state(NetPState *s) {
     s->melee = (unsigned char)(clampf(P.meleeT / (P.meleeKind == MK_ANVIL ? ANVIL_SWING_T : 0.25f), 0, 1) * 255);
     s->pad = (unsigned char)(P.meleeKind & 0x0F);      /* bits 4-7 : etats d'arme (ST_*), ajoutes par chaque arme */
     if (P.anvilState == ANVIL_DIVE) s->pad |= ST_SLAM;
+    if (P.teslaOn) s->pad |= ST_ZAP;                      /* Tesla : chaque client recalcule l'arc */
 }
 
 static void find_local_ip(void) {
@@ -3343,6 +3742,15 @@ static void net_fx_coin_kick(const Coin *c) {
     net_emit(&e);
 }
 /* --- fin Scie : evenements --- */
+/* --- Tesla : EV_TESLA. sub 0 = relais (netId de la piece, f = position) ; sub 1 = decharge renvoyee, decidee
+ * par l'hote (actor = pareur, target = tireur, f = position du pareur) --- */
+static void net_fx_tesla(int sub, unsigned int netId, V3 pos, int actor, int target) {
+    NetEvent e = ev_new(EV_TESLA);
+    e.sub = (unsigned char)sub; e.netId = netId; vf(e.f, pos);
+    e.actor = (unsigned char)actor; e.target = (unsigned char)target;
+    net_emit(&e);
+}
+/* --- fin Tesla --- */
 
 static void kfeed_add(int killer, int victim, int kind, int info) {
     memmove(&kfeed[1], &kfeed[0], sizeof kfeed - sizeof kfeed[0]);
@@ -3504,6 +3912,7 @@ static void apply_event(const NetEvent *ev) {
             P.hurtFlash = 0.6f; shake += 0.25f;
             play(S_HURT, 0.8f, frange(0.9f, 1.1f));
             if (ev->from != myId && ev->from < MAXP) { hurtFrom = np_center(ev->from); hurtDirT = 1.2f; }
+            if (ev->sub == W_TESLA && ev->from < MAXP) NP[ev->from].teslaHitMeT = nowT;   /* Tesla : verrou visuel */
             {                                             /* Scie : ma scie paree m'a touche, je la rattrape d'office */
                 Proj *s = saw_mine();
                 if (s && ev->sub == W_PARRY && s->sawState == SAW_PARRIED && s->sawBy == ev->from) saw_catch(s, SAW_HOW_PARRIED);
@@ -3619,7 +4028,7 @@ static void apply_event(const NetEvent *ev) {
             for (int i = 0; i < MAXCOIN; i++)
                 if (!CO[i].alive) {
                     CO[i].alive = 1; CO[i].owner = ev->from; CO[i].netId = ev->netId;
-                    CO[i].pos = a; CO[i].vel = b; CO[i].life = 4; CO[i].spin = 0;
+                    CO[i].pos = a; CO[i].vel = b; CO[i].life = 4; CO[i].spin = 0; CO[i].teslaT = 0;
                     break;
                 }
         } else if (ev->sub == 1 && ev->f[3] == 1) {       /* Eventail : piece eclatee par un plomb */
@@ -3680,6 +4089,42 @@ static void apply_event(const NetEvent *ev) {
     case EV_SAW:
         saw_apply(ev);
         break;
+    case EV_TESLA:                                        /* --- Tesla --- */
+        if (ev->sub == 0) {                               /* relais active par un autre : sa copie flotte et crepite */
+            if (ev->from == myId || ev->from >= MAXP) break;
+            for (int i = 0; i < MAXCOIN; i++) {
+                Coin *c = &CO[i];
+                if (!c->alive || c->netId != ev->netId) continue;
+                if (c->teslaT > 0 && c->teslaBy < ev->from) break;   /* activations simultanees : le plus petit id gagne */
+                c->pos = a; c->vel = v3(0, 0, 0);
+                c->teslaT = TESLA_RELAY_T; c->teslaPulse = 0; c->teslaBy = ev->from;
+                burst(a, v3(0.5f, 0.75f, 1), 20, 6, 0.3f, 0.1f);
+                play(S_TESLA_ZAP, 0.5f * atten(a), 0.7f);
+                break;
+            }
+        } else {                                          /* decharge renvoyee par un parry (decision de l'hote) */
+            int def = ev->actor, sh = ev->target;
+            if (def >= MAXP || sh >= MAXP) break;
+            V3 ps = sh == myId ? pcenter() : np_center(sh);
+            tesla_link(TK_PLAYER, def, TK_PLAYER, sh, a, ps, 0.25f, 1);
+            for (int k = 0; k < 24; k++) add_part(vlerp(a, ps, frand()), vmul(rand_dir(), 6), v3(1, 0.85f, 0.4f), 0.35f, 0.09f, 0);
+            if (def == myId) {
+                parry_feedback(a);
+                ammo_points(PTS_PARRY, AP_PARRY);
+                snprintf(popText, sizeof popText, "DECHARGE RENVOYEE"); popT = 1.2f;
+            }
+            if (sh == myId) {                             /* moi, le tireur : surcharge, plus de tir pendant 0,4 s */
+                P.teslaStunT = TESLA_STUN + 0.5f * TICK; P.teslaOn = 0;
+                tesla_cancel();
+                hitstop = fmaxf(hitstop, 0.08f); shake += 0.3f;
+                impact_frame(eye_pos(), 0.05f);
+                snprintf(popText, sizeof popText, "SURCHARGE !"); popT = 1.2f;
+                play(S_TESLA_ZAP, 0.9f, 0.55f);
+                teslaStuns++;
+            } else play(S_TESLA_ZAP, 0.7f * atten(ps), 0.55f);
+            netlog("tesla : decharge renvoyee par %s vers %s", pname(def), pname(sh));
+        }
+        break;                                            /* --- fin Tesla --- */
     case EV_INFO:
         if (ev->sub && ev->target < MAXP) saw_remove_owner(ev->target);   /* depart : ses scies disparaissent */
         kfeed_add(-1, ev->target, 0, ev->sub ? 2 : 1);
@@ -3725,6 +4170,7 @@ static int slamLastBy[MAXP];
 static double parry_grace(int w, int victimMK) {
     (void)victimMK;                                       /* les Poings (0,05 s) s'ajouteront ici */
     if (w == W_SLAM) return SLAM_PARRY_GRACE;             /* l'onde de l'Enclume : 0,20 s */
+    if (w == W_TESLA) return TESLA_PARRY_GRACE;           /* decharge de la Tesla : 0,25 s (fenetre de cumul) */
     return MELEE_PARRY_GRACE;
 }
 
@@ -3747,6 +4193,21 @@ static int host_handle(const NetEvent *ev) {
         if (ev->sub == W_SAW && ev->f[4] > 0) sawHostBounceHits++;   /* Scie : touche apres un renvoi */
         netlog("degats : %s -> %s, %.0f (arme %d), PV avant %.0f", pname(ev->from), pname(v), ev->f[0], ev->sub, NP[v < MAXP ? v : 0].hp);
         if (v >= MAXP || !NP[v].active || !NP[v].alive || matchOver) return 1;
+        if (ev->sub == W_TESLA && ev->from < MAXP) {      /* --- Tesla : la victime qui pare renvoie la decharge --- */
+            int s = ev->from;
+            if (NP[s].teslaReflT > 0 && nowT - NP[s].teslaReflT < TESLA_STUN) return 1;   /* deja en vol apres un renvoi */
+            if (nowT - NP[v].lastParryT < parry_grace(W_TESLA, NP[v].st.pad & 15)) {
+                NP[s].teslaReflT = nowT; teslaReflects++;
+                NP[v].hp = fminf(100, NP[v].hp + PARRY_HEAL);
+                NetEvent e = ev_new(EV_TESLA);
+                e.sub = 1; e.actor = (unsigned char)v; e.target = (unsigned char)s;
+                vf(e.f, v == myId ? pcenter() : np_center(v));
+                net_emit(&e);
+                apply_event(&e);
+                if (NP[s].alive && (NP[s].hp -= TESLA_REFLECT_DMG) <= 0) host_kill(v, s, W_TESLA);
+                return 1;
+            }
+        }                                                 /* --- fin Tesla --- */
         /* coup de melee ou impact de grappin pendant la fenetre de parry de la victime : c'est pare */
         if (is_parryable_w(ev->sub) && nowT - NP[v].lastParryT < parry_grace(ev->sub, NP[v].st.pad & 15)) {
             int clash = is_melee_w(ev->sub) && ev->from < MAXP && nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
@@ -4680,6 +5141,27 @@ static void bot_think(float dt) {
         }
     }
 
+    /* Tesla adverse : son arc est sur moi. Une fois toutes les 1,5 s, 35 % de chances de tenter un parry
+     * (apres 0,25 s de reaction) pour renvoyer la decharge */
+    {
+        static double zapSeenT, zapAt;
+        static int zapGo;
+        for (int i = 0; i < MAXP; i++) {
+            if (!np_target(i) || !(NP[i].st.pad & ST_ZAP) || NP[i].st.weapon != WP_TESLA) continue;
+            V3 e = np_eye(i), to = vsub(pcenter(), e);
+            float dl = vlen(to);
+            if (dl > tesla_range(np_vel(i)) || vdot(yp_dir(NP[i].st.yaw, NP[i].st.pitch), vmul(to, 1.0f / fmaxf(dl, 0.01f))) < 0.98f) continue;
+            if (nowT - zapSeenT > 1.5) { zapSeenT = nowT; zapGo = frand() < 0.35f; zapAt = nowT + 0.25; }
+            if (zapGo && nowT >= zapAt && P.meleeCd <= 0) {
+                V3 d = vsub(np_center(i), eye_pos());
+                P.yaw = atan2f(d.x, -d.z);
+                botPress[A_MELEE] = 1; zapGo = 0;
+                netlog("parry tesla tente contre %s", pname(i));
+                return;
+            }
+        }
+    }
+
     /* Enclume adverse : un pique tombe pres de nous. Juste avant l'impact, une fois sur deux on pare l'onde ;
      * sinon on saute (un saut simple passe au-dessus de l'onde) ou, deja en l'air, on sort du rayon par un dash */
     static double slamSeenT[MAXP];
@@ -4789,7 +5271,8 @@ static void bot_think(float dt) {
 
     /* une arme a sec et personne de proche : on va chercher une cellule (les grandes d'abord) */
     int seek = -1;
-    if (((P.loadout[0] != WP_SAW && !wp_has_ammo(P.loadout[0])) || (P.loadout[1] != WP_SAW && !wp_has_ammo(P.loadout[1]))) &&
+    int teslaLow = (P.loadout[0] == WP_TESLA || P.loadout[1] == WP_TESLA) && P.ammo[WP_TESLA] < 10;   /* Tesla : batterie < 10 */
+    if (((P.loadout[0] != WP_SAW && !wp_has_ammo(P.loadout[0])) || (P.loadout[1] != WP_SAW && !wp_has_ammo(P.loadout[1])) || teslaLow) &&
         (best < 0 || bd > 25)) {                          /* la Scie n'a pas de jauge : les cellules ne la rendent pas */
         float sd = 90;
         for (int i = 0; i < npu; i++) {
@@ -4930,6 +5413,11 @@ static void bot_think(float dt) {
         if (wp_has_ammo(WP_SHOTGUN) && (bd < 10 || !wp_has_ammo(o))) pref = WP_SHOTGUN;
         else if (wp_has_ammo(o)) pref = o;
     }
+    if (la == WP_TESLA || lb == WP_TESLA) {               /* Tesla : jusqu'a 20 m (pas a la place de l'Eventail tout pres) */
+        int o = la == WP_TESLA ? lb : la;
+        if (wp_has_ammo(WP_TESLA) && bd < 20 && !(pref == WP_SHOTGUN && bd < 10)) pref = WP_TESLA;
+        else if (pref == WP_TESLA && wp_has_ammo(o)) pref = o;
+    }
     if (P.meleeKind == MK_ANVIL && P.anvilLandT < 1.0f && P.swingHitPts && wp_has_ammo(WP_RAIL) && (la == WP_RAIL || lb == WP_RAIL))
         pref = WP_RAIL;                                   /* onde qui touche : la cible vole ~1 s, le rail l'acheve */
     P.weapon = pref;
@@ -4972,7 +5460,7 @@ static void bot_think(float dt) {
         }
     }
     if (!dry && !coinPlan && see && seeT > 0.3f && bd < 55 && P.fireCd <= 0 && P.switchT <= 0 &&
-        P.weapon != WP_KINETIC && P.weapon != WP_SAW &&   /* recale la visee pour tirer (l'Elan et la Scie ont leur regle) */
+        P.weapon != WP_KINETIC && P.weapon != WP_SAW && P.weapon != WP_TESLA &&   /* recale la visee (Elan, Scie, Tesla : leur regle) */
         (P.weapon != WP_SHOTGUN || bd < (P.sliding ? 13.0f : 11.0f))) {   /* Eventail : au-dela, moins de 4 plombs */
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1;
     }
@@ -4992,6 +5480,15 @@ static void bot_think(float dt) {
         P.yaw = aimYaw;
         botPress[A_DASH] = 1;
         botNextDash = botT + 1.2f;
+    }
+    /* Tesla : clic tenu en continu tant que la cible est a portee ; l'imprecision sinusoidale simule un suivi
+     * imparfait. Une piece lancee vers la cible toutes les 2,5 s devient un relais quand l'arc la traverse. */
+    if (P.weapon == WP_TESLA && best >= 0 && see && seeT > 0.3f && P.switchT <= 0 && wp_has_ammo(WP_TESLA) &&
+        bd < tesla_range(P.vel) - 1) {
+        static float teslaCoinT;
+        P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch;
+        botHeld[A_FIRE] = 1;
+        if (bd < 12 && P.coins >= 1 && botT > teslaCoinT) { botPress[A_COIN] = 1; teslaCoinT = botT + 2.5f; netlog("tesla : piece relais lancee"); }
     }
 
     /* Elan : tire quand sa vitesse suffit ; sinon dash-tir, fenetre reussie une fois sur deux
@@ -5188,11 +5685,12 @@ static void game_tick(float dt) {
     }
     P.sawCd -= dt;                                        /* Scie : delai entre deux lancers */
     P.recoil *= expf(-dt * 9);
-    if (!P.dead && (act[A_FIRE] || lmbp) && P.fireCd <= 0 && P.switchT <= 0) {
+    if (!P.dead && P.weapon != WP_TESLA && !tesla_stunned() && (act[A_FIRE] || lmbp) && P.fireCd <= 0 && P.switchT <= 0) {
         if (wp_has_ammo(P.weapon)) fire_weapon();
         else if (P.weapon == WP_SAW) saw_dry(lmbp);
         else dry_fire();
     }
+    tesla_tick(dt, !P.dead && P.weapon == WP_TESLA && (act[A_FIRE] || lmbp) && P.switchT <= 0);   /* Tesla : tir maintenu */
     if (!P.dead && !wp_has_ammo(P.loadout[0]) && !wp_has_ammo(P.loadout[1])) dryT += dt;
     ammoGainT -= dt; dryHintT -= dt;
 
@@ -5219,6 +5717,7 @@ static void fx_tick(float dt) {
     }
     for (int i = 0; i < MAXBM; i++) BM[i].life -= dt;
     for (int i = 0; i < MAXTR; i++) TR[i].t += dt;       /* Eventail : traceurs */
+    tesla_fx_tick(dt);                                    /* Tesla : liens d'arc, arcs des autres */
     for (int i = 0; i < nb; i++)                         /* particules des jump pads */
         if (boxes[i].kind == B_PAD && frand() < 0.15f) {
             V3 c = vlerp(boxes[i].mn, boxes[i].mx, 0.5f);
@@ -5240,7 +5739,7 @@ static void fx_tick(float dt) {
 /* ------------------------------------------------------------------ */
 static GLuint texGrid, texDot, worldList, fontBase[3];
 static int fontW[3], fontH[3];
-static V3 camR, camU;
+static V3 camR, camU, camEye;
 static float fps;
 
 static void make_textures(void) {
@@ -5522,6 +6021,149 @@ static int saw_out_of(int id) {                           /* le joueur id a-t-il
 }
 /* --- fin Scie : rendu --- */
 
+/* --- Tesla : rendu des arcs ---------------------------------------------- */
+/* Les liens (TL) ne passent pas par add_beam (BM[32] serait sature en 0,1 s) : leurs extremites sont resolues a
+ * chaque image, l'arc suit donc la visee et la cible entre deux impulsions. Aleatoire propre (arcRng) : le rng
+ * global n'est jamais touche par le rendu. */
+static unsigned int arcRng;
+static float arc_rand(void) { arcRng = arcRng * 1664525u + 1013904223u; return (float)(arcRng >> 8) / 16777216.0f * 2 - 1; }
+static V3 np_hand(int i) {                                /* bout du canon d'un joueur distant (comme draw_remote_players) */
+    float h = np_height(i), cy = cosf(NP[i].st.yaw), sy = sinf(NP[i].st.yaw);
+    V3 off = v3(0.42f * cy + 0.1f * sy, h - 0.6f, 0.42f * sy - 0.1f * cy);
+    return vadd(vadd(NP[i].disp, off), vmul(yp_dir(NP[i].st.yaw, NP[i].st.pitch), 0.7f));
+}
+static V3 tesla_end(int kind, int idx, V3 fb) {           /* position actuelle d'une extremite (fb : derniere connue) */
+    switch (kind) {
+    case TK_MUZZLE: return vadd(camEye, vadd(vmul(yp_dir(P.yaw, P.pitch), 0.6f), vadd(vmul(camR, 0.22f), vmul(camU, -0.2f))));
+    case TK_HAND:   return idx < MAXP && NP[idx].active ? np_hand(idx) : fb;
+    case TK_ENEMY:  return E[idx].alive ? E[idx].pos : fb;
+    case TK_PLAYER: return idx == myId ? pcenter() : (idx < MAXP && NP[idx].active ? np_center(idx) : fb);
+    case TK_COIN:   return CO[idx].alive ? CO[idx].pos : fb;
+    }
+    return fb;
+}
+/* eclair entre a et b : extremites fixes, deviation en sinus, forme stable 1/30 s (lisible, mais il scintille) */
+static void draw_arc(V3 a, V3 b, unsigned int seed, float alpha, V3 col, int loose) {
+    V3 d = vsub(b, a);
+    float L = vlen(d);
+    if (L < 0.05f) return;
+    V3 f = vmul(d, 1 / L), s1 = vnorm(vcross(f, fabsf(f.y) < 0.9f ? v3(0, 1, 0) : v3(1, 0, 0))), s2 = vcross(f, s1);
+    int N = (int)(L / 0.7f);
+    N = N < 4 ? 4 : N > 28 ? 28 : N;
+    float amp = fminf(0.12f + 0.03f * L, 0.6f) * (loose ? 2.0f : 1.0f);
+    V3 p[29];
+    arcRng = seed + (unsigned int)(nowT * 30);
+    for (int k = 0; k <= N; k++) {
+        float t = (float)k / N, e = sinf(PI * t) * amp;
+        float r1 = arc_rand(), r2 = arc_rand();
+        p[k] = vadd(vadd(a, vmul(d, t)), vadd(vmul(s1, r1 * e), vmul(s2, r2 * e)));
+    }
+    for (int pass = 0; pass < 2; pass++) {                /* halo, puis coeur blanc */
+        glLineWidth(pass ? 2.0f : 6.0f);
+        if (pass) glColor4f(0.9f, 0.95f, 1.0f, alpha); else glColor4f(col.x, col.y, col.z, 0.3f * alpha);
+        glBegin(GL_LINE_STRIP);
+        for (int k = 0; k <= N; k++) glVertex3f(p[k].x, p[k].y, p[k].z);
+        glEnd();
+    }
+    glLineWidth(1.5f);                                    /* une branche sur trois */
+    glColor4f(col.x, col.y, col.z, 0.5f * alpha);
+    for (int k = 1; k < N; k += 3) {
+        V3 q = p[k];
+        glBegin(GL_LINE_STRIP);
+        glVertex3f(q.x, q.y, q.z);
+        for (int s = 0; s < 3; s++) {
+            float r1 = arc_rand(), r2 = arc_rand(), r3 = arc_rand(), len = 0.3f + 0.1f * arc_rand();
+            q = vadd(q, vmul(vnorm(v3(r1, r2, r3 + 0.01f)), len));
+            glVertex3f(q.x, q.y, q.z);
+        }
+        glEnd();
+    }
+}
+static void draw_tesla_arcs(void) {                       /* passe additive */
+    for (int i = 0; i < MAXTL; i++) {
+        TeslaLink *l = &TL[i];
+        if (l->life <= 0) continue;
+        V3 a = tesla_end(l->ak, l->ai, l->ap), b = tesla_end(l->bk, l->bi, l->bp);
+        float al = clampf(l->life / fminf(l->max, 0.06f), 0, 1);
+        int loose = l->bk == TK_POINT;                    /* arc dans le vide : plus pale, plus tordu */
+        draw_arc(a, b, l->seed, al * (loose ? 0.5f : 1.0f), l->gold ? v3(1, 0.8f, 0.3f) : v3(0.45f, 0.65f, 1.0f), loose);
+    }
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, texDot);
+    glBegin(GL_QUADS);
+    for (int i = 0; i < MAXTL; i++) {                     /* lueurs aux points d'impact */
+        TeslaLink *l = &TL[i];
+        if (l->life <= 0 || l->bk == TK_POINT) continue;
+        float al = clampf(l->life / fminf(l->max, 0.06f), 0, 1);
+        if (l->gold) glColor4f(1, 0.8f, 0.35f, 0.6f * al); else glColor4f(0.5f, 0.75f, 1, 0.45f * al);
+        billboard(tesla_end(l->bk, l->bi, l->bp), 0.3f);
+    }
+    for (int i = 0; dmMode && i < MAXP; i++)              /* canon des joueurs distants dont l'arc est actif */
+        if (np_target(i) && (NP[i].st.pad & ST_ZAP) && NP[i].st.weapon == WP_TESLA) {
+            glColor4f(0.55f, 0.8f, 1, 0.7f + 0.3f * sinf(gameTime * 40 + i));
+            billboard(np_hand(i), 0.22f);
+        }
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+}
+/* viewmodel : corps bleu nuit, 3 bagues de bobine, 2 fourches, 5 temoins de batterie (rouges sous 20) */
+static void draw_tesla_vm(void) {
+    int stun = tesla_stunned(), on = P.teslaOn;
+    glPushMatrix();
+    if (on) glTranslatef(sinf(gameTime * 90) * 0.006f, cosf(gameTime * 77) * 0.004f, 0);   /* tremblement en tir */
+    glColor3f(0.12f, 0.14f, 0.28f);
+    box_faces(v3(-0.04f, -0.04f, -0.45f), v3(0.04f, 0.04f, 0.06f));
+    glColor3f(0.1f, 0.1f, 0.12f);
+    box_faces(v3(-0.025f, -0.16f, -0.02f), v3(0.025f, -0.04f, 0.06f));
+    glColor3f(0.75f, 0.55f, 0.32f);                       /* bobine */
+    for (int r = 0; r < 3; r++) {
+        float z = -0.16f - r * 0.08f;
+        box_faces(v3(-0.052f, -0.052f, z - 0.03f), v3(0.052f, 0.052f, z));
+    }
+    glColor3f(0.55f, 0.58f, 0.62f);                       /* fourches */
+    box_faces(v3(-0.045f, -0.01f, -0.58f), v3(-0.025f, 0.01f, -0.45f));
+    box_faces(v3(0.025f, -0.01f, -0.58f), v3(0.045f, 0.01f, -0.45f));
+    glDisable(GL_LIGHTING);
+    float glow = on ? 0.8f + 0.2f * sinf(gameTime * 50) : 0.25f;
+    if (stun) glColor3f(1, 0.2f, 0.15f); else glColor3f(0.4f * glow, 0.75f * glow, 1.0f * glow);
+    box_faces(v3(-0.047f, -0.012f, -0.59f), v3(-0.023f, 0.012f, -0.565f));
+    box_faces(v3(0.023f, -0.012f, -0.59f), v3(0.047f, 0.012f, -0.565f));
+    for (int i = 0; i < 5; i++) {                         /* temoins : 1 par tranche de 20 de batterie */
+        float z = -0.13f + i * 0.04f;
+        int lit = P.ammo[WP_TESLA] > i * 20, low = P.ammo[WP_TESLA] < 20;
+        if (!lit) glColor3f(0.08f, 0.08f, 0.12f);
+        else if (low) glColor3f(1, 0.25f, 0.2f);
+        else glColor3f(0.35f, 0.85f, 1);
+        box_faces(v3(-0.05f, 0.005f, z), v3(-0.041f, 0.025f, z + 0.025f));
+    }
+    /* etincelle entre les fourches : continue en tir, une toutes les 0,5 s au repos */
+    if (!stun && (on || fmodf(gameTime, 0.5f) < 0.06f)) {
+        arcRng = (unsigned int)(gameTime * 40) * 2654435761u;
+        glLineWidth(2);
+        glColor3f(0.85f, 0.95f, 1);
+        glBegin(GL_LINE_STRIP);
+        for (int k = 0; k <= 4; k++) glVertex3f(-0.035f + k * 0.0175f, (k % 4 ? arc_rand() * 0.012f : 0), -0.575f);
+        glEnd();
+    }
+    if (on) {                                             /* lueur constante au bout */
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, texDot);
+        float s = 0.07f + 0.02f * sinf(gameTime * 60);
+        glColor4f(0.5f, 0.8f, 1, 0.9f);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0, 0); glVertex3f(-s, -s, -0.6f); glTexCoord2f(1, 0); glVertex3f(s, -s, -0.6f);
+        glTexCoord2f(1, 1); glVertex3f(s, s, -0.6f); glTexCoord2f(0, 1); glVertex3f(-s, s, -0.6f);
+        glEnd();
+        glDisable(GL_TEXTURE_2D);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+    }
+    glPopMatrix();
+}
+/* --- fin Tesla : rendu --- */
+
 static void draw_viewmodel(float aspect) {
     glClear(GL_DEPTH_BUFFER_BIT);
     set_frustum(60, aspect, 0.01f, 10);
@@ -5562,6 +6204,7 @@ static void draw_viewmodel(float aspect) {
     }
     if (muzzleT > 0) {                                    /* flash du canon */
         float tip = P.weapon == WP_RAIL || P.weapon == WP_SHOTGUN ? -0.64f : P.weapon == WP_KINETIC ? -0.57f : -0.6f;
+        if (P.weapon == WP_TESLA) tip = -0.58f;           /* Tesla : entre les fourches */
         float ms2 = (0.12f + 0.25f * (muzzleT / 0.08f)) * (P.weapon == WP_SHOTGUN ? 1.5f : 1.0f);
         glDisable(GL_LIGHTING);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE);
@@ -5657,6 +6300,8 @@ static void draw_viewmodel(float aspect) {
                 box_faces(v3(-0.03f, -0.03f, -0.14f), v3(0.03f, -0.022f, -0.06f));
             }
         }
+    } else if (P.weapon == WP_TESLA) {                    /* Tesla */
+        draw_tesla_vm();
     } else {
         glColor3f(0.32f, 0.36f, 0.22f);
         box_faces(v3(-0.055f, -0.055f, -0.5f), v3(0.055f, 0.055f, 0.05f));
@@ -5766,7 +6411,6 @@ static void assign_bind(int code) {
 static int uiMX, uiMY, uiClick, uiFocus, pendingAction, pendingArg;   /* uiFocus : 1 = pseudo, 2 = IP */
 static char ipField[32];
 static GLfloat mvMat[16], prMat[16];
-static V3 camEye;
 
 static const float pcol[MAXP][3] = {
     { 0.3f, 0.8f, 1.0f }, { 1.0f, 0.45f, 0.3f }, { 0.5f, 1.0f, 0.4f }, { 1.0f, 0.85f, 0.3f },
@@ -6160,6 +6804,12 @@ static void draw_remote_players(void) {
                 draw_saw_disc(v3(0, 0, -0.35f), v3(0, 1, 0), 0.22f, gameTime * 3, v3(0.78f, 0.8f, 0.86f), c);
                 glEnable(GL_LIGHTING);
             }
+        } else if (n->st.weapon == WP_TESLA) {            /* Tesla : corps bleu nuit, deux fourches (lueur : draw_tesla_arcs) */
+            glColor3f(0.2f, 0.25f, 0.45f);
+            box_faces(v3(-0.06f, -0.06f, -0.55f), v3(0.06f, 0.06f, 0.05f));
+            glColor3f(0.5f, 0.8f, 1.0f);
+            box_faces(v3(-0.05f, -0.015f, -0.7f), v3(-0.02f, 0.015f, -0.55f));
+            box_faces(v3(0.02f, -0.015f, -0.7f), v3(0.05f, 0.015f, -0.55f));
         } else box_faces(v3(-0.06f, -0.06f, -0.7f), v3(0.06f, 0.06f, 0.05f));
         glPopMatrix();
         if ((n->st.pad & 15) == MK_ANVIL) {               /* Enclume : leve pendant le pique, abattu par le coup */
@@ -6313,6 +6963,36 @@ static void draw_saw_hud(float cx, float cy) {
     }
 }
 /* --- fin Scie : HUD --- */
+
+/* --- Tesla : HUD --- */
+static void tesla_hud_bar(float x, float y) {             /* barre de batterie : 200 px, graduee tous les 20 (1 s de tir) */
+    float b = P.ammo[WP_TESLA] / (float)ammoDef[WP_TESLA].max;
+    int blink = P.ammo[WP_TESLA] < 20 && fmodf(gameTime, 0.4f) < 0.2f;
+    if (tesla_stunned()) rect(x, y, 200, 8, 1, 0.2f, 0.15f, 0.9f);
+    else rect(x, y, 200 * b, 8, blink ? 1.0f : 0.3f, blink ? 0.25f : 0.9f, blink ? 0.2f : 1.0f, 0.95f);
+    for (int k = 1; k < 5; k++) rect(x + k * 40.0f - 1, y, 2, 8, 0.05f, 0.05f, 0.1f, 0.9f);
+}
+static void draw_tesla_hud(float cx, float cy) {
+    char buf[48];
+    float range = tesla_range(P.vel);
+    snprintf(buf, sizeof buf, "PORTEE %d M", (int)(range + 0.5f));
+    text(0, winW - 236.0f - fontW[0] * (float)strlen(buf), winH - 47.0f, buf, 0.5f, 0.8f, 1, 0.9f);
+    if (tesla_stunned()) text_c(1, cx, cy + 46, "SURCHARGE", 1, 0.3f, 0.2f, 0.95f);
+    else if (P.ammo[WP_TESLA] <= 0) text_c(0, cx, cy + 46, "BATTERIE VIDE", 1, 0.35f, 0.3f, 0.95f);
+    TeslaTgt t[3];                                        /* viseur : anneau cyan si l'arc trouverait une cible */
+    int n = tesla_trace(eye_pos(), view_dir(), range, dmMode ? myId : -1, t, NULL, NULL);
+    glLineWidth(2);
+    if (n) glColor4f(0.4f, 0.85f, 1, 0.95f); else glColor4f(0.6f, 0.6f, 0.65f, 0.5f);
+    glBegin(GL_LINE_LOOP);
+    for (int s = 0; s < 24; s++) glVertex2f(cx + 16 * cosf(s * PI / 12), cy + 16 * sinf(s * PI / 12));
+    glEnd();
+    int nr = tesla_relays_of(myId);
+    if (nr) {
+        snprintf(buf, sizeof buf, "RELAIS %d/%d", nr, TESLA_RELAY_MAX);
+        text(0, winW - 30.0f - fontW[0] * (float)strlen(buf), winH - 104.0f, buf, 0.45f, 0.75f, 1, 0.95f);
+    }
+}
+/* --- fin Tesla : HUD --- */
 
 static void draw_hud(void) {
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
@@ -6536,7 +7216,8 @@ static void draw_hud(void) {
     {
         float cdMax = P.weapon == WP_SHOTGUN && P.sgPumpMax > 0 ? P.sgPumpMax : wpCd[P.weapon];   /* Eventail : recharge reelle */
         float cdLeft = P.weapon == WP_SAW ? P.sawCd / SAW_CD : P.fireCd / cdMax;                    /* Scie : delai de lancer */
-        rect(winW - 230.0f, winH - 40.0f, 200 * clampf(1 - cdLeft, 0, 1), 8, 1, 1, 1, 0.8f);
+        if (P.weapon == WP_TESLA) tesla_hud_bar(winW - 230.0f, winH - 40.0f);                      /* Tesla : batterie */
+        else rect(winW - 230.0f, winH - 40.0f, 200 * clampf(1 - cdLeft, 0, 1), 8, 1, 1, 1, 0.8f);
     }
     if (ad->gauge > 0) {                                  /* jauge : la melee et les cellules la remplissent */
         float gf = P.weapon == WP_TESLA ? P.ammo[WP_TESLA] / 100.0f : gauge_frac(P.weapon);
@@ -6590,6 +7271,7 @@ static void draw_hud(void) {
         }
     }
     draw_saw_hud(cx, cy);                                 /* Scie */
+    if (P.weapon == WP_TESLA && !P.dead) draw_tesla_hud(cx, cy);   /* Tesla */
     for (int i = 0; i < COIN_MAX; i++) {                 /* pieces disponibles */
         float fill = clampf(P.coins - i, 0, 1), x = winW - 30.0f - (COIN_MAX - i) * 20.0f, y = winH - 96.0f;
         rect(x, y, 14, 14, 0.15f, 0.12f, 0.05f, 0.7f);
@@ -6851,7 +7533,7 @@ static void render(float alpha, float frameDt) {
         glTranslatef(CO[i].pos.x, CO[i].pos.y, CO[i].pos.z);
         glRotatef(CO[i].spin * 900, 0, 1, 0);
         glRotatef(CO[i].spin * 400, 1, 0, 0);
-        glColor3f(1.0f, 0.82f, 0.3f);
+        if (CO[i].teslaT > 0) glColor3f(0.55f, 0.75f, 1.0f); else glColor3f(1.0f, 0.82f, 0.3f);   /* Tesla : relais bleu */
         box_faces(v3(-0.16f, -0.16f, -0.025f), v3(0.16f, 0.16f, 0.025f));
         glPopMatrix();
     }
@@ -6895,6 +7577,7 @@ static void render(float alpha, float frameDt) {
         glLineWidth(2); glColor4f(1, 1, 1, a);
         glBegin(GL_LINES); glVertex3f(m->a.x, m->a.y, m->a.z); glVertex3f(m->b.x, m->b.y, m->b.z); glEnd();
     }
+    draw_tesla_arcs();                                    /* Tesla : liens d'arc */
     for (int i = 0; i < MAXTR; i++) {                    /* Eventail : traceurs (tete de 2,5 m, puis trace qui s'eteint) */
         Tracer *r = &TR[i];
         if (r->t >= r->life) continue;
@@ -6950,7 +7633,8 @@ static void render(float alpha, float frameDt) {
     }
     for (int i = 0; i < MAXCOIN; i++) {                  /* reflet des pieces */
         if (!CO[i].alive) continue;
-        glColor4f(1, 0.85f, 0.4f, 0.5f + 0.4f * sinf(CO[i].spin * 25));
+        if (CO[i].teslaT > 0) glColor4f(0.45f, 0.7f, 1, 0.6f + 0.4f * sinf(CO[i].spin * 40));   /* Tesla : lueur bleue */
+        else glColor4f(1, 0.85f, 0.4f, 0.5f + 0.4f * sinf(CO[i].spin * 25));
         billboard(CO[i].pos, 0.7f);
     }
     if (P.hook != HOOK_NONE) {
@@ -7167,6 +7851,32 @@ static Proj *saw_test_put(V3 pos, V3 vel, int st, int owner) {
     if (owner == myId) { P.sawIdx = (int)(p - PR) + 1; P.ammo[WP_SAW] = 0; }
     return p;
 }
+
+/* --- Tesla : outils des tests --- */
+/* remise a zero : solo, Tesla + rail en main, batterie 60, regard vers -z (ou yaw) depuis pos */
+static void tesla_test_reset(V3 pos, float yaw) {
+    reset_game();
+    dmMode = 0; hitstop = 0;
+    memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+    memset(DN, 0, sizeof DN);
+    P.pos = P.prevPos = pos; P.yaw = yaw; P.pitch = 0; P.vel = v3(0, 0, 0);
+    P.loadout[0] = WP_TESLA; P.loadout[1] = WP_RAIL; P.weapon = WP_TESLA; P.switchT = 0; P.fireCd = 0;
+    P.ammo[WP_TESLA] = 60; P.ammo[WP_RAIL] = 2;
+}
+/* `ticks` ticks comme game_tick (pieces, recharge, Tesla), sans deplacer les drones ; held = tir tenu */
+static void tesla_test_run(int ticks, int held) {
+    for (int i = 0; i < ticks; i++) {
+        nowT += TICK;
+        coin_tick(TICK);
+        P.fireCd -= TICK; P.switchT -= TICK;
+        tesla_tick(TICK, held && !P.dead && P.weapon == WP_TESLA && P.switchT <= 0);
+    }
+}
+static Enemy *tesla_test_drone(int i, V3 pos, float hp) {
+    E[i].alive = 1; E[i].type = EN_DRONE; E[i].hp = hp; E[i].pos = pos; E[i].vel = v3(0, 0, 0);
+    return &E[i];
+}
+/* --- fin Tesla : outils des tests --- */
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
 static void run_tests(const char *path) {
@@ -8159,6 +8869,220 @@ static void run_tests(const char *path) {
         botMode = savedBot;
     }
 
+    /* --- Tesla --- (couloir x = -20, regard vers -z ; drones a hauteur des yeux, immobiles) */
+    {
+        int savedBot = botMode;
+        botMode = 0;
+        const float EY = EYE_STAND;
+        /* 1. portee selon la vitesse */
+        fprintf(f, "tesla portee a 0 / 20 / 60 m/s : %.1f / %.1f / %.1f (attendu 14.0 / 20.0 / 28.0)\n",
+                tesla_range(v3(0, 0, 0)), tesla_range(v3(0, 0, 20)), tesla_range(v3(60, 0, 0)));
+
+        /* 2. batterie 60, tir tenu 1 s dans le vide */
+        tesla_test_reset(v3(-20, 0, 40), PI);
+        int p0 = teslaPulses;
+        tesla_test_run(120, 1);
+        fprintf(f, "tesla tir tenu 1 s dans le vide : batterie %d, %d impulsions (attendu 40, 10)\n", P.ammo[WP_TESLA], teslaPulses - p0);
+
+        /* 3. tir tenu 4 s avec 60, puis 5 s sans tirer : aucune recharge passive */
+        tesla_test_reset(v3(-20, 0, 40), PI);
+        tesla_test_run(480, 1);
+        int b4 = P.ammo[WP_TESLA];
+        const char *w4 = ammoDef[P.weapon].name;
+        tesla_test_run(600, 0);
+        fprintf(f, "tesla tenu 4 s : batterie %d, arme %s ; 5 s plus tard : batterie %d, jauge %.0f (attendu 0, RAILGUN ; 0, 0)\n",
+                b4, w4, P.ammo[WP_TESLA], P.ammoGauge[WP_TESLA]);
+
+        /* 4. drone de 100 PV a 10 m, 1 s : 10 impulsions x 7, au plus 5 chiffres de degats */
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        Enemy *d0 = tesla_test_drone(0, v3(-20, EY, 30), 100);
+        tesla_test_run(120, 1);
+        tesla_test_run(1, 0);                              /* relache : les cumuls partent */
+        int dn = 0;
+        for (int i = 0; i < MAXDN; i++) dn += DN[i].t > 0;
+        fprintf(f, "tesla drone a 10 m, 1 s : PV %.1f, %d chiffres de degats (attendu 30.0, <= 5)\n", d0->hp, dn);
+
+        /* 5. meme drone, tir jusqu'au kill : envoi anticipe, sans attendre la fenetre */
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        d0 = tesla_test_drone(0, v3(-20, EY, 30), 100);
+        p0 = teslaPulses;
+        int killTick = -1;
+        for (int i = 0; i < 300 && killTick < 0; i++) { tesla_test_run(1, 1); if (!d0->alive) killTick = i + 1; }
+        fprintf(f, "tesla jusqu'au kill : tue a l'impulsion %d, apres %.3f s (attendu 15, 1.400 +- 1 tick)\n", teslaPulses - p0,
+                killTick * TICK);
+
+        /* 6. drone a 16 m : hors de portee a l'arret, touche a 10 m/s (portee 17) */
+        float hp6[2];
+        for (int k = 0; k < 2; k++) {
+            tesla_test_reset(v3(-20, 0, 40), 0);
+            d0 = tesla_test_drone(0, v3(-20, EY, 24), 100);
+            P.vel = k ? v3(0, 0, -10) : v3(0, 0, 0);
+            tesla_test_run(120, 1); tesla_test_run(1, 0);
+            hp6[k] = 100 - d0->hp;
+        }
+        fprintf(f, "tesla drone a 16 m : degats %.1f a l'arret, %.1f a 10 m/s (attendu 0.0, 70.0)\n", hp6[0], hp6[1]);
+
+        /* 7. chaine : drones a 10, 15, 20 et 27 m dans l'axe ; 8. une boite entre le 2e et le 3e */
+        float ch[2][4];
+        for (int k = 0; k < 2; k++) {
+            static const float dz[4] = { 10, 15, 20, 27 };
+            tesla_test_reset(v3(-20, 0, 40), 0);
+            for (int j = 0; j < 4; j++) tesla_test_drone(j, v3(-20, EY, 40 - dz[j]), 1000);
+            if (k) {
+                boxes[nb].mn = v3(-21, 0, 22); boxes[nb].mx = v3(-19, 3, 23); boxes[nb].kind = B_SOLID; nb++;
+            }
+            tesla_test_run(120, 1); tesla_test_run(1, 0);
+            if (k) nb--;
+            for (int j = 0; j < 4; j++) ch[k][j] = 1000 - E[j].hp;
+        }
+        fprintf(f, "tesla chaine : %.1f / %.1f / %.1f / %.1f (attendu 70.0 / 42.0 / 42.0 / 0.0)\n", ch[0][0], ch[0][1], ch[0][2], ch[0][3]);
+        fprintf(f, "tesla chaine coupee par un mur : %.1f / %.1f / %.1f (attendu 70.0 / 42.0 / 0.0)\n", ch[1][0], ch[1][1], ch[1][2]);
+
+        /* 9. relais : piece a 8 m dans l'axe, drone a 4 m de la piece hors de l'axe ; 1 s puis 2,1 s */
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        d0 = tesla_test_drone(0, v3(-16, EY, 32), 100);
+        CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 4; CO[0].pos = v3(-20, EY, 32); CO[0].vel = v3(0, 0, 0);
+        tesla_test_run(1, 1);
+        float y9 = CO[0].pos.y;
+        tesla_test_run(119, 1);
+        tesla_flush();
+        float t9 = CO[0].teslaT, dy9 = CO[0].pos.y - y9, hp9 = d0->hp;
+        tesla_test_run(132, 0);
+        fprintf(f, "tesla relais : actif %d (%.2f s restantes), ecart de hauteur %.3f, PV drone %.1f ; a 2,1 s piece vivante %d "
+                   "(attendu 1, ~1.0, 0.000, 50.0 ; 0)\n", t9 > 0, t9, dy9, hp9, CO[0].alive);
+
+        /* 10. pas de cumul : drone dans l'arc ET a 3 m d'un relais, 1 s */
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        d0 = tesla_test_drone(0, v3(-20, EY, 31), 100);
+        CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 4; CO[0].pos = v3(-20, EY, 34); CO[0].vel = v3(0, 0, 0);
+        tesla_test_run(120, 1); tesla_test_run(1, 0);
+        fprintf(f, "tesla arc + relais sur la meme cible, 1 s : degats %.1f, relais actif %d (attendu 70.0 et pas 120, 1)\n",
+                100 - d0->hp, CO[0].teslaT > 0);
+
+        /* 11. plafond : 4 pieces traversees -> 3 relais */
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        for (int j = 0; j < 4; j++) { CO[j].alive = 1; CO[j].owner = myId; CO[j].life = 4; CO[j].pos = v3(-20, EY, 36 - 2.0f * j); }
+        tesla_test_run(1, 1);
+        fprintf(f, "tesla 4 pieces traversees : %d relais actifs (attendu 3)\n", tesla_relays_of(myId));
+
+        /* 12. la chaine de touches n'est ni augmentee ni remise a zero */
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        tesla_test_drone(0, v3(-20, EY, 30), 1000);
+        shotStreak = 3;
+        tesla_test_run(120, 1); tesla_test_run(1, 0);
+        int st12 = shotStreak;
+        tesla_test_reset(v3(-20, 0, 40), PI);
+        shotStreak = 3;
+        tesla_test_run(120, 1); tesla_test_run(1, 0);
+        fprintf(f, "tesla chaine de tir : %d apres 1 s sur un drone, %d apres 1 s dans le vide (attendu 3, 3)\n", st12, shotStreak);
+
+        /* 17. rendu : arc_rand ne touche pas le rng global */
+        unsigned int r0 = rng;
+        for (int k = 0; k < 50; k++) arc_rand();
+        fprintf(f, "tesla rendu : rng global intact %d (attendu 1)\n", rng == r0);
+
+        /* 13. LAN simule : cible a 10 m, 1 s -> 5 net_hit de 9,8 */
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        dmMode = 1; matchOver = 0;
+        memset(NP, 0, sizeof NP);
+        NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi");
+        NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
+        NP[1].disp = v3(-20, 0, 30); vf(NP[1].st.pos, NP[1].disp);
+        int h13 = hitCount[W_TESLA];
+        tesla_test_run(60, 1);
+        NetPState ps;
+        pack_state(&ps);
+        tesla_test_run(60, 1); tesla_test_run(1, 0);
+        fprintf(f, "tesla LAN a 10 m, 1 s : %d EV_HIT, PV %.1f, ST_ZAP envoye %d (attendu 5, 51.0, 1)\n", hitCount[W_TESLA] - h13,
+                NP[1].hp, (ps.pad & ST_ZAP) != 0);
+
+        /* 14. parry : la victime pare, l'hote renvoie la decharge ; le tireur (moi) est etourdi */
+        NP[1].hp = 100; NP[0].hp = 100; NP[1].lastParryT = nowT; NP[0].teslaReflT = 0;
+        int refl0 = teslaReflects;
+        net_hit(1, 9.8f, v3(0, 0, 0), W_TESLA);
+        float stun14 = P.teslaStunT, hpV = NP[1].hp, hpS = NP[0].hp;
+        net_hit(1, 9.8f, v3(0, 0, 0), W_TESLA);            /* deja en vol : jete */
+        hitstop = 0;
+        p0 = teslaPulses;
+        tesla_test_run(48, 1);
+        int during = teslaPulses - p0;
+        tesla_test_run(1, 1);
+        fprintf(f, "tesla parry : PV victime %.0f, PV tireur %.0f, etourdi %.2f s, renvois %d, 2e touche : PV %.0f / %.0f, "
+                   "impulsions pendant 48 ticks %d, au 49e %d (attendu 100, 85, 0.40, 1, 100 / 85, 0, 1)\n",
+                hpV, hpS, stun14, teslaReflects - refl0, NP[1].hp, NP[0].hp, during, teslaPulses - p0 - during);
+
+        /* EV_TESLA sous-type 0 recu : la piece d'un autre devient son relais */
+        {
+            CO[5].alive = 1; CO[5].owner = 1; CO[5].netId = 0x02000042; CO[5].pos = v3(0, 5, 0); CO[5].vel = v3(0, -3, 0); CO[5].teslaT = 0;
+            NetEvent e = ev_new(EV_TESLA);
+            e.from = 1; e.sub = 0; e.netId = 0x02000042; vf(e.f, v3(1, 6, 1));
+            apply_event(&e);
+            fprintf(f, "tesla relais recu : actif %d, par %d, vitesse %.1f (attendu 1, 1, 0.0)\n", CO[5].teslaT > 0, CO[5].teslaBy,
+                    vlen(CO[5].vel));
+            CO[5].alive = 0;
+        }
+
+        /* 16. recalcul chez les autres : NP[1] rejoue mon tir (etat de pack_state) -> memes cibles */
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        dmMode = 1;
+        memset(NP, 0, sizeof NP);
+        NP[0].active = NP[0].alive = 1; NP[0].hp = 100;
+        for (int j = 2; j < 4; j++) { NP[j].active = NP[j].alive = 1; NP[j].hp = 100; }
+        NP[2].disp = v3(-20.3f, 0, 29); NP[3].disp = v3(-16, 0, 27);
+        P.pitch = -0.03f; P.vel = v3(0, 0, -5);
+        TeslaTgt ta[3], tb[3];
+        int na = tesla_trace(eye_pos(), view_dir(), tesla_range(P.vel), myId, ta, NULL, NULL);
+        pack_state(&NP[1].st);
+        NP[1].disp = P.pos; NP[1].active = NP[1].alive = 1;
+        P.dead = 1;                                        /* moi hors du jeu : je ne masque plus la copie */
+        int nb2 = tesla_trace(np_eye(1), yp_dir(NP[1].st.yaw, NP[1].st.pitch), tesla_range(np_vel(1)), 1, tb, NULL, NULL);
+        int same = na == nb2;
+        for (int k = 0; same && k < na; k++) same = ta[k].kind == tb[k].kind && ta[k].idx == tb[k].idx;
+        fprintf(f, "tesla recalcul distant : %d cible(s) chez moi, %d chez l'autre, identiques %d, premiere %d (attendu 2, 2, 1, 2)\n",
+                na, nb2, same, na ? ta[0].idx : -1);
+
+        /* 15. points avec la Tesla en main (1 point = 0,4 de batterie) */
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        P.ammo[WP_TESLA] = 0; P.ammo[WP_RAIL] = 0;
+        int b15[6];
+        ammo_points(50, AP_HIT); b15[0] = P.ammo[WP_TESLA];
+        ammo_points(PTS_MELEE_KILL, AP_KILL); b15[1] = P.ammo[WP_TESLA];
+        ammo_points(PTS_PARRY, AP_PARRY); b15[2] = P.ammo[WP_TESLA];
+        {
+            int pts0 = PU[0].pts;
+            PU[0].pts = PICKUP_BIG; pickup_taken(0, myId); PU[0].t = 0; PU[0].pts = pts0;
+        }
+        b15[3] = P.ammo[WP_TESLA];
+        P.ammo[WP_TESLA] = 90; P.ammoGauge[WP_RAIL] = 0;
+        ammo_points(100, AP_HIT); b15[4] = P.ammo[WP_TESLA];
+        fprintf(f, "tesla points : epee %d, + kill %d, + parry %d, + grande cellule %d ; a 90 + 100 points %d, jauge du rail %.0f "
+                   "(attendu 20, 60, 80, 100 ; 100, 75)\n", b15[0], b15[1], b15[2], b15[3], b15[4], P.ammoGauge[WP_RAIL]);
+
+        /* bot au loadout Tesla + rail, cible immobile a 12 m : il tient l'arc */
+        botMode = 2;
+        tesla_test_reset(v3(-20, 0, 40), 0);
+        dmMode = 1;
+        memset(NP, 0, sizeof NP);
+        NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Bot");
+        NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
+        NP[1].disp = v3(-20, 0, 28); vf(NP[1].st.pos, NP[1].disp);
+        P.dashCharge = 0; P.coins = 0;
+        P.loadout[0] = WP_RAIL; P.loadout[1] = WP_TESLA; P.weapon = WP_RAIL;
+        FILE *savedLog = botLog;
+        botLog = NULL;                                     /* journal du bot hors des resultats */
+        int ht0 = hitCount[W_TESLA], hr0 = hitCount[W_RAIL];
+        for (int i = 0; i < 120 && NP[1].alive; i++) { nowT += TICK; bot_think(TICK); game_tick(TICK); hitstop = 0; }
+        botLog = savedLog;
+        fprintf(f, "bot tesla a 12 m : arme %s, touches tesla %d, rail %d (attendu TESLA, >= 2, 0)\n", ammoDef[P.weapon].name,
+                hitCount[W_TESLA] - ht0, hitCount[W_RAIL] - hr0);
+
+        memset(NP, 0, sizeof NP);
+        memset(CO, 0, sizeof CO);
+        dmMode = 0;
+        botMode = savedBot;
+    }
+    /* --- fin Tesla --- */
+
     /* reglages : sauvegarde puis rechargement de velocity.ini */
     {
         int savedBot = botMode;
@@ -8426,6 +9350,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             apply_event(&e);
             for (int i = 0; i < 3; i++) fx_tick(TICK);
         }
+        if (strstr(shotPath, "tesla")) {                  /* Tesla : le Rival tient son arc sur moi (recalcule ici) */
+            NP[1].st.weapon = WP_TESLA; NP[1].st.flags = 0; NP[1].st.melee = 0; NP[1].st.pad |= ST_ZAP;
+            V3 d = vsub(pcenter(), np_eye(1));
+            NP[1].st.yaw = atan2f(d.x, -d.z); NP[1].st.pitch = asinf(d.y / vlen(d));
+            NP[1].teslaHitMeT = nowT = 1;
+            tesla_fx_tick(TICK);
+        }
         matchT = 95;
         render(1, TICK);
         save_bmp(shotPath);
@@ -8497,6 +9428,27 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             b->sawAxis = vnorm(v3(0, 1, 0.5f)); b->sawBounces = 2; b->sawSpin = 0.3f;
             if (strstr(shotPath, "main")) { a->alive = 0; P.sawIdx = 0; P.ammo[WP_SAW] = 1; }   /* variante : la scie en main */
         }
+        if (strstr(shotPath, "tesla")) {                  /* Tesla : arc tenu, chaine sur 3 drones, une piece en relais */
+            hook_release(0);
+            memset(PA, 0, sizeof PA); memset(PR, 0, sizeof PR); memset(BM, 0, sizeof BM); memset(E, 0, sizeof E);
+            memset(CO, 0, sizeof CO);
+            P.loadout[1] = WP_TESLA; P.weapon = WP_TESLA; P.switchT = 0; P.fireCd = 0; P.meleeT = 0; P.recoil = 0;
+            shotStreak = 0; P.ammo[WP_TESLA] = 66;
+            P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0.1f; P.pitch = 0.02f; P.vel = v3(0, 0, -8);
+            V3 a = vadd(eye_pos(), vmul(view_dir(), 9));
+            tesla_test_drone(0, a, 900);
+            tesla_test_drone(1, vadd(a, v3(3.5f, 1, -3)), 900);
+            tesla_test_drone(2, vadd(a, v3(5.5f, -0.5f, -7)), 900);
+            tesla_test_drone(3, v3(-27, 2.5f, 31), 900);
+            CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 4; CO[0].pos = v3(-25.5f, 2.2f, 34);
+            for (int i = 0; i < 30; i++) {
+                if (i == 12) CO[0].pos = vadd(eye_pos(), vmul(view_dir(), 4));   /* la piece passe dans l'arc */
+                tesla_test_run(1, 1);
+                if (i == 12) CO[0].pos = v3(-25.5f, 2.2f, 34);
+                tesla_fx_tick(TICK);
+            }
+            hitstop = 0; impactT = 0;
+        }
         render(1, TICK);
         save_bmp(shotPath);
         return 0;
@@ -8557,6 +9509,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         render((captured || dmMode) && appState == APP_GAME ? acc / TICK : 1.0f, dt);
         uiClick = 0;
         SwapBuffers(hdc);
+        tesla_audio();                                    /* Tesla : boucles sonores des arcs */
         audio_update();
         if (lbWantHost) { lbWantHost = 0; if (appState == APP_JOIN) pendingAction = ACT_HOST; }
         if (pendingAction) do_action();
@@ -8597,6 +9550,11 @@ done:
                    "%d pertes ; renvois tentes %d, reussis %d, qui touchent %d",
                    sawStat[SS_THROW], sawStat[SS_HIT], sawRelSum / (sawStat[SS_HIT] ? sawStat[SS_HIT] : 1), sawStat[SS_PLANT],
                    sawStat[SS_RECALL], sawStat[SS_FOOT], sawStat[SS_LOST], sawStat[SS_TRY], sawStat[SS_BOUNCE], sawStat[SS_BHIT]);
+        if (teslaPulses || hitCount[W_TESLA] || teslaReflects)   /* Tesla */
+            netlog("tesla (moi) : %d impulsions, %d qui touchent (accroche %.0f%%), batterie depensee %d, relais %d, chaines x3 %d, "
+                   "surcharges subies %d ; arbitre : touches %d, decharges renvoyees %d",
+                   teslaPulses, teslaPulseHits, 100.0f * teslaPulseHits / (teslaPulses ? teslaPulses : 1), teslaSpent, teslaRelays,
+                   teslaChains3, teslaStuns, hitCount[W_TESLA], teslaReflects);
         if (netMode == NET_HOST && (sawHostStat[SAWE_THROW] || hitCount[W_SAW]))
             netlog("scie (arbitre) : lancers %d, touches %d (dont %d apres renvoi), plantages %d, rattrapages %d, rappels %d, renvois %d",
                    sawHostStat[SAWE_THROW], hitCount[W_SAW], sawHostBounceHits, sawHostStat[SAWE_PLANT], sawHostStat[SAWE_CATCH],
