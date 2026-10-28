@@ -729,10 +729,10 @@ Une version différente rend simplement les parties invisibles l'une à l'autre.
 | `PVP_SCALE` | 0,7 | dégâts contre les joueurs = 70 % des dégâts contre les monstres |
 | `KILL_HEAL` | 30 PV | soin du tueur |
 | `NET_MAGIC` | `0x564C4F43` | signature des paquets (« VLOC ») |
-| `NET_VER` | 4 | version du protocole (voir §4) |
+| `NET_VER` | 9 | version du protocole (voir §4) |
 | `MAXSPEC` | 4 | spectateurs en direct sur l'hôte |
 | `MAXFOUND` | 12 | parties mémorisées (LAN + en ligne ; 7 affichées) |
-| `LOBBY_DEFAULT` | `velocity-lobby.CHANGE-ME.workers.dev` | adresse du lobby (à remplacer après le déploiement) |
+| `LOBBY_DEFAULT` | `velocity-lobby.velocity-void.workers.dev` | adresse du lobby déployé (`lobby=` dans `velocity.ini` la remplace) |
 | `STUN_HOST` / `STUN_PORT` | `stun.l.google.com` / 19302 | serveur STUN public |
 | `OUTQ` | 128 | taille de la file d'événements sortants |
 

@@ -47,9 +47,11 @@ possibilité de regarder une partie. L'hôte reste un joueur (id 0) et fait auto
 
 ## État d'avancement
 
-Étapes 1 à 4 **faites et vérifiées en local** (lobby de test, match hôte + client + spectateur par le lobby,
-`--test`). **Non fait / non vérifié** : le déploiement Cloudflare (étape 5), le WebSocket `wss://` réel
-(testé seulement en `ws://` local), STUN contre Google, et le perçage entre deux vrais réseaux.
+Étapes 1 à 5 **faites**. Lobby déployé : `velocity-lobby.velocity-void.workers.dev` (`wss://` vérifié :
+WebSocket ouvert en ~75 ms). Vérifié sur une machine avec le vrai lobby et le vrai STUN de Google : l'hôte
+publie son adresse publique, un client et un spectateur le trouvent, `join` → `go` (adresse LAN, même box) →
+connexion. **Non vérifié** : le perçage de NAT entre deux vrais réseaux différents (seule la branche
+« même box » a été exercée).
 
 ## Étapes
 

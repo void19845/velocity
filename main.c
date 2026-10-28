@@ -70,6 +70,9 @@ static V3 rand_dir(void) {
 #define EYE_STAND      1.6f
 #define EYE_CROUCH     0.95f
 #define STEP_H         0.55f
+#define STAIR_SLOPE    0.45f   /* pente d'un escalier (marche 0,4 m / profondeur 0,84 m) : vy de rampe = vitesse x pente */
+#define STAIR_RAMP_T   0.18f   /* un escalier agit comme une rampe pendant ce delai apres la derniere marche montee */
+#define FRICTION_MOVE  0.12f   /* friction au sol x0,12 quand on tient une direction (sans sauter, la vitesse se perd moins) */
 #define GRAVITY        24.0f
 #define JUMP_V         8.4f
 #define RUN_SPEED      9.5f
@@ -1115,6 +1118,7 @@ typedef struct {
     float yaw, pitch;
     int grounded, crouch, sliding, airJumps, wallrun, wallTouch, dead, groundBox, weapon;
     float dashCharge, hp, hurtFlash, slideCd, wallTime, wallJumpCd, coyote;
+    float stairT;                                         /* temps restant "je viens de monter une marche" (comportement de rampe) */
     float landDip, stepOfs, roll, fovKick, fovCur, eyeH, bobT, bob;
     float fireCd, switchT, recoil, deathT, swayX, swayY;
     int hook;                                             /* HOOK_NONE / FLYING / ATTACHED */
@@ -1282,6 +1286,14 @@ static int np_target(int i) { return dmMode && i != myId && NP[i].active && NP[i
 static float rel_speed(V3 targetVel) { return vlen(vsub(P.vel, targetVel)); }
 
 static int botMode;                                       /* 1 = bot hote, 2 = bot client (tests reseau) */
+static int botLevel = 1;                                  /* difficulte du bot : 0 facile, 1 normal, 2 difficile */
+static int botLocal, botHidden;                           /* --local : le bot rejoint 127.0.0.1 ; --hidden : fenetre reduite et muette */
+static int vsBot;                                         /* partie joueur contre bot : jamais annoncee en ligne */
+static HANDLE botProc;                                    /* processus du bot adverse (partie joueur contre bot) */
+static const char *botLevelNames[3] = { "FACILE", "NORMAL", "DIFFICILE" };
+static const float botAimMul[3]  = { 2.8f, 1.0f, 0.45f };   /* imprecision de visee */
+static const float botReactT[3]  = { 0.7f, 0.3f, 0.14f };   /* delai avant de tirer apres avoir vu la cible */
+static const float botParryP[3]  = { 0.15f, 0.5f, 0.85f };  /* chance de tenter un parry quand l'epee adverse arrive */
 static void netlog(const char *fmt, ...);
 static void net_hit(int target, float dmg, V3 knock, int weapon);
 static void net_fx_rail(V3 a, V3 b, float k);
@@ -1506,7 +1518,7 @@ static void move_axis(int ax, float d, int canStep) {
             float rise = b->mx.y - P.pos.y;
             if (canStep && rise > 0 && rise <= STEP_H) {
                 V3 np = P.pos; np.y = b->mx.y + 0.001f;
-                if (pos_free(np, h)) { P.stepOfs -= rise; P.pos = np; continue; }
+                if (pos_free(np, h)) { P.stepOfs -= rise; P.pos = np; P.stairT = STAIR_RAMP_T; continue; }
             }
             if (d > 0) *vc(&P.pos, ax) = *vc(&b->mn, ax) - HW - 0.001f;
             else       *vc(&P.pos, ax) = *vc(&b->mx, ax) + HW + 0.001f;
@@ -1786,7 +1798,7 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     if (P.grounded && P.hook != HOOK_ATTACHED) {
         float sp = hlen(P.vel);
         if (sp > 1e-4f) {
-            float fr = P.sliding ? SLIDE_FRICTION : FRICTION;
+            float fr = P.sliding ? SLIDE_FRICTION : (hasWish ? FRICTION * FRICTION_MOVE : FRICTION);
             float ctrl = sp < STOPSPEED ? STOPSPEED : sp;
             float ns = sp - ctrl * fr * dt;
             if (ns < 0) ns = 0;
@@ -1833,12 +1845,19 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     /* deplacement + collisions, sous-pas si on va vite */
     int wasG = P.grounded;
     float prevVy = P.vel.y;
+    if (P.stairT > 0) P.stairT -= dt;
+    float stairSp = hlen(P.vel);
     int steps = (int)(vlen(P.vel) * dt / 0.3f) + 1;
     P.grounded = 0;
     for (int s = 0; s < steps; s++) {
         move_axis(0, P.vel.x * dt / steps, wasG);
         move_axis(2, P.vel.z * dt / steps, wasG);
         move_axis(1, P.vel.y * dt / steps, 0);
+    }
+    if (wasG && !P.grounded && P.stairT > 0 && alive && P.hook != HOOK_ATTACHED) {   /* haut de l'escalier : decollage de rampe */
+        float ramp = stairSp * STAIR_SLOPE;
+        if (P.vel.y < ramp) P.vel.y = ramp;
+        P.stairT = 0;
     }
 
     /* Enclume : contact direct en l'air, puis onde de choc a l'atterrissage (avant le jump pad) */
@@ -2128,6 +2147,10 @@ static int try_parry(float range0, float speedMult) {
         float dist = vlen(d), range = range0 * powf(PARRY_RANGE_SHRINK, (float)p->parries);
         if (dist > range || vdot(vmul(d, 1.0f / fmaxf(dist, 0.01f)), f) < 0.3f) continue;
         V3 aim = f; float best = PARRY_AIM_COS;
+        {   /* sans cible : viser le point que le viseur touche (et non la direction de la vue, decalee par la parallaxe) */
+            float hd = ray_world(eye, f, 150.0f, 0);
+            if (hd > 3.0f) aim = vnorm(vsub(vadd(eye, vmul(f, fminf(hd, 150.0f))), p->pos));
+        }
         for (int j = 0; j < MAXE; j++) {
             if (!E[j].alive) continue;
             V3 to = vnorm(vsub(E[j].pos, p->pos));
@@ -5693,7 +5716,13 @@ static void dm_local_start(void) {
     killerOfMe = -1;
 }
 
+static void stop_bot_proc(void) {
+    if (botProc) { TerminateProcess(botProc, 0); CloseHandle(botProc); botProc = NULL; }
+    vsBot = 0;
+}
+
 static void net_shutdown(void) {
+    stop_bot_proc();
     if (sock != INVALID_SOCKET) {
         PkHead l;
         head(&l, PK_LEAVE);
@@ -5975,7 +6004,7 @@ static void net_connect(struct sockaddr_in addr) { net_connect_ex(addr, 0, 0); }
 /* adresses publiques viennent d'une requete STUN faite depuis le      */
 /* socket du jeu (meme port => meme mapping NAT). Voir docs/PLAN_EN_LIGNE.md */
 /* ------------------------------------------------------------------ */
-#define LOBBY_DEFAULT "velocity-lobby.CHANGE-ME.workers.dev"   /* a remplacer apres `wrangler deploy` (ou lobby= dans velocity.ini) */
+#define LOBBY_DEFAULT "velocity-lobby.velocity-void.workers.dev"   /* lobby deploye ; lobby= dans velocity.ini le remplace */
 #define STUN_HOST     "stun.l.google.com"
 #define STUN_PORT     19302
 #define LB_Q          48
@@ -6285,7 +6314,7 @@ static void lb_line(const char *s) {
 }
 
 static void lb_update(float dt) {
-    int hosting = netMode == NET_HOST, browsing = netMode == NET_CLIENT && !connected;
+    int hosting = netMode == NET_HOST && !vsBot, browsing = netMode == NET_CLIENT && !connected;
     if (!onlineOn || (!hosting && !browsing)) { if (lbState != LB_OFF) lb_stop(); return; }
 
     if (lbState == LB_FAILED) {
@@ -6394,7 +6423,12 @@ static float bot_melee_reach(float rel) {
  * combler la distance, visee recalee au moment de tirer, corps a corps au contact. */
 static void bot_think(float dt) {
     botT += dt;
-    if (appState == APP_JOIN && nFound > 0 && !join_busy()) join_found(0, botSpec);
+    if (appState == APP_JOIN && botLocal && !join_busy()) {
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof a);
+        a.sin_family = AF_INET; a.sin_port = htons(NET_PORT); a.sin_addr.s_addr = inet_addr("127.0.0.1");
+        net_connect(a);
+    } else if (appState == APP_JOIN && nFound > 0 && !join_busy()) join_found(0, botSpec);
     if (appState != APP_GAME) return;
     memset(botHeld, 0, sizeof botHeld);
     botHeld[A_FIRE] = 0;
@@ -6408,7 +6442,7 @@ static void bot_think(float dt) {
         if (!np_target(i) || NP[i].st.melee < 150 || nowT - swingSeenT < 0.4) continue;
         if (vlen(vsub(NP[i].disp, P.pos)) > ((NP[i].st.pad & 0x0F) == MK_FLAIL ? 7 : 5)) continue;   /* Fleau : 7 m */
         swingSeenT = nowT;
-        if (frand() < 0.5f && P.meleeCd <= 0) {
+        if (frand() < botParryP[botLevel] && P.meleeCd <= 0) {
             V3 d = vsub(np_center(i), eye_pos());
             P.yaw = atan2f(d.x, -d.z);
             botPress[A_MELEE] = 1;
@@ -6650,7 +6684,7 @@ static void bot_think(float dt) {
 
     /* comme un humain : temps de reaction, et une visee moins precise de loin */
     if (see) seeT += dt; else seeT = 0;
-    float aimErr = 0.012f + (best >= 0 ? bd : 0) * 0.0014f;
+    float aimErr = (0.012f + (best >= 0 ? bd : 0) * 0.0014f) * botAimMul[botLevel];
     float aimErrYaw = aimErr * sinf(botT * 7.3f + botMode), aimErrPitch = aimErr * 0.6f * cosf(botT * 5.1f);
 
     /* --- Fleau : combo fleau -> tir. Moins de 0,3 s apres une touche, la cible vole vers nous (parabole connue) :
@@ -6822,7 +6856,7 @@ static void bot_think(float dt) {
             coinPlan = 0;
         }
     }
-    if (!dry && !coinPlan && see && seeT > 0.3f && bd < 55 && P.fireCd <= 0 && P.switchT <= 0 &&
+    if (!dry && !coinPlan && see && seeT > botReactT[botLevel] && bd < 55 && P.fireCd <= 0 && P.switchT <= 0 &&
         P.weapon != WP_KINETIC && P.weapon != WP_SAW && P.weapon != WP_TESLA &&   /* recale la visee (Elan, Scie, Tesla : leur regle) */
         (P.weapon != WP_SHOTGUN || bd < (P.sliding ? 13.0f : 11.0f))) {   /* Eventail : au-dela, moins de 4 plombs */
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1;
@@ -6830,7 +6864,7 @@ static void bot_think(float dt) {
     {   /* --- Ventouse : lancer (anticipation grossiere de 0,4 s, visee relevee pour la gravite), detonation, contre-jeu --- */
         if (P.weapon == WP_MINE) {
             botHeld[A_FIRE] = 0;
-            if (best >= 0 && see && seeT > 0.3f && bd > 6 && bd < 20 && P.fireCd <= 0 && P.switchT <= 0 &&
+            if (best >= 0 && see && seeT > botReactT[botLevel] && bd > 6 && bd < 20 && P.fireCd <= 0 && P.switchT <= 0 &&
                 wp_has_ammo(WP_MINE) && mine_count() < MINE_MAX_ACTIVE) {
                 V3 eye = eye_pos(), c = vadd(np_center(best), vmul(np_vel(best), 0.4f)), d = vsub(c, eye);
                 float l = vlen(d), sp = fmaxf(MINE_SPEED + vdot(P.vel, vmul(d, 1.0f / fmaxf(l, 0.01f))), 8), tt = l / sp;
@@ -6877,7 +6911,7 @@ static void bot_think(float dt) {
             }
         }
     }   /* --- fin Ventouse --- */
-    if (P.weapon == WP_SAW && best >= 0 && see && seeT > 0.3f && bd < 30 && P.sawCd <= 0 && P.fireCd <= 0 &&
+    if (P.weapon == WP_SAW && best >= 0 && see && seeT > botReactT[botLevel] && bd < 30 && P.sawCd <= 0 && P.fireCd <= 0 &&
         wp_has_ammo(WP_SAW)) {                            /* Scie : on vise devant la cible, et un peu au-dessus (gravite) */
         V3 eye = eye_pos(), c = np_center(best), d = vsub(c, eye);
         float l = vlen(d), sp = fmaxf(SAW_SPEED + vdot(P.vel, vmul(d, 1.0f / fmaxf(l, 0.01f))), SAW_MIN_SPEED), tt = l / sp;
@@ -6896,7 +6930,7 @@ static void bot_think(float dt) {
     }
     /* Tesla : clic tenu en continu tant que la cible est a portee ; l'imprecision sinusoidale simule un suivi
      * imparfait. Une piece lancee vers la cible toutes les 2,5 s devient un relais quand l'arc la traverse. */
-    if (P.weapon == WP_TESLA && best >= 0 && see && seeT > 0.3f && P.switchT <= 0 && wp_has_ammo(WP_TESLA) &&
+    if (P.weapon == WP_TESLA && best >= 0 && see && seeT > botReactT[botLevel] && P.switchT <= 0 && wp_has_ammo(WP_TESLA) &&
         bd < tesla_range(P.vel) - 1) {
         static float teslaCoinT;
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch;
@@ -6908,7 +6942,7 @@ static void bot_think(float dt) {
      * (sinon il tire 0,15 a 0,3 s apres le dash, comme un humain en retard). Le bhop et le grappin relancent. */
     static float kinLateT = -1;                           /* tir en retard programme (fenetre ratee) */
     if (P.weapon != WP_KINETIC || dry) kinLateT = -1;
-    else if (see && seeT > 0.3f && P.switchT <= 0 && bd < 55) {
+    else if (see && seeT > botReactT[botLevel] && P.switchT <= 0 && bd < 55) {
         float v = kin_vdep(), need = bd > 20 ? 14.0f : 10.5f;   /* de loin : tir plein ; de pres : 2 touches */
         if (kinLateT >= 0 && botT >= kinLateT && P.fireCd <= 0) {
             P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1; kinLateT = -1;
@@ -7956,7 +7990,7 @@ static void draw_viewmodel(float aspect) {
 /* Interface : menus, tableau des scores, joueurs distants             */
 /* ------------------------------------------------------------------ */
 enum { ACT_NONE, ACT_SOLO, ACT_HOST, ACT_BROWSE, ACT_QUIT, ACT_BACK, ACT_JOIN_FOUND, ACT_JOIN_IP, ACT_RESUME,
-       ACT_RESTART, ACT_LEAVE, ACT_FULLSCREEN, ACT_QUICK, ACT_SPEC_FOUND };
+       ACT_RESTART, ACT_LEAVE, ACT_FULLSCREEN, ACT_QUICK, ACT_SPEC_FOUND, ACT_VSBOT };
 static int settingsOpen, waitAct = -1, waitSlot, uiDown, uiDrag;
 static int fullscreen;
 static char cfgPath[MAX_PATH];
@@ -8245,18 +8279,23 @@ static void draw_main_menu(float cx, float cy) {
     field(bx, y, bw, 48, "PSEUDO", myName, 1);
     y += 76;
     if (button(bx, y, bw, 52, "SOLO  -  VAGUES")) pendingAction = ACT_SOLO;
-    y += 62;
-    if (button(bx, y, bw, 52, "PARTIE RAPIDE  -  EN LIGNE")) pendingAction = ACT_QUICK;
-    y += 62;
-    if (button(bx, y, bw, 52, "HEBERGER UNE PARTIE")) pendingAction = ACT_HOST;
-    y += 62;
-    if (button(bx, y, bw, 52, "REJOINDRE / REGARDER")) pendingAction = ACT_BROWSE;
-    y += 62;
-    if (button(bx, y, bw, 52, "LOADOUT")) loadoutOpen = 1;
-    y += 62;
-    if (button(bx, y, bw, 52, "PARAMETRES")) settingsOpen = 1;
-    y += 62;
-    if (button(bx, y, bw, 52, "QUITTER")) pendingAction = ACT_QUIT;
+    y += 58;
+    text(0, bx, y, "JOUEUR CONTRE BOT", 0.7f, 0.75f, 0.85f, 1);
+    y += 16;
+    for (int lv = 0; lv < 3; lv++)                        /* un duel contre un bot : trois niveaux */
+        if (button(bx + lv * 142, y, 136, 46, botLevelNames[lv])) { pendingAction = ACT_VSBOT; pendingArg = lv; }
+    y += 54;
+    if (button(bx, y, bw, 46, "PARTIE RAPIDE  -  EN LIGNE")) pendingAction = ACT_QUICK;
+    y += 54;
+    if (button(bx, y, bw, 46, "HEBERGER UNE PARTIE")) pendingAction = ACT_HOST;
+    y += 54;
+    if (button(bx, y, bw, 46, "REJOINDRE / REGARDER")) pendingAction = ACT_BROWSE;
+    y += 54;
+    if (button(bx, y, bw, 46, "LOADOUT")) loadoutOpen = 1;
+    y += 54;
+    if (button(bx, y, bw, 46, "PARAMETRES")) settingsOpen = 1;
+    y += 54;
+    if (button(bx, y, bw, 46, "QUITTER")) pendingAction = ACT_QUIT;
     draw_status(bx, y + 90);
     draw_controls(cx - 130, cy - 200);
     if (uiClick) { uiClick = 0; uiFocus = 0; }
@@ -9807,6 +9846,22 @@ static void run_tests(const char *path) {
     for (int i = 0; i < 240; i++) player_tick(TICK, 0, 0);
     act[A_FWD] = 0;
     fprintf(f, "escalier : y=%.2f z=%.2f (attendu y=4)\n", P.pos.y, P.pos.z);
+
+    reset_game();                                         /* escalier a 14 m/s : la vitesse se conserve comme sur une rampe */
+    P.pos = P.prevPos = v3(0, 0, ms(14) + 0.6f); P.yaw = 0; P.vel = v3(0, 0, -14);
+    P.grounded = 1;
+    act[A_FWD] = 1;
+    for (int i = 0; i < 30; i++) player_tick(TICK, 0, 0);
+    act[A_FWD] = 0;
+    fprintf(f, "escalier a 14 m/s : y=%.2f vitesse apres 0,25 s=%.1f (attendu y > 1, vitesse > 11)\n", P.pos.y, hlen(P.vel));
+
+    reset_game();                                         /* au sol, direction tenue : friction reduite */
+    P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = PI * 0.5f; P.vel = v3(15, 0, 0);
+    P.grounded = 1;
+    act[A_FWD] = 1;
+    for (int i = 0; i < 30; i++) player_tick(TICK, 0, 0);
+    act[A_FWD] = 0;
+    fprintf(f, "course a 15 m/s sans sauter : vitesse apres 0,25 s=%.1f (attendu > 12)\n", hlen(P.vel));
 
     reset_game();                                         /* jump pad -> plateforme haute */
     P.pos = P.prevPos = v3(ms(16), 0.31f, 0);
@@ -11673,6 +11728,23 @@ static void do_action(void) {
     case ACT_BROWSE:
         if (net_browse_start()) { appState = APP_JOIN; netStatus[0] = 0; }
         break;
+    case ACT_VSBOT:                                       /* heberge en local, puis lance un bot (autre processus) qui nous rejoint */
+        if (!net_host_start()) break;
+        {
+            char exe[MAX_PATH], cmd[MAX_PATH + 160];
+            STARTUPINFOA si = { sizeof si };
+            PROCESS_INFORMATION pi;
+            int lv = pendingArg < 0 ? 0 : pendingArg > 2 ? 2 : pendingArg;
+            GetModuleFileNameA(NULL, exe, sizeof exe);
+            snprintf(cmd, sizeof cmd, "\"%s\" --bot join --local --hidden --nolan --level %d --name Bot_%s --time 1000000",
+                     exe, lv, botLevelNames[lv]);
+            if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+                CloseHandle(pi.hThread);
+                botProc = pi.hProcess; vsBot = 1; botLevel = lv;
+                appState = APP_GAME; set_capture(1);
+            } else { set_status("impossible de lancer le bot"); net_shutdown(); }
+        }
+        break;
     case ACT_JOIN_FOUND:
         join_found(pendingArg, 0);
         break;
@@ -11737,6 +11809,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             else if (!strcmp(t, "--lanep")) lanEp = 1;
             else if (!strcmp(t, "--nolan")) lanOff = 1;
             else if (!strcmp(t, "--spec")) botSpec = 1;
+            else if (!strcmp(t, "--local")) botLocal = 1;
+            else if (!strcmp(t, "--hidden")) botHidden = 1;
+            else if (!strcmp(t, "--level") && (t = strtok(NULL, " "))) botLevel = atoi(t) < 0 ? 0 : atoi(t) > 2 ? 2 : atoi(t);
             else if (!strcmp(t, "--loadout") && (t = strtok(NULL, " "))) {   /* --loadout arme1,arme2[,melee] (WP_*, WP_*, MK_*) */
                 int l0, l1, mk, n = sscanf(t, "%d,%d,%d", &l0, &l1, &mk);
                 if (n >= 2) { wantLoadout[0] = l0; wantLoadout[1] = l1; }
@@ -11774,7 +11849,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         winW = 800; winH = 450;
         SetWindowPos(hwnd, NULL, botMode == 1 ? 0 : 820, 40, 816, 489, SWP_NOZORDER | SWP_NOACTIVATE);
     }
-    ShowWindow(hwnd, (shotMode || botMode) ? SW_SHOWNOACTIVATE : show);
+    ShowWindow(hwnd, botHidden ? SW_SHOWMINNOACTIVE : (shotMode || botMode) ? SW_SHOWNOACTIVATE : show);
     UpdateWindow(hwnd);
     { RECT cr; GetClientRect(hwnd, &cr); winW = cr.right; winH = cr.bottom; }
 
@@ -11799,7 +11874,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         if (slash) strcpy(slash + 1, "velocity.ini"); else cfgPath[0] = 0;
         if (!botMode && !shotMode && cfg_load()) toggle_fullscreen();
     }
-    if (!shotMode) audio_init();
+    if (!shotMode && !botHidden) audio_init();
     reset_game();
 
     if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu") || strstr(shotPath, "loadout"))) {   /* captures des menus */
@@ -12000,6 +12075,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         if (botMode) {
             bot_think(dt);
             if (nowT > botTime) break;
+            if (botLocal && appState != APP_GAME && botT > 12) break;   /* l'hote est parti : le bot adverse se ferme */
         }
         if (appState == APP_GAME) {
             if (captured) {
