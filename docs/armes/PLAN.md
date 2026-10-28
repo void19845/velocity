@@ -143,10 +143,10 @@ L'Égide impose que chaque arme teste le bouclier avant d'infliger des dégâts 
 | 02 Lance | **Fait** | `4beee96`, fusion `61487a8` |
 | 09 Ventouse | **Fait** | `bbf086c` |
 | 03 Fléau | **Fait** | `fca9dbf`, fusion `2969d7b` |
-| 04 Poings | À faire | — |
-| 05 Égide | À faire, en dernier | — |
+| 04 Poings | **Fait** | `8803182`, fusion `9d31936` |
+| 05 Égide | **Fait** (point d'entrée unique `hit_player` pour toutes les armes) | `fca2b1f`, fusion `356e00f` |
 
-`NET_VER` vaut 9. Pour un match de bots avec les nouvelles armes : `--loadout a,b,m` avec les numéros `WP_*` et `MK_*` (rail 0, roquettes 1, Éventail 2, Élan 3, Scie 4, Ventouse 5, Tesla 6 ; épée 0, Enclume 1, Lance 2, Fléau 3). Exemple : `--loadout 2,4,0` (Éventail, Scie, épée).
+**Toutes les armes sont codées.** `NET_VER` vaut 10. Pour un match de bots avec les nouvelles armes : `--loadout a,b,m` avec les numéros `WP_*` et `MK_*` (rail 0, roquettes 1, Éventail 2, Élan 3, Scie 4, Ventouse 5, Tesla 6 ; épée 0, Enclume 1, Lance 2, Fléau 3, Poings 4, Égide 5). Exemple : `--loadout 2,4,0` (Éventail, Scie, épée).
 
 ## 6. Décisions de l'utilisateur (27/10/2026)
 
