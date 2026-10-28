@@ -303,6 +303,32 @@ enum { TK_NONE, TK_MUZZLE, TK_HAND, TK_ENEMY, TK_PLAYER, TK_COIN, TK_POINT };   
 enum { LS_IDLE, LS_THRUST, LS_COUCH };
 /* --- fin Lance --- */
 
+/* --- Fleau a chaine : controle a longue portee, attire la cible vers soi (lanceur de combos) --- */
+#define FLAIL_RANGE         6.0f    /* portee de base */
+#define FLAIL_RANGE_PER_MS  0.05f   /* +0.05 m par m/s de vitesse relative */
+#define FLAIL_ARC_COS       0.34f   /* cos du demi-angle horizontal (70 deg, arc de 140) */
+#define FLAIL_VSLAB         0.6f    /* ecart vertical max autour du pitch (rad) */
+#define FLAIL_CD            0.6f
+#define FLAIL_WHIFF_CD      0.9f    /* coup dans le vide */
+#define FLAIL_DMG           18.0f
+#define FLAIL_DMG_PER_MS    1.5f
+#define FLAIL_PULL          12.0f   /* traction vers le lanceur (recul negatif) */
+#define FLAIL_PULL_UP       3.0f
+#define FLAIL_DRONE_STOP    2.5f    /* un drone attire s'arrete a cette distance */
+#define FLAIL_ANIM          0.30f   /* duree de l'animation de la chaine */
+#define FLAIL_PARRY_WINDOW  0.10f
+#define FLAIL_PARRY_RANGE   6.0f    /* portee de parry des projectiles */
+#define FLAIL_PARRY_SPEED   0.8f    /* renvoi plus lent */
+#define FLAIL_PARRIED_PULL  16.0f   /* fleau pare : le lanceur est tire vers le pareur */
+#define FLAIL_PARRIED_UP    4.0f
+#define FLAIL_COIN_SPEED    45.0f   /* piece frappee */
+#define FLAIL_COIN_DMG      40.0f   /* x PVP_SCALE = 28 en PvP */
+#define FLAIL_COIN_LIFE     1.5f    /* 67 m de vol */
+#define FLAIL_COIN_SEEK     60.0f   /* portee de recherche de cible */
+#define FLAIL_COIN_HIT_R    0.4f    /* marge de touche de la piece frappee */
+#define FLAIL_COMBO_T       1.0f    /* fenetre du combo fleau -> rail (visuel seulement) */
+/* --- fin Fleau --- */
+
 /* Axe tir : chaque touche successive augmente degats et cadence, un tir rate remet a zero */
 #define STREAK_MAX        8
 #define STREAK_DMG        0.15f   /* +15% de degats par touche */
@@ -341,7 +367,7 @@ static const AmmoDef ammoDef[WP_COUNT] = {
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
 static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 0, 1 };   /* chaque arme codee passe sa case a 1 */
-static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 0, 0, 0 };
+static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 1, 0, 0 };
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
@@ -359,6 +385,7 @@ enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_SAW_THROW, S_SAW_PLANT, S_SAW_HIT, S_SAW_CATCH, S_SAW_BOUNCE,   /* Scie */
        S_TESLA_LOOP, S_TESLA_ZAP,                         /* Tesla */
        S_LANCE_COUCH, S_LANCE_THRUST, S_LANCE_HIT, S_LANCE_CLASH,        /* Lance */
+       S_FLAIL_SWING, S_FLAIL_HIT, S_FLAIL_COIN,          /* Fleau */
        S_COUNT };
 typedef struct { short *data; int len; } Sound;
 /* loop : voix en boucle (Tesla), jamais volee par play ; fade : baisse de volume par echantillon (arret sans clic) */
@@ -790,6 +817,42 @@ static void make_sounds(void) {
     }
     sounds[S_LANCE_CLASH] = mksound(b, n);
     /* --- fin Lance --- */
+    /* --- Fleau --- */
+    /* lancer : souffle passe-bas dont la coupure monte de 300 a 1800 Hz + cliquetis de chaine (1 impulsion tous les 1/45 s) */
+    b = sbuf(0.35f, &n); lp = 0;
+    {
+        int pulse = -1;
+        float amp = 0.4f;
+        for (int i = 0; i < n; i++) {
+            t = (float)i / SR;
+            a = 1 - expf(-2 * PI * (300 + 1500 * t / 0.35f) / SR);
+            lp += a * (noise() - lp);
+            float env = t < 0.02f ? t / 0.02f : expf(-(t - 0.02f) * 7);
+            int k = (int)(t * 45);
+            if (k != pulse) { pulse = k; amp = frange(0.3f, 0.6f); }
+            float tau = t - k / 45.0f;
+            b[i] = lp * 1.1f * env + noise() * amp * expf(-tau * 900) * expf(-t * 6);
+        }
+    }
+    sounds[S_FLAIL_SWING] = mksound(b, n);
+    /* touche : choc metallique inharmonique 820 / 1230 / 1960 Hz + coup sourd 70 Hz + bruit bref */
+    b = sbuf(0.4f, &n);
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        b[i] = (sinf(t * 2 * PI * 820) * 0.25f + sinf(t * 2 * PI * 1230) * 0.18f + sinf(t * 2 * PI * 1960) * 0.12f) * expf(-t * 10) +
+               sinf(t * 2 * PI * 70) * 0.7f * expf(-t * 18) + noise() * 0.5f * expf(-t * 60);
+    }
+    sounds[S_FLAIL_HIT] = mksound(b, n);
+    /* piece frappee : "ting" 2600 + 3900 Hz + souffle descendant court */
+    b = sbuf(0.3f, &n); lp = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        a = 1 - expf(-2 * PI * fmaxf(200, 2500 - 8000 * t) / SR);
+        lp += a * (noise() - lp);
+        b[i] = (sinf(t * 2 * PI * 2600) * 0.3f + sinf(t * 2 * PI * 3900) * 0.18f) * expf(-t * 14) + lp * 0.5f * expf(-t * 20);
+    }
+    sounds[S_FLAIL_COIN] = mksound(b, n);
+    /* --- fin Fleau --- */
 }
 
 static void audio_init(void) {
@@ -1036,6 +1099,12 @@ typedef struct {
      * temps depuis la derniere joute et joueur touche + 1 (anti-doublon EV_LANCE) --- */
     int lanceState, lanceHitWho;
     float lanceT, lanceVc, lanceHitT;
+    /* --- Fleau : animation restante de la chaine, point ou elle s'est accrochee (premiere cible), cibles touchees
+     * par le dernier coup (0 = chaine libre), garde anti double traction apres un parry, derniere cible LAN touchee
+     * (id + 1) et temps restant de la fenetre du combo fleau -> rail --- */
+    float flailT, flailParriedT, flailLastT;
+    V3 flailHitPos;
+    int flailHitN, flailLastTgt;
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -1048,7 +1117,8 @@ static Enemy E[MAXE];
 enum { PR_ROCKET, PR_ORB, PR_PARRIED, PR_SAW };
 
 /* Tesla : teslaT > 0 = relais actif (temps restant), prochaine impulsion du relais, joueur qui l'a active */
-typedef struct { V3 pos, vel; float life, spin; int alive, owner; unsigned int netId; float teslaT, teslaPulse; int teslaBy; } Coin;
+/* Fleau : flailStruck = 1 si la piece a ete frappee au fleau (vol droit, sans gravite) */
+typedef struct { V3 pos, vel; float life, spin; int alive, owner; unsigned int netId; float teslaT, teslaPulse; int teslaBy; int flailStruck; } Coin;
 #define MAXCOIN 24
 static Coin CO[MAXCOIN];
 static int lastChain;                                     /* longueur du dernier ricochet (tests, journal) */
@@ -1943,6 +2013,8 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     tesla_reset();                                        /* Tesla : ni arc, ni cumuls, ni etourdissement */
     P.lanceState = LS_IDLE; P.lanceT = P.lanceVc = 0;     /* Lance : levee, prete */
     P.lanceHitT = 10; P.lanceHitWho = 0; P.meleeCd = 0;
+    P.flailT = P.flailParriedT = P.flailLastT = 0;      /* Fleau : chaine au repos */
+    P.flailHitN = P.flailLastTgt = 0;
     melee_start_swing();
 }
 static void weapon_select(int w) { if (w != P.weapon) { P.weapon = w; P.switchT = SWITCH_TIME; } }
@@ -1954,20 +2026,21 @@ static float melee_range(float rel) { return MELEE_RANGE + rel * MELEE_RANGE_PER
 static float melee_dmg(float rel) { return MELEE_DMG + rel * MELEE_DMG_PER_MS; }
 
 /* Parry : pendant PARRY_WINDOW apres le debut du coup, les projectiles proches sont renvoyes.
- * Chaque renvoi d'une meme roquette (ping-pong) l'accelere, la rend plus forte, et reduit la zone de parry. */
-static int try_parry(void) {
+ * Chaque renvoi d'une meme roquette (ping-pong) l'accelere, la rend plus forte, et reduit la zone de parry.
+ * range0 : portee de base (epee MELEE_RANGE + 1,5 ; Fleau 6) ; speedMult : vitesse de renvoi (Fleau 0,8) */
+static int try_parry(float range0, float speedMult) {
     V3 eye = eye_pos(), f = view_dir();
     int parried = 0;
     for (int i = 0; i < MAXPR; i++) {
         Proj *p = &PR[i];
         if (p->alive && p->kind == PR_SAW) {              /* Scie : renvoi de la mienne qui revient, ou parry d'une adverse */
-            parried += saw_parry(p, eye, f, MELEE_RANGE + 1.5f, 1);
+            parried += saw_parry(p, eye, f, range0, speedMult);
             continue;
         }
         int foreignRocket = dmMode && (p->kind == PR_ROCKET || p->kind == PR_PARRIED) && p->owner != myId;
         if (!p->alive || (p->kind != PR_ORB && !foreignRocket)) continue;
         V3 d = vsub(p->pos, eye);
-        float dist = vlen(d), range = (MELEE_RANGE + 1.5f) * powf(PARRY_RANGE_SHRINK, (float)p->parries);
+        float dist = vlen(d), range = range0 * powf(PARRY_RANGE_SHRINK, (float)p->parries);
         if (dist > range || vdot(vmul(d, 1.0f / fmaxf(dist, 0.01f)), f) < 0.3f) continue;
         V3 aim = f; float best = PARRY_AIM_COS;
         for (int j = 0; j < MAXE; j++) {
@@ -1985,7 +2058,7 @@ static int try_parry(void) {
         p->parries++;
         if (!p->orb) p->mult *= p->parries == 1 ? PARRY_ROCKET_MULT : PARRY_PINGPONG;
         p->kind = PR_PARRIED; p->life = 4; p->owner = myId;
-        p->vel = vmul(aim, PARRY_SPEED * powf(PARRY_PINGPONG, (float)(p->parries - 1)));
+        p->vel = vmul(aim, PARRY_SPEED * powf(PARRY_PINGPONG, (float)(p->parries - 1)) * speedMult);
         if (dmMode) net_fx_parry(p->netId, p->pos, p->vel, p->mult, p->parries);
         parried++;
         P.swingLanded = 1;
@@ -2044,7 +2117,7 @@ static void anvil_strike(void) {
     int hits = 0, parried = 0;
 
     melee_start_swing();
-    parried = try_parry();
+    parried = try_parry(MELEE_RANGE + 1.5f, 1);
     for (int i = 0; i < MAXE; i++) {
         Enemy *e = &E[i];
         if (!e->alive) continue;
@@ -2278,7 +2351,7 @@ static void lance_press(void) {
     int best = -1, bestP = 0, hit = 0, parried;
 
     melee_start_swing();
-    parried = try_parry();
+    parried = try_parry(MELEE_RANGE + 1.5f, 1);
     for (int k = 0; k < MAXE + MAXP; k++) {
         int pl = k >= MAXE, i = pl ? k - MAXE : k;
         V3 c; float rad;
@@ -2406,15 +2479,240 @@ static void lance_remote_tick(void) {
 }
 /* --- fin Lance --- */
 
+/* --- Fleau ------------------------------------------------------------- */
+/* Fleau a chaine : coup en arc horizontal de 140 degres, 6 m (+0,05 m par m/s relatif), sur toutes les cibles de l'arc.
+ * Faibles degats, mais la cible est tiree vers soi : c'est un lanceur de combos (fleau -> rail). La touche est
+ * instantanee comme l'epee, la chaine ne traverse pas le decor. Une de mes pieces dans l'arc est frappee vers la cible
+ * visible la plus proche. Parry a 6 m, renvoi x0,8. Fleau pare : la chaine s'enroule, le lanceur est tire vers le pareur. */
+static int flailSwings, flailHitSwings, flailTargets, flailCoins, flailCoinHits, flailCombos;   /* journal du bot */
+static float flailRelSum;
+
+static float flail_range(float rel) { return FLAIL_RANGE + rel * FLAIL_RANGE_PER_MS; }
+static float flail_dmg(float rel) { return FLAIL_DMG + rel * FLAIL_DMG_PER_MS; }
+static V3 flail_dir(float yaw, float pitch) { float cp = cosf(pitch); return v3(sinf(yaw) * cp, sinf(pitch), -cosf(yaw) * cp); }
+
+/* c (rayon radius) est-il dans l'arc du coup ? Portee, arc horizontal, tranche verticale autour du pitch (sinon l'arc
+ * toucherait un drone 6 m au-dessus de la tete), puis ligne de vue (checkLos) par deux rayons : un seul suffit, pour
+ * ne pas rater une cible dont seule la tete depasse d'un muret */
+static int flail_in_arc(V3 eye, V3 c, float radius, float rel, int checkLos) {
+    V3 d = vsub(c, eye);
+    float dist = vlen(d), reach = dist - radius;
+    if (reach > flail_range(rel)) return 0;
+    if (reach < 0.8f) return 1;                           /* contact : touche toujours, comme l'epee */
+    V3 hd = vnorm(v3(d.x, 0, d.z)), hf = v3(sinf(P.yaw), 0, -cosf(P.yaw));
+    if (vdot(hd, hf) < FLAIL_ARC_COS) return 0;
+    if (fabsf(asinf(clampf(d.y / dist, -1, 1)) - P.pitch) > FLAIL_VSLAB) return 0;
+    return !checkLos || los(eye, c) || los(eye, vadd(c, v3(0, 0.6f, 0)));
+}
+
+static void flail_mark_hit(V3 p) {                        /* la chaine s'accroche a la premiere cible touchee */
+    if (P.flailHitN++ == 0) P.flailHitPos = p;
+    burst(p, v3(0.7f, 0.72f, 0.8f), 14, 6, 0.3f, 0.1f);
+}
+
+/* cible k du fleau (ennemi k, ou joueur k - MAXE) : position, 0 si elle n'existe pas */
+static int flail_target(int k, V3 *c) {
+    int pl = k >= MAXE, i = pl ? k - MAXE : k;
+    if (!pl) { if (!E[i].alive) return 0; *c = E[i].pos; }
+    else { if (!np_target(i)) return 0; *c = np_center(i); }
+    return 1;
+}
+
+/* le fleau frappe au plus une de mes pieces (la plus proche de l'axe de visee : quatre pieces frappees d'un coup
+ * contourneraient le plafond PvP). Elle part a 45 m/s vers la cible la mieux alignee avec le viseur (aide de 9 degres),
+ * sinon vers la cible visible la plus proche devant soi. Renvoie 1 si une piece est frappee */
+static int flail_strike_coin(V3 eye) {
+    V3 f = view_dir(), t;
+    int ci = -1, tk = -1;
+    float bestAx = -2, best = PARRY_AIM_COS;
+    for (int i = 0; i < MAXCOIN; i++) {
+        Coin *c = &CO[i];
+        if (!c->alive || c->owner != myId || c->flailStruck || c->teslaT > 0) continue;   /* seulement mes pieces */
+        if (!flail_in_arc(eye, c->pos, COIN_RADIUS, rel_speed(c->vel), 1)) continue;
+        float ax = vdot(vnorm(vsub(c->pos, eye)), f);
+        if (ax > bestAx) { bestAx = ax; ci = i; }
+    }
+    if (ci < 0) return 0;
+    Coin *c = &CO[ci];
+    V3 aim = f;
+    for (int k = 0; k < MAXE + MAXP; k++) {               /* 1. aide a la visee, comme try_parry */
+        if (!flail_target(k, &t)) continue;
+        V3 to = vnorm(vsub(t, c->pos));
+        float dd = vdot(to, f);
+        if (dd > best && los(c->pos, t)) { best = dd; aim = to; tk = k; }
+    }
+    if (tk < 0) {                                         /* 2. la cible visible la plus proche, devant soi */
+        float bd = FLAIL_COIN_SEEK;
+        for (int k = 0; k < MAXE + MAXP; k++) {
+            if (!flail_target(k, &t)) continue;
+            V3 to = vsub(t, c->pos);
+            float d = vlen(to);
+            if (d < 0.01f || d >= bd) continue;
+            to = vmul(to, 1.0f / d);
+            if (vdot(to, f) > FLAIL_ARC_COS && los(c->pos, t)) { bd = d; aim = to; tk = k; }
+        }
+    }
+    c->flailStruck = 1; c->vel = vmul(aim, FLAIL_COIN_SPEED); c->life = FLAIL_COIN_LIFE;
+    if (dmMode) net_fx_coin(2, c->netId, c->pos, c->vel);
+    for (int k = 0; k < 12; k++) add_part(c->pos, vmul(rand_dir(), 5), v3(1, 0.85f, 0.3f), 0.25f, 0.08f, 0);
+    impact_frame(c->pos, 0.04f);
+    play(S_FLAIL_COIN, 0.8f, 1.0f);
+    snprintf(popText, sizeof popText, "PIECE FRAPPEE"); popT = 0.8f;
+    flailCoins++;
+    if (botMode) netlog("piece frappee -> %s", tk < 0 ? "droit devant" : tk < MAXE ? "drone" : NP[tk - MAXE].name);
+    return 1;
+}
+
+/* piece frappee (la mienne, seul le lanceur teste les cibles) : touche-t-elle quelqu'un sur ce pas ? On envoie W_COIN,
+ * pas W_FLAIL : sinon l'hote appliquerait la regle de parry de melee a une piece venue de 30 m */
+static int flail_coin_hit(Coin *c, V3 dir, float len) {
+    float bt = len + 1, t;
+    int be = -1, bp = -1;
+    for (int i = 0; i < MAXE; i++)
+        if (E[i].alive && ray_sphere(c->pos, dir, E[i].pos, enemy_radius(E[i].type) + FLAIL_COIN_HIT_R, len, &t) && t < bt) {
+            bt = t; be = i; bp = -1;
+        }
+    for (int i = 0; i < MAXP; i++) {
+        V3 mn, mx;
+        if (!np_target(i)) continue;
+        np_aabb(i, FLAIL_COIN_HIT_R, &mn, &mx);
+        if (ray_box(c->pos, dir, mn, mx, len, &t, NULL) && t < bt) { bt = t; bp = i; be = -1; }
+    }
+    if (be < 0 && bp < 0) return 0;
+    V3 at = vadd(c->pos, vmul(dir, bt));
+    c->pos = at;
+    if (be >= 0) damage_enemy(be, FLAIL_COIN_DMG, vmul(dir, 8));
+    else net_hit(bp, FLAIL_COIN_DMG * PVP_SCALE, vmul(dir, 6), W_COIN);
+    burst(at, v3(1, 0.85f, 0.3f), 22, 8, 0.35f, 0.12f);
+    hitMarker = 0.2f;
+    impact_frame(at, 0.05f);
+    play(S_HIT, 0.6f, 1.3f);
+    flailCoinHits++;
+    if (botMode && bp >= 0) netlog("piece frappee : touche %s", NP[bp].name);
+    return 1;
+}
+
+/* combo fleau -> rail (bonus visuel seulement) : appele par net_hit */
+static void flail_combo_check(int target, int weapon) {
+    if (weapon != W_RAIL || P.flailLastT <= 0 || P.flailLastTgt != target + 1) return;
+    P.flailLastT = 0; flailCombos++;
+    snprintf(popText, sizeof popText, "RAPPEL + RAIL"); popT = 1.0f;
+    impact_frame(np_center(target), 0.06f);
+    if (botMode) netlog("combo fleau -> rail");
+}
+
+/* tete de la chaine : k = avancement du coup (0..1), depuis la main `hand`. Accrochee (hooked) : droit sur la cible
+ * et retour avec elle, chaine tendue. Sinon extension (0 -> 0,4), balayage de +70 a -70 degres (0,1 -> 0,7), retour
+ * (0,73 -> 1). *sag = mou de la chaine */
+static V3 flail_head(V3 hand, float yaw, float pitch, float k, float range, int hooked, V3 hookAt, float *sag) {
+    float ext = clampf(k < 0.4f ? k / 0.4f : k < 0.73f ? 1 : 1 - (k - 0.73f) / 0.27f, 0, 1);
+    if (hooked) { *sag = 0; return vlerp(hand, hookAt, ext); }
+    float ang = 1.2217f * (1 - 2 * clampf((k - 0.1f) / 0.6f, 0, 1));   /* 70 deg a droite -> 70 deg a gauche */
+    *sag = 0.4f * (1 - ext);
+    return vadd(hand, vmul(flail_dir(yaw + ang, pitch), range * ext));
+}
+/* main gauche (comme le cable du grappin) et tete de ma chaine */
+static V3 flail_hand(V3 eye) {
+    V3 f = view_dir(), r = v3(cosf(P.yaw), 0, sinf(P.yaw)), u = vcross(r, f);
+    return vadd(eye, vadd(vmul(r, -0.3f), vadd(vmul(u, -0.28f), vmul(f, 0.6f))));
+}
+static V3 flail_my_head(V3 eye, float *sag) {
+    float k = clampf(1 - P.flailT / FLAIL_ANIM, 0, 1);
+    return flail_head(flail_hand(eye), P.yaw, P.pitch, k, flail_range(vlen(P.vel)), P.flailHitN > 0, P.flailHitPos, sag);
+}
+
+static void flail_swing(void) {
+    V3 eye = eye_pos(), f = view_dir();
+    float sp = vlen(P.vel), rel0 = 0;
+    int hits = 0, parried, coin, tgt[MAXP], nt = 0;
+    float trel[MAXP];
+    const char *first = "?";
+
+    melee_start_swing();
+    parried = try_parry(FLAIL_PARRY_RANGE, FLAIL_PARRY_SPEED);
+    P.flailHitN = 0;
+    for (int i = 0; i < MAXE; i++) {
+        Enemy *e = &E[i];
+        if (!e->alive) continue;
+        float rel = rel_speed(e->vel);
+        if (!flail_in_arc(eye, e->pos, enemy_radius(e->type), rel, 1)) continue;
+        V3 to = vsub(eye, e->pos), at = e->pos;
+        float dist = fmaxf(vlen(to), 0.01f);
+        if (!hits) { rel0 = rel; first = e->type == EN_RUSHER ? "kamikaze" : "drone"; }
+        if (e->type == EN_RUSHER) damage_enemy(i, 9999, vmul(to, -10 / dist));   /* explose au bout de la chaine, sans soin de parry */
+        else {                                            /* traction 3D vers l'oeil, bornee : le drone s'arrete a 2,5 m */
+            float v0 = fminf(FLAIL_PULL, 2 * fmaxf(0, dist - FLAIL_DRONE_STOP));
+            damage_enemy(i, flail_dmg(rel), vmul(to, v0 / dist));
+            if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
+        }
+        flail_mark_hit(at); flailRelSum += rel;
+        hits++;
+    }
+    for (int i = 0; i < MAXP; i++) {                     /* LAN : un seul net_hit par cible et par coup (envoye plus bas) */
+        if (!np_target(i)) continue;
+        float rel = rel_speed(np_vel(i));
+        V3 c = np_center(i);
+        if (!flail_in_arc(eye, c, 0.5f, rel, 1)) continue;
+        if (!hits) { rel0 = rel; first = NP[i].name; }
+        tgt[nt] = i; trel[nt++] = rel;
+        flail_mark_hit(c); flailRelSum += rel;
+        hits++;
+    }
+    coin = flail_strike_coin(eye);                        /* au plus une piece ; ce n'est pas une touche de melee */
+    float range = flail_range(sp);
+    for (float a = -1.2f; a <= 1.21f; a += 0.15f) {       /* l'arc balaye */
+        V3 d = flail_dir(P.yaw + a, P.pitch);
+        add_part(vadd(eye, vmul(d, range * 0.85f)), vmul(d, 2), sp > 15 ? v3(1, 0.7f, 0.3f) : v3(0.75f, 0.78f, 0.85f),
+                 0.2f, 0.06f + sp * 0.002f, 0);
+    }
+    if (dmMode) net_fx_melee(eye, f, sp);                 /* EV_MELEE : le recepteur lit meleeKind dans pad */
+    P.meleeCd = FLAIL_CD;
+    P.meleeT = P.flailT = FLAIL_ANIM;
+    P.parryWin = FLAIL_PARRY_WINDOW;
+    P.swingLanded = hits || parried || coin;              /* une piece frappee n'est pas un coup dans le vide */
+    flailSwings++;
+    play(S_FLAIL_SWING, 0.6f, frange(0.95f, 1.05f));
+    if (hits) {                                           /* effets locaux d'abord : chez l'hote, un parry revient tout de suite */
+        flailHitSwings++; flailTargets += hits;
+        P.dashCharge = fminf(2, P.dashCharge + 1);
+        melee_hit_points(meleePts[P.meleeKind]);          /* une fois par coup, quel que soit le nombre de cibles */
+        hitMarker = 0.18f; shake += 0.1f;
+        hitstop = fmaxf(hitstop, 0.03f);                  /* court : la chaine tire, elle ne cogne pas */
+        play(S_FLAIL_HIT, 0.8f, frange(0.9f, 1.1f));
+        if (botMode) netlog("fleau : %d cible(s), v_rel %.1f, traction vers %s", hits, rel0, first);
+    }
+    for (int k = 0; k < nt; k++) {
+        int i = tgt[k];
+        V3 c = np_center(i), h = vnorm(v3(eye.x - c.x, 0, eye.z - c.z));
+        P.flailLastTgt = i + 1; P.flailLastT = FLAIL_COMBO_T;
+        net_hit(i, flail_dmg(trel[k]) * PVP_SCALE, vadd(vmul(h, FLAIL_PULL), v3(0, FLAIL_PULL_UP, 0)), W_FLAIL);
+    }
+}
+
+/* mon fleau a ete pare (EV_MELEE_PARRY, arme W_FLAIL) : la chaine s'enroule, je suis tire vers le pareur (une seule
+ * traction par coup, meme si deux victimes parent) */
+static void flail_parried(V3 pd, V3 pa) {
+    if (P.flailParriedT <= 0) {
+        V3 h = vnorm(v3(pd.x - pa.x, 0, pd.z - pa.z));
+        P.vel = vadd(P.vel, vadd(vmul(h, FLAIL_PARRIED_PULL), v3(0, FLAIL_PARRIED_UP, 0)));
+        P.flailParriedT = 0.2f;
+        play(S_FLAIL_HIT, 0.8f, 0.6f);
+    }
+    P.flailLastT = 0;                                     /* plus de combo fleau -> rail */
+    P.meleeCd = fmaxf(P.meleeCd, MELEE_PARRIED_CD);
+}
+/* --- fin Fleau --- */
+
 static void melee(void) {
     if (P.meleeKind == MK_ANVIL) { anvil_press(); return; }
+    if (P.meleeKind == MK_FLAIL) { flail_swing(); return; }
     float sp = vlen(P.vel);
     V3 eye = eye_pos(), f = view_dir();
     V3 r = v3(cosf(P.yaw), 0, sinf(P.yaw)), u = vcross(r, f);
     int hits = 0, parried = 0;
 
     melee_start_swing();
-    parried = try_parry();
+    parried = try_parry(MELEE_RANGE + 1.5f, 1);
 
     for (int i = 0; i < MAXE; i++) {
         Enemy *e = &E[i];
@@ -2487,7 +2785,7 @@ static void throw_coin(void) {
         if (c->alive) continue;
         V3 f = view_dir();
         P.coins -= 1;
-        c->alive = 1; c->owner = myId; c->life = 4; c->spin = 0; c->teslaT = 0;
+        c->alive = 1; c->owner = myId; c->life = 4; c->spin = 0; c->teslaT = 0; c->flailStruck = 0;
         c->pos = vadd(eye_pos(), vadd(vmul(f, 0.7f), v3(0, -0.2f, 0)));
         c->vel = vadd(P.vel, vadd(vmul(f, 9), v3(0, 6, 0)));   /* la piece garde ta vitesse : elle reste devant toi */
         c->netId = ((unsigned int)(myId + 1) << 24) | (++coinCounter & 0xFFFFFF);
@@ -2515,6 +2813,21 @@ static void coin_tick(float dt) {
             }
             continue;
         }                                                 /* --- fin Tesla --- */
+        if (c->flailStruck) {                             /* --- Fleau : piece frappee, vol droit sans gravite --- */
+            c->life -= dt; c->spin += dt * 4;
+            V3 step = vmul(c->vel, dt);
+            float len = vlen(step);
+            V3 dir = vmul(step, 1.0f / fmaxf(len, 1e-6f));
+            if (len > 1e-5f && ray_world(c->pos, dir, len, 0) < len) c->life = 0;   /* le decor : local partout */
+            else if (c->owner == myId && flail_coin_hit(c, dir, len)) {   /* seul le lanceur teste les cibles */
+                c->alive = 0;
+                if (dmMode) net_fx_coin(1, c->netId, c->pos, v3(0, 0, 0));
+                continue;
+            } else c->pos = vadd(c->pos, step);
+            add_part(c->pos, v3(0, 0, 0), v3(1, 0.85f, 0.3f), 0.2f, 0.09f, 0);   /* trainee doree */
+            if (c->life <= 0) { c->alive = 0; burst(c->pos, v3(1, 0.85f, 0.3f), 8, 4, 0.25f, 0.08f); }
+            continue;
+        }                                                 /* --- fin Fleau --- */
         c->life -= dt; c->spin += dt;
         c->vel.y -= COIN_GRAVITY * dt;
         V3 step = vmul(c->vel, dt);
@@ -3732,7 +4045,7 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   8
+#define NET_VER   9
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
@@ -3872,7 +4185,8 @@ static void pack_state(NetPState *s) {
                                (P.hook != HOOK_NONE ? NF_HOOK : 0) | (P.dead ? NF_DEAD : 0) |
                                (P.parryWin > 0 ? NF_PARRY : 0));
     s->weapon = (unsigned char)P.weapon;
-    float swingT = P.meleeKind == MK_ANVIL ? ANVIL_SWING_T : P.meleeKind == MK_LANCE ? 0.2f : 0.25f;   /* Lance : estoc */
+    float swingT = P.meleeKind == MK_ANVIL ? ANVIL_SWING_T : P.meleeKind == MK_LANCE ? 0.2f :   /* Lance : estoc */
+                   P.meleeKind == MK_FLAIL ? FLAIL_ANIM : 0.25f;
     s->melee = (unsigned char)(clampf(P.meleeT / swingT, 0, 1) * 255);
     s->pad = (unsigned char)(P.meleeKind & 0x0F);      /* bits 4-7 : etats d'arme (ST_*), ajoutes par chaque arme */
     if (P.anvilState == ANVIL_DIVE) s->pad |= ST_SLAM;
@@ -3936,6 +4250,7 @@ static NetEvent ev_new(int kind) {
 
 static void net_hit(int target, float dmg, V3 knock, int weapon) {
     if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
+    flail_combo_check(target, weapon);                    /* Fleau : combo fleau -> rail (visuel) */
     NetEvent e = ev_new(EV_HIT);
     e.target = (unsigned char)target; e.sub = (unsigned char)weapon;
     e.f[0] = dmg; vf(&e.f[1], knock);
@@ -4205,6 +4520,11 @@ static void apply_event(const NetEvent *ev) {
             burst(np_center(t), v3(1, 0.35f, 0.3f), 14, 6, 0.3f, 0.1f);
             NP[t].flashT = 0.12f;
         }
+        if (ev->sub == W_FLAIL && ev->from < MAXP && t < MAXP) {   /* --- Fleau : la chaine tendue, la victime est tiree --- */
+            V3 ha = ev->from == myId ? pcenter() : np_center(ev->from), ct = t == myId ? pcenter() : np_center(t);
+            add_beam(vadd(ha, v3(0, 0.3f, 0)), ct, v3(0.55f, 0.57f, 0.62f), 0.25f);
+            if (t == myId && ev->from != myId) play(S_HOOK, 0.6f, 0.7f);   /* zip de cable */
+        }                                                 /* --- fin Fleau --- */
         break;
     }
     case EV_MELEE:
@@ -4214,6 +4534,15 @@ static void apply_event(const NetEvent *ev) {
             play(S_DASH, 0.45f * atten(a), 0.8f);
             break;
         }
+        if (ev->from < MAXP && (NP[ev->from].st.pad & 15) == MK_FLAIL) {   /* --- Fleau : arc de particules a 6 m --- */
+            float yw = atan2f(b.x, -b.z), pt = asinf(clampf(b.y, -1, 1)), rg = flail_range(ev->f[6]) * 0.85f;
+            for (float an = -1.2f; an <= 1.21f; an += 0.15f) {
+                V3 d = flail_dir(yw + an, pt);
+                add_part(vadd(a, vmul(d, rg)), vmul(d, 2), ev->f[6] > 15 ? v3(1, 0.7f, 0.3f) : v3(0.75f, 0.78f, 0.85f), 0.2f, 0.07f, 0);
+            }
+            play(S_FLAIL_SWING, 0.6f * atten(a), 1.0f);
+            break;
+        }                                                 /* --- fin Fleau --- */
         if (ev->from < MAXP && (NP[ev->from].st.pad & 15) == MK_LANCE) {   /* estoc de la Lance : trait droit */
             for (int k = 0; k < 14; k++) add_part(vadd(a, vmul(b, 0.8f + k * 0.18f)), vmul(b, 4), v3(0.9f, 0.9f, 1), 0.12f, 0.06f, 0);
             play(S_LANCE_THRUST, 0.6f * atten(a), 1.0f);
@@ -4318,7 +4647,7 @@ static void apply_event(const NetEvent *ev) {
             for (int i = 0; i < MAXCOIN; i++)
                 if (!CO[i].alive) {
                     CO[i].alive = 1; CO[i].owner = ev->from; CO[i].netId = ev->netId;
-                    CO[i].pos = a; CO[i].vel = b; CO[i].life = 4; CO[i].spin = 0; CO[i].teslaT = 0;
+                    CO[i].pos = a; CO[i].vel = b; CO[i].life = 4; CO[i].spin = 0; CO[i].teslaT = 0; CO[i].flailStruck = 0;
                     break;
                 }
         } else if (ev->sub == 1 && ev->f[3] == 1) {       /* Eventail : piece eclatee par un plomb */
@@ -4328,6 +4657,15 @@ static void apply_event(const NetEvent *ev) {
         } else if (ev->sub == 3) {                        /* relancee par une scie */
             for (int i = 0; i < MAXCOIN; i++)
                 if (CO[i].alive && CO[i].netId == ev->netId) { CO[i].pos = a; CO[i].vel = b; CO[i].life = ev->f[6]; }
+        } else if (ev->sub == 2) {                        /* --- Fleau : frappee (visuelle ici, mais le rail peut la voler) --- */
+            int ci = -1;
+            for (int i = 0; i < MAXCOIN && ci < 0; i++) if (CO[i].alive && CO[i].netId == ev->netId) ci = i;
+            for (int i = 0; i < MAXCOIN && ci < 0; i++)
+                if (!CO[i].alive) { ci = i; CO[i].alive = 1; CO[i].owner = ev->from; CO[i].netId = ev->netId; CO[i].spin = 0; CO[i].teslaT = 0; }
+            if (ci >= 0) {
+                CO[ci].flailStruck = 1; CO[ci].pos = a; CO[ci].vel = b; CO[ci].life = FLAIL_COIN_LIFE;
+                play(S_FLAIL_COIN, 0.7f * atten(a), 1.0f);
+            }                                             /* --- fin Fleau --- */
         } else {
             for (int i = 0; i < MAXCOIN; i++)
                 if (CO[i].alive && CO[i].netId == ev->netId) {
@@ -4360,6 +4698,8 @@ static void apply_event(const NetEvent *ev) {
                 P.anvilState = ANVIL_IDLE; P.anvilStunT = 0;
                 P.vel = vadd(v3(P.vel.x, 0, P.vel.z), vadd(vmul(vnorm(vsub(pa, pd)), 6), v3(0, SLAM_PARRIED_UP, 0)));
                 P.meleeCd = fmaxf(P.meleeCd, MELEE_PARRIED_CD);
+            } else if ((int)ev->f[0] == W_FLAIL) {        /* Fleau : la chaine s'enroule, tire vers le pareur */
+                flail_parried(pd, pa);
             } else {
                 int lance = (int)ev->f[0] == W_LANCE;     /* Lance paree : indisponible 1,5 s, relevee */
                 P.vel = vadd(P.vel, vadd(vmul(vnorm(vsub(pa, pd)), clash ? 8.0f : 11.0f), v3(0, 3, 0)));
@@ -4370,11 +4710,13 @@ static void apply_event(const NetEvent *ev) {
             hitstop = fmaxf(hitstop, 0.1f);
             shake += 0.3f;
             snprintf(popText, sizeof popText, clash ? "CHOC D'EPEES !" : wave ? "ONDE PAREE PAR %s" :
-                     (int)ev->f[0] == W_LANCE ? "LANCE PAREE PAR %s" : "PARE PAR %s", pname(def));
+                     (int)ev->f[0] == W_LANCE ? "LANCE PAREE PAR %s" :
+                     (int)ev->f[0] == W_FLAIL ? "CHAINE RETOURNEE PAR %s" : "PARE PAR %s", pname(def));
             popT = 1.2f;
         }
         netlog("%s : %s -> %s", clash ? "choc d'epees" : (int)ev->f[0] == W_SLAM ? "enclume paree" :
-               (int)ev->f[0] == W_LANCE ? "lance paree" : "epee paree", pname(att), pname(def));
+               (int)ev->f[0] == W_LANCE ? "lance paree" : (int)ev->f[0] == W_FLAIL ? "fleau pare" : "epee paree",
+               pname(att), pname(def));
         break;
     }
     case EV_LANCE: {                                      /* --- Lance : choc de joute arbitre par l'hote --- */
@@ -4514,6 +4856,7 @@ static double parry_grace(int w, int victimMK) {
 /* --- Lance : arbitrage du choc de joute ----------------------------- */
 static double joustT[MAXP][MAXP];                         /* derniere joute resolue entre a et b */
 static int lanceHostCouch, lanceHostThrust, lanceHostParried, lanceClashWins, lanceClashDouble;
+static int flailHostParried;                              /* Fleau : fleaux pares (arbitre) */
 static float lanceHostVcSum;
 
 static V3 dir_of(float yaw, float pitch) {                /* meme formule que view_dir */
@@ -4609,9 +4952,11 @@ static int host_handle(const NetEvent *ev) {
         }                                                 /* --- fin Tesla --- */
         /* coup de melee ou impact de grappin pendant la fenetre de parry de la victime : c'est pare */
         if (is_parryable_w(ev->sub) && nowT - NP[v].lastParryT < parry_grace(ev->sub, NP[v].st.pad & 15)) {
-            int clash = is_melee_w(ev->sub) && !couched && ev->from < MAXP && nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
+            int clash = is_melee_w(ev->sub) && ev->sub != W_FLAIL && !couched && ev->from < MAXP &&   /* Fleau : chaines croisees */
+                        nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
             if (ev->sub == W_SLAM) slamParried++;
             if (ev->sub == W_LANCE) lanceHostParried++;
+            if (ev->sub == W_FLAIL) flailHostParried++;   /* Fleau */
             NetEvent e = ev_new(EV_MELEE_PARRY);
             e.actor = (unsigned char)v; e.target = ev->from; e.sub = (unsigned char)clash;
             e.f[0] = (float)ev->sub;                      /* arme paree : l'attaquant rend ses points de melee */
@@ -5515,7 +5860,8 @@ static float botTime = 20, botT, botNextHook, botNextDash, botSpeedSum, botAlive
 static char botShot[260];
 static int botSpec;                                       /* --spec : le bot client regarde la partie au lieu d'y jouer */
 static float bot_melee_reach(float rel) {
-    return P.meleeKind == MK_ANVIL ? anvil_range(rel) : P.meleeKind == MK_LANCE ? LANCE_THRUST_RANGE : melee_range(rel);
+    return P.meleeKind == MK_ANVIL ? anvil_range(rel) : P.meleeKind == MK_LANCE ? LANCE_THRUST_RANGE :
+           P.meleeKind == MK_FLAIL ? flail_range(rel) : melee_range(rel);
 }
 
 /* Le bot joue comme un joueur de movement shooter : bhop permanent, air-strafe en balancant
@@ -5535,7 +5881,7 @@ static void bot_think(float dt) {
     static double swingSeenT;
     for (int i = 0; i < MAXP; i++) {
         if (!np_target(i) || NP[i].st.melee < 150 || nowT - swingSeenT < 0.4) continue;
-        if (vlen(vsub(NP[i].disp, P.pos)) > 5) continue;
+        if (vlen(vsub(NP[i].disp, P.pos)) > ((NP[i].st.pad & 0x0F) == MK_FLAIL ? 7 : 5)) continue;   /* Fleau : 7 m */
         swingSeenT = nowT;
         if (frand() < 0.5f && P.meleeCd <= 0) {
             V3 d = vsub(np_center(i), eye_pos());
@@ -5750,6 +6096,18 @@ static void bot_think(float dt) {
     if (see) seeT += dt; else seeT = 0;
     float aimErr = 0.012f + (best >= 0 ? bd : 0) * 0.0014f;
     float aimErrYaw = aimErr * sinf(botT * 7.3f + botMode), aimErrPitch = aimErr * 0.6f * cosf(botT * 5.1f);
+
+    /* --- Fleau : combo fleau -> tir. Moins de 0,3 s apres une touche, la cible vole vers nous (parabole connue) :
+     * on la tire, sans erreur de visee supplementaire, avant toute autre manoeuvre (le dash rendu lancerait un cross-up) --- */
+    if (P.meleeKind == MK_FLAIL && P.flailLastT > FLAIL_COMBO_T - 0.3f && P.flailLastTgt > 0 && np_target(P.flailLastTgt - 1)) {
+        V3 eye = eye_pos(), c = np_center(P.flailLastTgt - 1), d = vsub(c, eye);
+        if ((P.loadout[0] == WP_RAIL || P.loadout[1] == WP_RAIL) && wp_has_ammo(WP_RAIL)) P.weapon = WP_RAIL;
+        if (P.weapon != WP_SAW && wp_has_ammo(P.weapon) && los(eye, c)) {
+            P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(clampf(d.y / fmaxf(vlen(d), 0.01f), -1, 1));
+            if (P.fireCd <= 0 && P.switchT <= 0) botHeld[A_FIRE] = 1;
+            return;
+        }
+    }                                                     /* --- fin Fleau --- */
 
     /* CROSS-UP : monter au-dessus de l'adversaire (saut + double saut), dasher par-dessus,
      * se retourner et tirer dans son dos. */
@@ -5999,6 +6357,25 @@ static void bot_think(float dt) {
                 P.yaw = aimYaw; botPress[A_MELEE] = 1;   /* estoc au contact (tap) */
             }
         }
+    } else if (P.meleeKind == MK_FLAIL) {                 /* --- Fleau --- : attirer la cible de loin, puis la tirer */
+        static int fcPlan;                                /* piece lancee, frappee au fleau 0,3 s plus tard */
+        static float fcT, fcNext;
+        if (best >= 0 && P.meleeCd <= 0 && bd < flail_range(rel_speed(np_vel(best))) + 0.3f && (see || bd < 2.5f)) {
+            P.yaw = aimYaw; P.pitch = aimPitch;           /* au contact aussi : c'est la seule melee (jauges) */
+            botPress[A_MELEE] = 1;
+        } else if (!fcPlan && !coinPlan && best >= 0 && see && bd > 8 && bd < 25 && P.coins >= 1 && P.meleeCd <= 0 && botT > fcNext) {
+            P.yaw = aimYaw; P.pitch = aimPitch;
+            botPress[A_COIN] = 1;
+            fcPlan = 1; fcT = 0; fcNext = botT + 3;
+        } else if (fcPlan) {
+            fcT += dt;
+            if (fcT > 0.6f) fcPlan = 0;
+            else if (fcT >= 0.3f && P.meleeCd <= 0) {     /* la piece est ~3 m devant : un coup de fleau l'envoie sur la cible */
+                if (best >= 0) { P.yaw = aimYaw; P.pitch = aimPitch; }
+                botPress[A_MELEE] = 1; fcPlan = 0;
+            }
+        }                                                 /* (le combo fleau -> tir est plus haut, avant le cross-up) */
+        /* --- fin Fleau --- */
     } else if (best >= 0 && bd < bot_melee_reach(rel_speed(np_vel(best))) + 0.5f && P.meleeCd <= 0) { P.yaw = aimYaw; botPress[A_MELEE] = 1; }
     /* --- fin Lance --- */
     static float logT;
@@ -6137,15 +6514,22 @@ static void game_tick(float dt) {
         lance_tick(dt, act[A_MELEE]);                     /* maintenu : act, pas actP */
     } else if (!P.dead && meleePress && P.meleeCd <= 0) melee();
     if (P.parryWin > 0) {
-        if (!P.dead) try_parry();
+        if (!P.dead) try_parry(P.meleeKind == MK_FLAIL ? FLAIL_PARRY_RANGE : MELEE_RANGE + 1.5f,   /* Fleau : 6 m, renvoi x0,8 */
+                               P.meleeKind == MK_FLAIL ? FLAIL_PARRY_SPEED : 1);
         P.parryWin -= dt;
         /* coup dans le vide : on paie le risque (la Lance, elle, decide a 0,15 s : estoc seul ou lance couchee) */
         if (P.parryWin <= 0 && !P.swingLanded && P.lanceState != LS_THRUST) {
-            int anvil = P.meleeKind == MK_ANVIL;
-            P.meleeCd = fmaxf(P.meleeCd, anvil ? ANVIL_WHIFF_CD - ANVIL_PARRY_WINDOW : MELEE_WHIFF_CD - PARRY_WINDOW);
+            int anvil = P.meleeKind == MK_ANVIL, flail = P.meleeKind == MK_FLAIL;
+            P.meleeCd = fmaxf(P.meleeCd, anvil ? ANVIL_WHIFF_CD - ANVIL_PARRY_WINDOW :
+                                         flail ? FLAIL_WHIFF_CD - FLAIL_PARRY_WINDOW : MELEE_WHIFF_CD - PARRY_WINDOW);
         }
     }
     if (P.anvilLandT < 10) P.anvilLandT += dt;            /* Enclume : sert a reconnaitre un parry de l'onde */
+    if (P.flailT > 0 && !P.dead) {                        /* --- Fleau : une particule par tick sur la tete de la chaine --- */
+        float sag, spd = vlen(P.vel);
+        add_part(flail_my_head(eye_pos(), &sag), v3(0, 0, 0), spd > 15 ? v3(1, 0.7f, 0.3f) : v3(0.75f, 0.78f, 0.85f), 0.15f, 0.07f, 0);
+    }
+    P.flailT -= dt; P.flailLastT -= dt; P.flailParriedT -= dt;   /* --- fin Fleau --- */
     anvil_remote_tick();
     lance_remote_tick();                                  /* Lance : son des lances couchees adverses */
 
@@ -6691,6 +7075,92 @@ static void draw_lance_vm(void) {
 }
 /* --- fin Lance : rendu --- */
 
+/* --- Fleau : rendu ---------------------------------------------------- */
+/* tete a pointes centree en c (demi-taille s) : boite + 3 pointes le long des axes */
+static void flail_head_model(V3 c, float s) {
+    glColor3f(0.3f, 0.31f, 0.35f);
+    box_faces(vsub(c, v3(s, s, s)), vadd(c, v3(s, s, s)));
+    glColor3f(0.55f, 0.57f, 0.62f);
+    float l = s * 1.7f, w = s * 0.3f;
+    box_faces(vsub(c, v3(l, w, w)), vadd(c, v3(l, w, w)));
+    box_faces(vsub(c, v3(w, l, w)), vadd(c, v3(w, l, w)));
+    box_faces(vsub(c, v3(w, w, l)), vadd(c, v3(w, w, l)));
+}
+/* chaine de a a b : 16 maillons de deux teintes, chainette approchee par une parabole de fleche sag */
+static void draw_chain(V3 a, V3 b, float sag) {
+    glLineWidth(3);
+    glBegin(GL_LINES);
+    for (int s = 0; s < 16; s++) {
+        float u0 = s / 16.0f, u1 = (s + 1) / 16.0f;
+        V3 p0 = vadd(vlerp(a, b, u0), v3(0, -sag * 4 * u0 * (1 - u0), 0));
+        V3 p1 = vadd(vlerp(a, b, u1), v3(0, -sag * 4 * u1 * (1 - u1), 0));
+        if (s & 1) glColor3f(0.55f, 0.57f, 0.62f); else glColor3f(0.30f, 0.31f, 0.35f);
+        glVertex3f(p0.x, p0.y, p0.z); glVertex3f(p1.x, p1.y, p1.z);
+    }
+    glEnd();
+}
+/* chaine du joueur distant i (depuis sa main gauche, comme draw_remote_players) pendant son coup, sinon 0 */
+static int np_flail_chain(int i, V3 *hand, V3 *head, float *sag) {
+    NetPlayer *n = &NP[i];
+    if (!np_target(i) || (n->st.pad & 0x0F) != MK_FLAIL || !n->st.melee) return 0;
+    float cy = cosf(n->st.yaw), sy = sinf(n->st.yaw), ox = -0.4f, oz = -0.1f;
+    *hand = vadd(n->disp, v3(ox * cy - oz * sy, np_height(i) - 0.6f, ox * sy + oz * cy));
+    *head = flail_head(*hand, n->st.yaw, n->st.pitch, 1 - n->st.melee / 255.0f, flail_range(vlen(np_vel(i))), 0, *hand, sag);
+    return 1;
+}
+/* chaines dans le monde (6 a 8 m : profondeur reelle, pas dans le viewmodel), puis halos additifs des tetes */
+static void draw_flails(V3 eye) {
+    V3 heads[MAXP + 1], hand, head;
+    int nh = 0;
+    float sag;
+    if (P.meleeKind == MK_FLAIL && P.flailT > 0 && !P.dead && !spectating) {
+        head = flail_my_head(eye, &sag);
+        draw_chain(flail_hand(eye), head, sag);
+        heads[nh++] = head;
+    }
+    for (int i = 0; dmMode && i < MAXP; i++)
+        if (np_flail_chain(i, &hand, &head, &sag)) { draw_chain(hand, head, sag); heads[nh++] = head; }
+    if (!nh) return;
+    glEnable(GL_LIGHTING);
+    for (int k = 0; k < nh; k++) flail_head_model(heads[k], 0.06f);
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE); glDepthMask(GL_FALSE);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, texDot);
+    glBegin(GL_QUADS);
+    glColor4f(0.8f, 0.85f, 1, 0.45f);
+    for (int k = 0; k < nh; k++) billboard(heads[k], 0.25f);
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+    glDepthMask(GL_TRUE); glDisable(GL_BLEND);
+}
+/* viewmodel : manche incline dans la main gauche ; au repos, tete suspendue et balancee par le mouvement.
+ * Pendant le coup, la tete est dans le monde (draw_flails) : seul le manche reste, releve */
+static void draw_flail_vm(void) {
+    float k = P.flailT > 0 ? clampf(1 - P.flailT / FLAIL_ANIM, 0, 1) : 0, lift = P.flailT > 0 ? sinf(PI * k) : 0;
+    glPushMatrix();
+    glTranslatef(-0.9f, -0.22f, -0.3f);
+    glRotatef(-25 - 50 * lift, 1, 0, 0);                  /* incline vers l'avant, releve pendant le lancer */
+    glRotatef(12 + 25 * lift, 0, 0, 1);
+    glColor3f(0.36f, 0.26f, 0.17f);                       /* manche en bois */
+    box_faces(v3(-0.022f, 0, -0.022f), v3(0.022f, 0.38f, 0.022f));
+    glColor3f(0.4f, 0.41f, 0.45f);                        /* bague d'acier */
+    box_faces(v3(-0.03f, 0.34f, -0.03f), v3(0.03f, 0.4f, 0.03f));
+    if (P.flailT <= 0) {
+        float sx = clampf(-P.swayX * 5, -0.15f, 0.15f) + 0.02f * sinf(gameTime * 2.3f);
+        float sz = clampf(P.bob * 3, -0.1f, 0.1f) + 0.02f * cosf(gameTime * 1.7f);
+        V3 top = v3(0, 0.4f, 0), hd = v3(-0.12f + sx, 0.12f, sz);
+        for (int s = 1; s < 6; s++) {                     /* maillons */
+            V3 q = vlerp(top, hd, s / 6.0f);
+            if (s & 1) glColor3f(0.4f, 0.41f, 0.45f); else glColor3f(0.22f, 0.23f, 0.26f);
+            box_faces(vsub(q, v3(0.01f, 0.02f, 0.01f)), vadd(q, v3(0.01f, 0.02f, 0.01f)));
+        }
+        flail_head_model(hd, 0.045f);
+    }
+    glPopMatrix();
+}
+/* --- fin Fleau : rendu --- */
+
 static void draw_viewmodel(float aspect) {
     glClear(GL_DEPTH_BUFFER_BIT);
     set_frustum(60, aspect, 0.01f, 10);
@@ -6712,6 +7182,7 @@ static void draw_viewmodel(float aspect) {
     glEnable(GL_LIGHTING);
     if (P.meleeKind == MK_ANVIL) draw_anvil_vm();
     else if (P.meleeKind == MK_LANCE) draw_lance_vm();    /* Lance : toujours visible */
+    else if (P.meleeKind == MK_FLAIL) draw_flail_vm();    /* Fleau : manche toujours visible, tete au repos */
     else if (P.meleeT > 0) {                              /* coup d'epee : balayage de droite a gauche */
         float k = clampf(1 - P.meleeT / 0.25f, 0, 1), heat = clampf(vlen(P.vel) / 30, 0, 1);
         glPushMatrix();
@@ -7373,6 +7844,18 @@ static void draw_remote_players(void) {
                 glEnable(GL_LIGHTING);
             }
             glPopMatrix();
+        } else if ((n->st.pad & 15) == MK_FLAIL) {        /* Fleau : manche a la main gauche ; au repos, tete pendue */
+            glPushMatrix();
+            glTranslatef(-0.4f, h - 0.6f, -0.1f);
+            glRotatef(n->st.melee ? n->st.pitch * 180 / PI - 60 : -20, 1, 0, 0);
+            glColor3f(0.36f, 0.26f, 0.17f);
+            box_faces(v3(-0.03f, -0.03f, -0.35f), v3(0.03f, 0.03f, 0.02f));
+            if (!n->st.melee) {                           /* pendant le coup, la chaine est dans le monde (draw_flails) */
+                glColor3f(0.30f, 0.31f, 0.35f);
+                box_faces(v3(-0.012f, -0.32f, -0.36f), v3(0.012f, 0, -0.33f));
+                flail_head_model(v3(0, -0.38f, -0.345f), 0.08f);
+            }
+            glPopMatrix();
         } else if (n->st.melee) {                         /* epee en plein balayage */
             float k = 1 - n->st.melee / 255.0f;
             glPushMatrix();
@@ -7744,6 +8227,27 @@ static void draw_hud(void) {
         mk = clampf(vc / 20, 0, 1); mcd = LANCE_HIT_CD;
         if (vc >= LANCE_VC_MIN) snprintf(buf, sizeof buf, "JOUTE v%.0f %d dmg", vc, (int)jd);
         else snprintf(buf, sizeof buf, "v%.0f/%.0f estoc %d", fmaxf(vc, 0), LANCE_VC_MIN, (int)(lance_thrust_dmg(sp3) * pvp));
+    } else if (P.meleeKind == MK_FLAIL) {                 /* --- Fleau : degats et portee de l'arc, crochets si une cible y est --- */
+        int inArc = 0;
+        V3 eye = eye_pos(), c;
+        mcd = FLAIL_CD;
+        snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(flail_dmg(sp3) * pvp), flail_range(sp3));
+        for (int k = 0; k < MAXE + MAXP && !inArc && !P.dead; k++)   /* meme test que le coup, sans ligne de vue (cout) */
+            if (flail_target(k, &c))
+                inArc = flail_in_arc(eye, c, k < MAXE ? enemy_radius(E[k].type) : 0.5f,
+                                     rel_speed(k < MAXE ? E[k].vel : np_vel(k - MAXE)), 0);
+        if (inArc) {
+            float al = P.meleeCd <= 0 ? 0.9f : 0.35f;
+            glLineWidth(2);
+            glColor4f(0.75f, 0.8f, 0.9f, al);
+            glBegin(GL_LINES);
+            for (int s = -1; s <= 1; s += 2) {            /* [ ] autour du viseur */
+                glVertex2f(cx + s * 34, cy - 10); glVertex2f(cx + s * 34, cy + 10);
+                glVertex2f(cx + s * 34, cy - 10); glVertex2f(cx + s * 28, cy - 10);
+                glVertex2f(cx + s * 34, cy + 10); glVertex2f(cx + s * 28, cy + 10);
+            }
+            glEnd();
+        }                                                 /* --- fin Fleau --- */
     } else snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(melee_dmg(sp3) * pvp), melee_range(sp3));
     text(1, mx, by - 48.0f, buf, 1, 1 - mk * 0.45f, 1 - mk * 0.85f, 1);
     rect(mx, by - 36.0f, 180, 6, 0.1f, 0.1f, 0.15f, 0.7f);
@@ -8162,6 +8666,8 @@ static void render(float alpha, float frameDt) {
         glEnd();
     }
 
+    draw_flails(eye);                                     /* Fleau : chaines (la mienne et celles des autres) */
+
     /* tout ce qui brille : additif */
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
@@ -8495,6 +9001,29 @@ static Enemy *tesla_test_drone(int i, V3 pos, float hp) {
     return &E[i];
 }
 /* --- fin Tesla : outils des tests --- */
+
+/* --- Fleau : outils des tests --- */
+/* remise a zero : solo, Fleau en melee, immobile en pos, vue vers -z */
+static void flail_test_reset(V3 pos) {
+    reset_game();
+    dmMode = 0; hitstop = 0;
+    memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+    P.meleeKind = MK_FLAIL; P.pos = P.prevPos = pos; P.yaw = 0; P.pitch = 0; P.vel = v3(0, 0, 0);
+}
+static Enemy *flail_test_enemy(int i, V3 pos, int type) {
+    E[i].alive = 1; E[i].type = type; E[i].hp = type == EN_DRONE ? 100.0f : 50.0f; E[i].pos = pos; E[i].vel = v3(0, 0, 0);
+    E[i].fireT = 10;                                      /* pas de tir d'orbe pendant le test */
+    return &E[i];
+}
+/* dernier EV_HIT de la file d'envoi (NULL si aucun) */
+static const NetEvent *flail_test_last_hit(void) {
+    for (int k = 1; k <= OUTQ; k++) {
+        const NetEvent *e = &outq[(outqHead - k + OUTQ) % OUTQ].ev;
+        if (e->kind == EV_HIT) return e;
+    }
+    return NULL;
+}
+/* --- fin Fleau : outils des tests --- */
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
 static void run_tests(const char *path) {
@@ -9875,6 +10404,153 @@ static void run_tests(const char *path) {
     }
     /* --- fin Lance --- */
 
+    /* --- Fleau (solo) : couloir degage x = -20, joueur en (-20, 0, 40), vue vers -z --- */
+    {   /* 1. degats et traction d'un drone a 5,5 m : il s'arrete vers 2,5 m (minimum : son orbite le ramene ensuite) */
+        flail_test_reset(v3(-20, 0, 40));
+        Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 34.5f), EN_DRONE);
+        flail_swing();
+        float hp = e->hp, vz = e->vel.z, dmin = 1e9f;
+        for (int i = 0; i < 60; i++) { enemy_tick(TICK); dmin = fminf(dmin, vlen(vsub(e->pos, eye_pos()))); }
+        hitstop = 0;
+        fprintf(f, "fleau drone a 5.5 m : PV %.0f, traction vel.z %.1f, distance min %.2f (attendu 82, 6.0, < 3.5)\n", hp, vz, dmin);
+    }
+    {   /* 2. a 20 m/s : portee 7 m (drone a 7,6 m, rayon 0,9), 18 + 1,5 x 20 = 48, dash +1 */
+        flail_test_reset(v3(-20, 0, 40));
+        P.vel = v3(0, 0, -20); P.dashCharge = 0.5f;
+        Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 32.4f), EN_DRONE);
+        flail_swing();
+        hitstop = 0;
+        fprintf(f, "fleau a 20 m/s, drone a 7.6 m : PV %.0f, dash %.1f, cibles %d (attendu 52, 1.5, 1)\n", e->hp, P.dashCharge, P.flailHitN);
+    }
+    {   /* 3. arc de 140 degres : drones a 0, +60, -60 et 80 degres a 5 m ; un seul gain de points pour le coup */
+        static const float ang[4] = { 0, 1.0472f, -1.0472f, 1.3963f };
+        flail_test_reset(v3(-20, 0, 40));
+        P.loadout[0] = WP_ROCKET; P.loadout[1] = WP_RAIL; P.weapon = WP_ROCKET; P.ammo[WP_ROCKET] = 4; P.ammoGauge[WP_ROCKET] = 0;
+        for (int k = 0; k < 4; k++) flail_test_enemy(k, v3(-20 + 5 * sinf(ang[k]), 1.6f, 40 - 5 * cosf(ang[k])), EN_DRONE);
+        flail_swing();
+        hitstop = 0;
+        int n = 0;
+        for (int k = 0; k < 4; k++) n += E[k].hp < 100;
+        fprintf(f, "fleau arc : %d drones touches, celui a 80 deg PV %.0f, roquettes %d jauge %.0f (attendu 3, 100, 4, 35)\n",
+                n, E[3].hp, P.ammo[WP_ROCKET], P.ammoGauge[WP_ROCKET]);
+    }
+    {   /* 4. ligne de vue : un muret entre le joueur et un drone a 5 m ; coup dans le vide : 0,9 s depuis l'appui */
+        flail_test_reset(v3(-20, 0, 40));
+        Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 35), EN_DRONE);
+        int nb0 = nb;
+        addbox(-21, 0, 36.5f, -19, 3.5f, 37.5f, 0.5f, 0.5f, 0.5f);
+        P.meleeCd = 0;
+        botPress[A_MELEE] = 1;                            /* comme un appui : game_tick -> melee -> flail_swing */
+        int ticks = 0;
+        do { game_tick(TICK); ticks++; } while (P.parryWin > 0 && ticks < 60);
+        float hp = e->hp;
+        int landed = P.swingLanded;
+        nb = nb0;
+        memset(E, 0, sizeof E);
+        fprintf(f, "fleau derriere un muret : PV drone %.0f, touche %d, recharge %.2f apres %.2f s (attendu 100, 0, 0.80, ~0.1)\n",
+                hp, landed, P.meleeCd, ticks * TICK);
+    }
+    {   /* 5. kamikaze a 5 m : il explose au bout de la chaine, sans soin de parry (seulement le soin du kill, 8) */
+        flail_test_reset(v3(-20, 0, 40));
+        P.hp = 80;
+        Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 35), EN_RUSHER);
+        flail_swing();
+        hitstop = 0;
+        fprintf(f, "fleau kamikaze : vivant %d, PV joueur %.0f (attendu 0, 88)\n", e->alive, P.hp);
+    }
+    {   /* 6. piece frappee : ma piece devant, drone a 22 m plus loin -> 45 m/s, 40 degats */
+        flail_test_reset(v3(-20, 0, 40));
+        Enemy *e = flail_test_enemy(0, v3(-20, 2, 15), EN_DRONE);
+        Coin *c = &CO[0];
+        c->alive = 1; c->owner = myId; c->life = 3; c->pos = v3(-20, 2.5f, 37); c->vel = v3(0, 0, 0); c->netId = 0x01000077;
+        P.dashCharge = 0.5f;                              /* une piece frappee ne rend pas de dash */
+        flail_swing();
+        int struck = c->flailStruck;
+        float sp = vlen(c->vel);
+        for (int i = 0; i < 90; i++) coin_tick(TICK);
+        hitstop = 0;
+        fprintf(f, "fleau piece frappee : frappee %d a %.0f m/s, PV drone %.0f, piece vivante %d, dash %.1f (attendu 1, 45, 60, 0, 0.5)\n",
+                struck, sp, e->hp, c->alive, P.dashCharge);
+    }
+    {   /* 7. piece frappee + rail : le rail dans la piece en vol ricoche (x1,5), ses 40 degats sont remplaces */
+        flail_test_reset(v3(-20, 0, 40));
+        Enemy *e = flail_test_enemy(0, v3(-20, 2, 15), EN_DRONE);
+        Coin *c = &CO[0];
+        c->alive = 1; c->owner = myId; c->life = 3; c->pos = v3(-20, 2.5f, 37); c->vel = v3(0, 0, 0); c->netId = 0x01000078;
+        flail_swing();
+        for (int i = 0; i < 3; i++) coin_tick(TICK);
+        V3 d = vsub(c->pos, eye_pos());
+        P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
+        lastChain = 0;
+        fire_rail();
+        hitstop = 0;
+        fprintf(f, "fleau piece frappee + rail : chaine %d, drone vivant %d (attendu 1, 0)\n", lastChain, e->alive);
+    }
+    {   /* 8. parry a 6 m : orbe a 5,5 m renvoyee a 36 x 0,8 ; l'epee, elle, ne l'atteint pas */
+        flail_test_reset(v3(-20, 0, 40));
+        Proj *o = spawn_proj(PR_ORB, v3(-20, 1.6f, 34.5f), v3(0, 0, 16));
+        flail_swing();
+        int okF = o->kind == PR_PARRIED;
+        float spF = vlen(o->vel);
+        flail_test_reset(v3(-20, 0, 40));
+        P.meleeKind = MK_SWORD;
+        o = spawn_proj(PR_ORB, v3(-20, 1.6f, 34.5f), v3(0, 0, 16));
+        melee();
+        hitstop = 0;
+        fprintf(f, "fleau parry a 5.5 m : renvoyee %d a %.1f m/s ; epee : renvoyee %d (attendu 1 a 28.8 ; 0)\n", okF, spF, o->kind == PR_PARRIED);
+        memset(PR, 0, sizeof PR);
+    }
+    /* --- Fleau en LAN simule (je suis l'hote) --- */
+    {   /* 9. touche : 18 x 0,7 = 12,6 ; recul negatif (traction) de 12 m/s + 3 vers le haut */
+        flail_test_reset(v3(-20, 0, 40));
+        lance_test_lan(v3(-20, 0, 35));
+        flail_swing();
+        hitstop = 0;
+        const NetEvent *h = flail_test_last_hit();
+        V3 kn = h ? fv(h->f + 1) : v3(0, 0, 0);
+        fprintf(f, "fleau PvP : PV cible %.1f, arme %d, recul (%.1f, %.1f, %.1f) (attendu 87.4, %d, (0.0, 3.0, 12.0))\n",
+                NP[1].hp, h ? h->sub : -1, kn.x, kn.y, kn.z, W_FLAIL);
+    }
+    {   /* 10. la cible pare : pas de degats, le lanceur est tire vers elle, fleau bloque 1 s ; deux pareurs : une seule traction */
+        flail_test_reset(v3(-20, 0, 40));
+        lance_test_lan(v3(-20, 0, 35));
+        NP[1].lastParryT = nowT;
+        int fp = flailHostParried;
+        flail_swing();
+        hitstop = 0;
+        float hp1 = NP[1].hp, vz = P.vel.z, vy = P.vel.y, cd = P.meleeCd;
+        fp = flailHostParried - fp;
+        flail_test_reset(v3(-20, 0, 40));
+        lance_test_lan(v3(-20, 0, 35));
+        NP[2].active = NP[2].alive = 1; NP[2].hp = 100; snprintf(NP[2].name, 16, "Cible2");
+        NP[2].disp = v3(-21, 0, 35); vf(NP[2].st.pos, NP[2].disp);
+        NP[1].lastParryT = NP[2].lastParryT = nowT;
+        flail_swing();
+        hitstop = 0;
+        fprintf(f, "fleau pare : PV cible %.0f, fleaux pares +%d, vel attaquant (y %.1f, z %.1f), recharge %.2f ; deux pareurs : |v| %.1f "
+                   "(attendu 100, +1, (4.0, -16.0), 1.00 ; 16.5)\n", hp1, fp, vy, vz, cd, vlen(P.vel));
+    }
+    {   /* 11. bot au Fleau : cible a 5 m, le coup puis le rail dans les 0,3 s (combo fleau -> tir) */
+        flail_test_reset(v3(-20, 0, 40));
+        lance_test_lan(v3(-20, 0, 35));
+        P.dashCharge = 0.2f;                              /* ni cross-up ni dash */
+        P.fireCd = 0.05f;                                 /* le tir part apres le coup de fleau, pas dans le meme tick */
+        int h0 = hitCount[W_FLAIL], c0 = flailCombos, i = 0;
+        for (; i < 120 && flailCombos == c0; i++) {
+            nowT += TICK;
+            bot_think(TICK);
+            game_tick(TICK);
+        }
+        hitstop = 0;
+        fprintf(f, "bot fleau : touches fleau %d, combos fleau -> rail %d en %.2f s, PV cible %.1f (attendu 1, 1, < 0.35, < 30)\n",
+                hitCount[W_FLAIL] - h0, flailCombos - c0, i * TICK, NP[1].hp);
+        memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+        reset_game();
+        dmMode = 0;
+        memset(NP, 0, sizeof NP);
+    }
+    /* --- fin Fleau --- */
+
     /* reglages : sauvegarde puis rechargement de velocity.ini */
     {
         int savedBot = botMode;
@@ -10138,6 +10814,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             NP[2].st.pad = MK_LANCE;
             P.meleeKind = MK_LANCE;                       /* et ma lance levee */
         }
+        if (strstr(shotPath, "fleau")) {                  /* Fleau : Rival en plein balayage vers moi, Ninja au repos */
+            NP[1].st.pad = MK_FLAIL; NP[1].st.melee = 110; NP[1].st.flags = 0;
+            NP[1].st.yaw = atan2f(6.5f, -7.0f);
+            NP[2].st.pad = MK_FLAIL; NP[2].st.melee = 0;
+            P.meleeKind = MK_FLAIL;                       /* et mon fleau au repos */
+        }
         P.pos = P.prevPos = v3(0, 0, 24); P.yaw = -0.1f; P.pitch = 0.08f; P.hp = 100;
         if (strstr(shotPath, "eventail")) {               /* Rival a l'Eventail : son tir recu (traceurs recalcules) */
             NP[1].st.weapon = WP_SHOTGUN; NP[1].st.flags = 0; NP[1].st.melee = 0;
@@ -10222,6 +10904,17 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             P.lanceState = LS_COUCH; P.lanceT = 0.8f;
             E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.4f, 31);
             P.lanceVc = vdot(P.vel, vnorm(vsub(E[0].pos, eye_pos())));
+        }
+        if (strstr(shotPath, "fleau")) {                  /* Fleau : chaine accrochee a un drone (ou balayage a vide : "vide") */
+            hook_release(0);
+            memset(PA, 0, sizeof PA); memset(PR, 0, sizeof PR); memset(BM, 0, sizeof BM); memset(E, 0, sizeof E);
+            P.meleeKind = MK_FLAIL; P.meleeT = 0; P.meleeCd = 0; P.weapon = P.loadout[0]; P.switchT = 0; shotStreak = 0;
+            P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0.05f; P.pitch = -0.05f; P.vel = v3(0, 0, -8);
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-19, 1.8f, 35);
+            if (strstr(shotPath, "vide")) E[0].pos = v3(-20, 6, 25);
+            flail_swing();
+            P.flailT = FLAIL_ANIM * (strstr(shotPath, "vide") ? 0.5f : 0.7f);
+            hitstop = 0; impactT = 0; P.meleeT = 0;
         }
         if (strstr(shotPath, "scie")) {                   /* Scie : la mienne plantee, une adverse en vol (2 renvois) */
             hook_release(0);
@@ -10376,6 +11069,13 @@ done:
                    "doubles desarconnements %d",
                    lanceHostCouch, lanceHostVcSum / (lanceHostCouch ? lanceHostCouch : 1), lanceHostThrust, lanceHostParried,
                    lanceClashWins, lanceClashDouble);
+        if (flailSwings || hitCount[W_FLAIL])             /* --- Fleau --- */
+            netlog("fleau (moi) : %d coups, %d qui touchent (%.1f cible(s) par coup, v_rel moyen %.1f), pieces frappees %d "
+                   "(%d touchent), combos fleau -> rail %d",
+                   flailSwings, flailHitSwings, flailTargets / (float)(flailHitSwings ? flailHitSwings : 1),
+                   flailRelSum / (flailTargets ? flailTargets : 1), flailCoins, flailCoinHits, flailCombos);
+        if (netMode == NET_HOST && (hitCount[W_FLAIL] || flailHostParried))
+            netlog("fleau (arbitre) : touches %d, fleaux pares %d", hitCount[W_FLAIL], flailHostParried);
     }
     net_shutdown();
     if (botLog) fclose(botLog);
