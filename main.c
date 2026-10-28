@@ -121,6 +121,17 @@ static V3 rand_dir(void) {
 #define ROCKET_RADIUS  4.5f
 #define ROCKET_KNOCK   13.0f
 
+/* Elan (convertisseur cinetique) : la vitesse horizontale depensee devient des degats */
+#define KIN_CD            0.5f    /* recharge de l'Elan (divisee par streak_rate) */
+#define KIN_DMG_BASE      20.0f   /* degats a l'arret */
+#define KIN_DMG_PER_MS    5.0f    /* degats en plus par m/s de vitesse depensee */
+#define KIN_SPEED_CAP     15.0f   /* vitesse horizontale maximale convertie par tir */
+#define KIN_KNOCK         3.0f    /* recul de la cible a l'arret (PvE ; moitie en PvP) */
+#define KIN_KNOCK_PER_MS  0.4f    /* recul en plus par m/s depensee : 3 -> 9 m/s */
+#define KIN_FULL          14.5f   /* au-dela : tir "plein" (hitstop, son et rayon max) */
+#define KIN_DASH_WINDOW   0.10f   /* dash-tir : le tir doit partir dans les 12 ticks apres le dash */
+#define KIN_DASH_FORGET   0.6f    /* jusque-la, hors fenetre, la vitesse du dash ne compte pas */
+
 /* Axe corps a corps : degats et portee montent avec la vitesse */
 #define MELEE_CD          0.45f
 #define MELEE_RANGE       2.4f
@@ -178,9 +189,9 @@ static const AmmoDef ammoDef[WP_COUNT] = {
     { "TESLA",     60, 100, 2.5f, 0.60f, 0.70f, 1.00f },  /* 1 point = 0,4 de batterie */
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
-static unsigned char wpReady[WP_COUNT] = { 1, 1, 0, 0, 0, 0, 0 };   /* chaque arme codee passe sa case a 1 */
+static unsigned char wpReady[WP_COUNT] = { 1, 1, 0, 1, 0, 0, 0 };   /* chaque arme codee passe sa case a 1 */
 static unsigned char mkReady[MK_COUNT] = { 1, 0, 0, 0, 0, 0 };
-static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, 0.5f, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
+static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, KIN_CD, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
 /* Audio : mini mixeur waveOut + sons synthetises                      */
@@ -190,7 +201,9 @@ static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, 0.5f, 0.4f, 0.5
 #define BUFLEN  512
 #define MAXV    32
 enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
-       S_ESHOT, S_PAD, S_WAVE, S_WALLJUMP, S_SLIDE, S_HOOK, S_HOOKHIT, S_PUNCH, S_PARRY, S_COUNT };
+       S_ESHOT, S_PAD, S_WAVE, S_WALLJUMP, S_SLIDE, S_HOOK, S_HOOKHIT, S_PUNCH, S_PARRY,
+       S_KIN,                                             /* Elan */
+       S_COUNT };
 typedef struct { short *data; int len; } Sound;
 typedef struct { int snd, active; float pos, step, vol; } Voice;
 static Sound sounds[S_COUNT];
@@ -396,6 +409,16 @@ static void make_sounds(void) {
                noise() * 0.5f * expf(-t * 60);
     }
     sounds[S_PARRY] = mksound(b, n);
+    /* Elan : "whump" grave balaye + souffle + tintement metallique (volume et hauteur selon l'energie) */
+    b = sbuf(0.45f, &n); ph = 0; lp = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (45 + 115 * expf(-t * 12)) / SR;
+        lp += 0.1f * (noise() - lp);
+        b[i] = sinf(ph * 2 * PI) * 0.8f * expf(-t * 7) + lp * 1.6f * expf(-t * 18) +
+               sinf(t * 2 * PI * 1800) * 0.15f * expf(-t * 30);
+    }
+    sounds[S_KIN] = mksound(b, n);
 }
 
 static void audio_init(void) {
@@ -622,6 +645,9 @@ typedef struct {
     int swingHitPts, swingParryPts;                       /* ce coup a deja donne ses points de touche / de parry */
     float undoPts[2];                                     /* points de la derniere touche par emplacement (annulables) */
     double undoT;
+    /* Elan : decharge du viewmodel, energie du dernier tir (0..1), temps depuis le dernier dash,
+     * vitesse horizontale d'avant le dash encore convertible */
+    float kinT, kinE, kinDashT, kinPreDash;
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -717,6 +743,7 @@ static int botMode;                                       /* 1 = bot hote, 2 = b
 static void netlog(const char *fmt, ...);
 static void net_hit(int target, float dmg, V3 knock, int weapon);
 static void net_fx_rail(V3 a, V3 b, float k);
+static void net_fx_kinetic(V3 a, V3 b, float e);
 static void net_fx_rocket(V3 pos, V3 vel, unsigned int netId);
 static void net_fx_rocket_end(unsigned int netId, V3 pos);
 static void net_fx_parry(unsigned int netId, V3 pos, V3 vel, float mult, int parries);
@@ -1095,6 +1122,7 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     int hasWish = fw != 0 || sd != 0;
 
     P.slideCd -= dt; P.wallJumpCd -= dt;
+    P.kinDashT = fminf(P.kinDashT + dt, 10);              /* Elan : temps depuis le dernier dash */
     P.coyote = P.grounded ? 0 : P.coyote + dt;
     if (P.dashCharge < 2) P.dashCharge = fminf(2, P.dashCharge + dt / DASH_RECHARGE);
 
@@ -1145,6 +1173,11 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
 
     /* dash */
     if (alive && dashPress && P.dashCharge >= 1) {
+        {   /* Elan : vitesse d'avant le dash ; pendant le malus d'un dash precedent, elle ne peut pas monter */
+            float hv = hlen(P.vel);
+            P.kinPreDash = P.kinDashT >= KIN_DASH_FORGET ? hv : fminf(P.kinPreDash, hv);
+            P.kinDashT = 0;
+        }
         P.dashCharge -= 1;
         V3 d = hasWish ? wish : f;
         float sp = fmaxf(hlen(P.vel) + 3, DASH_SPEED);
@@ -1433,6 +1466,7 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     P.loadout[0] = wantLoadout[0]; P.loadout[1] = wantLoadout[1]; P.meleeKind = wantMelee;
     for (int w = 0; w < WP_COUNT; w++) { P.ammo[w] = ammoDef[w].start; P.ammoGauge[w] = 0; }
     P.weapon = P.loadout[0]; P.switchT = 0; P.undoPts[0] = P.undoPts[1] = 0;
+    P.kinT = 0; P.kinDashT = 1; P.kinPreDash = 0;          /* Elan : ni fenetre de dash-tir ni malus */
     melee_start_swing();
 }
 static void weapon_select(int w) { if (w != P.weapon) { P.weapon = w; P.switchT = SWITCH_TIME; } }
@@ -1649,10 +1683,11 @@ static int ricochet(int ci, float dmg, int depth) {
     return 1;
 }
 
-static void fire_rail(void) {
-    if (P.ammo[WP_RAIL] > 0) P.ammo[WP_RAIL]--;
+/* trajet hitscan perforant (rail, Elan) : piece (le tir s'y arrete), ennemis, joueurs LAN ; renvoie 1 si touche.
+ * dmg : degats PvE (deja multiplies par la chaine), knockE / knockP : recul PvE / PvP, w : W_* des touches LAN */
+static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut, V3 *nOut) {
     V3 eye = eye_pos(), d = view_dir(), n;
-    float tw = ray_world(eye, d, 400, &n), mult = streak_mult();
+    float tw = ray_world(eye, d, 400, &n);
     int hit = 0, coinHit = -1;
     for (int i = 0; i < MAXCOIN; i++) {                   /* une de mes pieces sur la trajectoire ? le tir s'y arrete */
         float t;
@@ -1662,27 +1697,35 @@ static void fire_rail(void) {
         float t;
         if (E[i].alive && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type), tw, &t)) {
             burst(vadd(eye, vmul(d, t)), v3(1, 1, 1), 15, 8, 0.3f, 0.12f);
-            damage_enemy(i, RAIL_DMG * mult, vmul(d, 8));
+            damage_enemy(i, dmg, vmul(d, knockE));
             hit = 1;
         }
     }
-    for (int i = 0; i < MAXP; i++) {                     /* LAN : le rail traverse aussi les joueurs */
+    for (int i = 0; i < MAXP; i++) {                     /* LAN : le tir traverse aussi les joueurs (un net_hit chacun) */
         V3 mn, mx; float t;
         if (!np_target(i)) continue;
         np_aabb(i, 0.05f, &mn, &mx);
         if (ray_box(eye, d, mn, mx, tw, &t, NULL)) {
             burst(vadd(eye, vmul(d, t)), v3(1, 1, 1), 15, 8, 0.3f, 0.12f);
-            net_hit(i, RAIL_DMG * mult * PVP_SCALE, vmul(d, 4), W_RAIL);
+            net_hit(i, dmg * PVP_SCALE, vmul(d, knockP), w);
             hit = 1;
         }
     }
     if (coinHit >= 0) {
-        hit |= ricochet(coinHit, RAIL_DMG * mult, 0);
+        hit |= ricochet(coinHit, dmg, 0);
         if (botMode) netlog("ricochet : chaine de %d, %s", lastChain, hit ? "touche" : "dans le vide");
     }
+    *endOut = vadd(eye, vmul(d, tw)); *nOut = n;
+    return hit;
+}
+
+static void fire_rail(void) {
+    if (P.ammo[WP_RAIL] > 0) P.ammo[WP_RAIL]--;
+    V3 end, n;
+    int hit = hitscan_shot(RAIL_DMG * streak_mult(), 8, 4, W_RAIL, &end, &n);
     shot_result(hit);
     if (botMode) netlog("tir rail : %s", hit ? "touche" : "rate");
-    V3 end = vadd(eye, vmul(d, tw)), m = muzzle();
+    V3 m = muzzle();
     float k = clampf(shotStreak / (float)STREAK_MAX, 0, 1);  /* le rayon vire a l'or avec la chaine */
     add_beam(m, end, v3(0.3f + 0.7f * k, 0.85f - 0.05f * k, 1.0f - 0.7f * k), 0.6f);
     if (dmMode) net_fx_rail(m, end, k);
@@ -1700,6 +1743,85 @@ static void fire_rail(void) {
     play(S_RAIL, 0.7f, frange(0.97f, 1.03f));
     if (hit) { hitMarker = 0.18f; play(S_HIT, 0.6f, 1.0f + 0.05f * (shotStreak < STREAK_MAX ? shotStreak : STREAK_MAX)); }
 }
+
+/* --- Elan (convertisseur cinetique) ------------------------------------ */
+/* Le tir convertit la vitesse horizontale (15 m/s au plus) en degats, et le tireur la perd.
+ * Dash-tir : dans les 0,10 s apres un dash, toute la vitesse compte ; ensuite et jusqu'a 0,6 s,
+ * la vitesse ajoutee par le dash ne compte plus (on prend la vitesse d'avant le dash). */
+static int kin_in_window(void) { return P.kinDashT <= KIN_DASH_WINDOW + TICK * 0.5f; }   /* 12 ticks */
+static float kin_vdep(void) {
+    float v = fminf(hlen(P.vel), KIN_SPEED_CAP);
+    if (!kin_in_window() && P.kinDashT < KIN_DASH_FORGET) v = fminf(v, P.kinPreDash);   /* trop tard */
+    return v;
+}
+static float kin_dmg(float v) { return KIN_DMG_BASE + KIN_DMG_PER_MS * v; }
+static V3 kin_col(float e) { return vlerp(v3(0.45f, 0.45f, 0.55f), v3(1.0f, 0.3f, 0.9f), clampf(e, 0, 1)); }
+
+/* retire v a la norme horizontale, direction conservee, vel.y intact */
+static void kin_brake(float v) {
+    float hs = hlen(P.vel);
+    if (hs < 1e-4f) return;
+    float k = fmaxf(0, hs - v) / hs;
+    P.vel.x *= k; P.vel.z *= k;
+}
+
+/* rayon de l'Elan (local et evenement reseau) : trait gris -> magenta, spirale et etincelles selon l'energie */
+static void kin_beam_fx(V3 a, V3 b, V3 n, float e) {
+    V3 col = kin_col(e);
+    add_beam(a, b, col, 0.25f + 0.55f * e);
+    if (e >= KIN_FULL / KIN_SPEED_CAP) add_beam(a, b, v3(1, 1, 1), 0.15f);   /* tir plein : rayon double */
+    V3 bd = vsub(b, a); float bl = vlen(bd);
+    if (e >= 0.15f && bl > 0.01f) {                       /* spirale facon Quake, plus large et plus dense avec l'energie */
+        bd = vmul(bd, 1.0f / bl);
+        V3 u = vnorm(vcross(bd, v3(0, 1, 0.01f))), w = vcross(bd, u);
+        float rad = 0.06f + 0.14f * e, step = 0.6f - 0.3f * e;
+        for (float s = 0; s < bl && s < 120; s += step) {
+            float ang = s * 2.2f;
+            V3 off = vadd(vmul(u, cosf(ang) * rad), vmul(w, sinf(ang) * rad));
+            add_part(vadd(vadd(a, vmul(bd, s)), off), vmul(off, 4), col, 0.6f, 0.06f, 0);
+        }
+    }
+    float sp = 3 + 5 * e;
+    for (int i = 0; i < (int)(6 + 20 * e); i++)
+        add_part(b, vadd(vmul(n, sp), vmul(rand_dir(), sp)), col, 0.45f, 0.1f, 12);
+}
+
+static void fire_kinetic(void) {
+    if (P.ammo[WP_KINETIC] > 0) P.ammo[WP_KINETIC]--;
+    int dashShot = kin_in_window();                       /* pour le HUD et le journal */
+    float v = kin_vdep(), e = v / KIN_SPEED_CAP, mult = streak_mult();
+    float dmg = kin_dmg(v) * mult, kn = KIN_KNOCK + KIN_KNOCK_PER_MS * v;
+    V3 h0 = v3(P.vel.x, 0, P.vel.z), end, n, m = muzzle();
+    int hit = hitscan_shot(dmg, kn, kn * 0.5f, W_KINETIC, &end, &n);
+    kin_brake(v);                                         /* le cout, touche ou non */
+    P.kinPreDash = fmaxf(0, P.kinPreDash - v);            /* la vitesse d'avant le dash est depensee */
+    shot_result(hit);
+    if (botMode) netlog("tir elan : v=%.1f degats=%.0f %s%s", v, dmg, hit ? "touche" : "rate",
+                        P.kinDashT < KIN_DASH_FORGET ? (dashShot ? " (dash-tir)" : " (dash trop tot)") : "");
+    kin_beam_fx(m, end, n, e);
+    if (dmMode) net_fx_kinetic(m, end, e);
+    for (int i = 0; i < (int)(6 + 18 * e); i++)           /* ton elan continue sans toi */
+        add_part(m, vadd(vmul(h0, frange(0.5f, 0.9f)), vmul(rand_dir(), 2)), kin_col(e), 0.4f, 0.08f, 0);
+    P.kinE = e; P.kinT = 0.3f;
+    P.fireCd = KIN_CD / streak_rate();
+    P.recoil = 0.6f + 0.8f * e; shake += 0.04f + 0.12f * e; P.fovKick -= 8 * e;
+    muzzleT = 0.07f;
+    play(S_KIN, 0.45f + 0.45f * e, 0.85f + 0.3f * e);
+    if (hit) {
+        hitMarker = 0.18f;
+        play(S_HIT, 0.6f, 1.0f + 0.05f * (shotStreak < STREAK_MAX ? shotStreak : STREAK_MAX));
+        if (v >= KIN_FULL) { hitstop = fmaxf(hitstop, 0.05f); impact_frame(end, 0.05f); }
+        if (dashShot) { snprintf(popText, sizeof popText, "DASH-TIR"); popT = 1.0f; }
+    }
+}
+
+/* degats du prochain tir d'Elan (PvP si LAN, plafonnes), *e = energie 0..1 */
+static float kin_preview(float *e) {
+    float v = kin_vdep(), d = kin_dmg(v) * streak_mult();
+    *e = v / KIN_SPEED_CAP;
+    return dmMode ? fminf(d * PVP_SCALE, PVP_HIT_CAP) : d;
+}
+/* --- fin Elan ----------------------------------------------------------- */
 
 static Proj *spawn_proj(int kind, V3 pos, V3 vel) {
     for (int i = 0; i < MAXPR; i++)
@@ -2125,6 +2247,12 @@ static void net_fx_rail(V3 a, V3 b, float k) {
     vf(e.f, a); vf(e.f + 3, b); e.f[6] = k;
     net_emit(&e);
 }
+static void net_fx_kinetic(V3 a, V3 b, float e) {          /* Elan : EV_RAIL sous-type 1, actor = energie x 255 */
+    NetEvent ev = ev_new(EV_RAIL);
+    vf(ev.f, a); vf(ev.f + 3, b); ev.f[6] = 0;
+    ev.sub = 1; ev.actor = (unsigned char)(clampf(e, 0, 1) * 255);
+    net_emit(&ev);
+}
 static void net_fx_rocket(V3 pos, V3 vel, unsigned int netId) {
     NetEvent e = ev_new(EV_ROCKET);
     e.netId = netId; vf(e.f, pos); vf(e.f + 3, vel);
@@ -2183,6 +2311,12 @@ static void apply_event(const NetEvent *ev) {
     V3 a = fv(ev->f), b = fv(ev->f + 3);
     switch (ev->kind) {
     case EV_RAIL: {
+        if (ev->sub == 1) {                               /* rayon d'Elan */
+            float e = ev->actor / 255.0f;
+            kin_beam_fx(a, b, v3(0, 1, 0), e);
+            play(S_KIN, (0.45f + 0.45f * e) * atten(a), 0.85f + 0.3f * e);
+            break;
+        }
         float k = ev->f[6];
         add_beam(a, b, v3(0.3f + 0.7f * k, 0.85f - 0.05f * k, 1.0f - 0.7f * k), 0.6f);
         for (int i = 0; i < 12; i++) add_part(b, vmul(rand_dir(), 4), v3(0.6f, 0.9f, 1.0f), 0.4f, 0.1f, 10);
@@ -3427,7 +3561,7 @@ static void bot_think(float dt) {
     } else crossPhase = 0;
 
     /* coince contre un obstacle : on part en biais, puis de l'autre cote, puis demi-tour */
-    if (hs < 3 && P.hook == HOOK_NONE) stuckT += dt; else stuckT = 0;
+    if (hs < 3 && P.hook == HOOK_NONE && P.kinT <= 0) stuckT += dt; else stuckT = 0;   /* un tir d'Elan arrete net : pas coince */
     if (stuckT > 0.4f) {
         static int escapeStep;
         static const float dirs[3] = { 1.3f, -1.3f, PI };
@@ -3502,7 +3636,8 @@ static void bot_think(float dt) {
             coinPlan = 0;
         }
     }
-    if (!dry && !coinPlan && see && seeT > 0.3f && bd < 55 && P.fireCd <= 0 && P.switchT <= 0) {   /* recale la visee pour tirer */
+    if (!dry && !coinPlan && see && seeT > 0.3f && bd < 55 && P.fireCd <= 0 && P.switchT <= 0 &&
+        P.weapon != WP_KINETIC) {                         /* recale la visee pour tirer (l'Elan a sa regle plus bas) */
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1;
     }
 
@@ -3512,6 +3647,24 @@ static void bot_think(float dt) {
         P.yaw = aimYaw;
         botPress[A_DASH] = 1;
         botNextDash = botT + 1.2f;
+    }
+
+    /* Elan : tire quand sa vitesse suffit ; sinon dash-tir, fenetre reussie une fois sur deux
+     * (sinon il tire 0,15 a 0,3 s apres le dash, comme un humain en retard). Le bhop et le grappin relancent. */
+    static float kinLateT = -1;                           /* tir en retard programme (fenetre ratee) */
+    if (P.weapon != WP_KINETIC || dry) kinLateT = -1;
+    else if (see && seeT > 0.3f && P.switchT <= 0 && bd < 55) {
+        float v = kin_vdep(), need = bd > 20 ? 14.0f : 10.5f;   /* de loin : tir plein ; de pres : 2 touches */
+        if (kinLateT >= 0 && botT >= kinLateT && P.fireCd <= 0) {
+            P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1; kinLateT = -1;
+        } else if (P.fireCd <= 0 && v >= need && kinLateT < 0) {
+            P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1;
+        } else if (P.fireCd <= 0 && kinLateT < 0 && (botPress[A_DASH] || (P.dashCharge >= 1 && botT > botNextDash))) {
+            if (!botPress[A_DASH]) { botPress[A_DASH] = 1; botHeld[A_FWD] = 1; botNextDash = botT + 1.2f; }
+            P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch;   /* le dash part vers la cible */
+            if (frand() < 0.5f) botHeld[A_FIRE] = 1;      /* dash-tir dans le meme tick : fenetre reussie */
+            else kinLateT = botT + frange(0.15f, 0.3f);   /* fenetre ratee : tir en retard */
+        }
     }
     if (see && bd > (dry ? 6 : 10) && bd < GRAPPLE_RANGE && P.hook == HOOK_NONE && P.hookCd <= 0 && botT > botNextHook) {
         P.yaw = aimYaw;                                   /* grappin sur la cible pour fondre dessus */
@@ -3586,6 +3739,7 @@ static void fire_weapon(void) {
     switch (P.weapon) {
     case WP_RAIL:   fire_rail(); break;
     case WP_ROCKET: fire_rocket(); break;
+    case WP_KINETIC: fire_kinetic(); break;
     }
 }
 /* chargeur vide : clic sec, puis l'autre arme si elle peut tirer, sinon on pousse au contact */
@@ -3652,6 +3806,7 @@ static void game_tick(float dt) {
     }
 
     P.fireCd -= dt; P.switchT -= dt;
+    P.kinT -= dt;                                         /* Elan : decharge du viewmodel */
     P.recoil *= expf(-dt * 9);
     if (!P.dead && (act[A_FIRE] || lmbp) && P.fireCd <= 0 && P.switchT <= 0) {
         if (wp_has_ammo(P.weapon)) fire_weapon(); else dry_fire();
@@ -3946,13 +4101,14 @@ static void draw_viewmodel(float aspect) {
         glPopMatrix();
     }
     if (muzzleT > 0) {                                    /* flash du canon */
-        float tip = P.weapon == WP_RAIL ? -0.64f : -0.6f, ms2 = 0.12f + 0.25f * (muzzleT / 0.08f);
+        float tip = P.weapon == WP_RAIL ? -0.64f : P.weapon == WP_KINETIC ? -0.57f : -0.6f, ms2 = 0.12f + 0.25f * (muzzleT / 0.08f);
         glDisable(GL_LIGHTING);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE);
         glDepthMask(GL_FALSE);
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, texDot);
-        glColor4f(0.5f + 0.5f * ammoDef[P.weapon].r, 0.5f + 0.5f * ammoDef[P.weapon].g, 0.5f + 0.5f * ammoDef[P.weapon].b, 1);
+        if (P.weapon == WP_KINETIC) { V3 kc = kin_col(P.kinE); glColor4f(kc.x, kc.y, kc.z, 1); }   /* Elan : couleur du tir */
+        else glColor4f(0.5f + 0.5f * ammoDef[P.weapon].r, 0.5f + 0.5f * ammoDef[P.weapon].g, 0.5f + 0.5f * ammoDef[P.weapon].b, 1);
         glBegin(GL_QUADS);
         glTexCoord2f(0, 0); glVertex3f(-ms2, -ms2, tip); glTexCoord2f(1, 0); glVertex3f(ms2, -ms2, tip);
         glTexCoord2f(1, 1); glVertex3f(ms2, ms2, tip); glTexCoord2f(0, 1); glVertex3f(-ms2, ms2, tip);
@@ -3973,6 +4129,31 @@ static void draw_viewmodel(float aspect) {
         glColor3f(0.3f * ready, 0.85f * ready, 1.0f * ready);
         box_faces(v3(-0.055f, -0.012f, -0.4f), v3(0.055f, 0.0f, 0.05f));
         box_faces(v3(-0.03f, 0.03f, -0.6f), v3(0.03f, 0.036f, -0.43f));
+    } else if (P.weapon == WP_KINETIC) {                  /* Elan : corps trapu, trois anneaux = compteur de vitesse */
+        float back = P.kinT > 0 ? P.kinT * 0.1f : 0;      /* decharge : recul vers l'arriere */
+        glPushMatrix();
+        glTranslatef(0, 0, back);
+        glColor3f(0.3f, 0.26f, 0.32f);
+        box_faces(v3(-0.06f, -0.06f, -0.3f), v3(0.06f, 0.06f, 0.1f));
+        glColor3f(0.17f, 0.16f, 0.2f);
+        box_faces(v3(-0.028f, -0.028f, -0.55f), v3(0.028f, 0.028f, -0.3f));
+        box_faces(v3(-0.03f, -0.17f, -0.02f), v3(0.03f, -0.06f, 0.06f));
+        glDisable(GL_LIGHTING);
+        float e = kin_vdep() / KIN_SPEED_CAP;
+        V3 c = kin_in_window() ? v3(1, 1, 1) : kin_col(e);   /* fenetre du dash-tir : anneaux blancs */
+        float lit = P.kinT > 0 ? 0.15f : ready * (0.35f + 0.65f * e);   /* eteints pendant la decharge */
+        if (kin_in_window() && P.kinT <= 0) lit = 1;
+        for (int r = 0; r < 3; r++) {                     /* volant d'inertie : 3 anneaux autour du canon */
+            float z = -0.36f - r * 0.065f, s = 0.05f + 0.006f * r;
+            glColor3f(c.x * lit, c.y * lit, c.z * lit);
+            box_faces(v3(-s, s - 0.012f, z - 0.018f), v3(s, s, z));
+            box_faces(v3(-s, -s, z - 0.018f), v3(s, -s + 0.012f, z));
+            box_faces(v3(-s, -s, z - 0.018f), v3(-s + 0.012f, s, z));
+            box_faces(v3(s - 0.012f, -s, z - 0.018f), v3(s, s, z));
+        }
+        glColor3f(c.x * lit * 0.8f, c.y * lit * 0.8f, c.z * lit * 0.8f);
+        box_faces(v3(-0.062f, 0.02f, -0.26f), v3(0.062f, 0.032f, 0.0f));
+        glPopMatrix();
     } else {
         glColor3f(0.32f, 0.36f, 0.22f);
         box_faces(v3(-0.055f, -0.055f, -0.5f), v3(0.055f, 0.055f, 0.05f));
@@ -4447,6 +4628,7 @@ static void draw_remote_players(void) {
         glTranslatef(0.42f, h - 0.6f, -0.1f);
         glRotatef(n->st.pitch * 180 / PI, 1, 0, 0);
         { const AmmoDef *wd = &ammoDef[n->st.weapon < WP_COUNT ? n->st.weapon : WP_RAIL]; glColor3f(wd->r * 0.9f, wd->g * 0.9f, wd->b * 0.9f); }
+        if (n->st.weapon == WP_KINETIC) glColor3f(0.95f, 0.3f, 0.85f);   /* Elan : magenta, comme son rayon */
         box_faces(v3(-0.06f, -0.06f, -0.7f), v3(0.06f, 0.06f, 0.05f));
         glPopMatrix();
         if (n->st.melee) {                                /* epee en plein balayage */
@@ -4735,6 +4917,33 @@ static void draw_hud(void) {
         if (gain) {
             snprintf(buf, sizeof buf, "+%d", ammoGainPts);
             text(0, winW - 236.0f - fontW[0] * (float)strlen(buf), winH - 20.0f, buf, 0.4f, 1, 0.4f, clampf(ammoGainT / 0.3f, 0, 1));
+        }
+    }
+    if (P.weapon == WP_KINETIC && !P.dead) {              /* Elan : apercu des degats et fenetre du dash-tir */
+        float e, kd = kin_preview(&e), ky = compact ? winH - 250.0f : winH - 172.0f;
+        int win = kin_in_window(), late = !win && P.kinDashT < KIN_DASH_FORGET;
+        V3 c = kin_col(e);
+        if (win && fmodf((float)nowT, 0.06f) < 0.03f) c = v3(1, 1, 1);   /* fenetre ouverte : le chiffre clignote en blanc */
+        else if (late) c = v3(0.5f, 0.5f, 0.55f);         /* malus : la vitesse du dash ne compte pas */
+        snprintf(buf, sizeof buf, "%.0f dmg", kd);
+        text(1, winW - 30.0f - fontW[1] * (float)strlen(buf), ky, buf, c.x, c.y, c.z, 1);
+        if (e >= 1) text(0, winW - 230.0f, ky, "PLEIN", 1, 0.3f, 0.9f, 1);
+        rect(winW - 230.0f, ky + 12, 200, 6, 0.1f, 0.1f, 0.15f, 0.7f);
+        rect(winW - 230.0f, ky + 12, 200 * clampf(e, 0, 1), 6, c.x, c.y, c.z, 0.95f);
+        if (dmMode) {                                     /* repere "2 touches" : 50 PvP sans chaine (10,3 m/s) */
+            float e2 = ((50 / PVP_SCALE - KIN_DMG_BASE) / KIN_DMG_PER_MS) / KIN_SPEED_CAP;
+            rect(winW - 230.0f + 200 * e2 - 1, ky + 9, 2, 12, 1, 1, 1, 0.9f);
+        }
+        if (win) {                                        /* anneau magenta qui se resserre de 28 a 10 px en 12 ticks */
+            float r = 10 + 18 * (1 - clampf(P.kinDashT / KIN_DASH_WINDOW, 0, 1));
+            glLineWidth(2);
+            glColor4f(1, 0.3f, 0.9f, 0.95f);
+            glBegin(GL_LINE_LOOP);
+            for (int s = 0; s < 32; s++) glVertex2f(cx + r * cosf(s * PI / 16), cy + r * sinf(s * PI / 16));
+            glEnd();
+        } else if (late) {                                /* barre grise sous le viseur : le tir plein revient a 0,6 s */
+            float k2 = 1 - clampf((P.kinDashT - KIN_DASH_WINDOW) / (KIN_DASH_FORGET - KIN_DASH_WINDOW), 0, 1);
+            rect(cx - 30, cy + 20, 60 * k2, 3, 0.6f, 0.6f, 0.65f, 0.85f);
         }
     }
     for (int i = 0; i < COIN_MAX; i++) {                 /* pieces disponibles */
@@ -5433,6 +5642,126 @@ static void run_tests(const char *path) {
                 pass ? "s x2" : "", lastChain, 1000 - E[0].hp, pass ? RAIL_DMG * 2.25f : RAIL_DMG * 1.5f, coinsLeft);
     }
 
+    /* --- Elan : degats selon la vitesse depensee, freinage, chaine, piece, slide, munitions, fenetre du dash --- */
+    {
+        static const float vs[4] = { 0, 9.5f, 15, 25 };
+        float dm[4], hl[4];
+        for (int s = 0; s < 4; s++) {                      /* 1. tir droit devant a 0 / 9,5 / 15 / 25 m/s */
+            reset_game();
+            P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
+            P.ammo[WP_KINETIC] = 6; shotStreak = 0; P.kinDashT = 1;
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.6f, 30);
+            P.vel = v3(0, 0, -vs[s]);
+            fire_kinetic();
+            dm[s] = 1000 - E[0].hp; hl[s] = hlen(P.vel);
+        }
+        fprintf(f, "elan a 0 / 9.5 / 15 / 25 m/s : degats %.1f / %.1f / %.1f / %.1f, vitesse apres %.1f / %.1f / %.1f / %.1f "
+                   "(attendu 20 / 67.5 / 95 / 95, 0 / 0 / 0 / 10)\n", dm[0], dm[1], dm[2], dm[3], hl[0], hl[1], hl[2], hl[3]);
+
+        reset_game();                                      /* 2. vitesse sur le cote et en montee */
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
+        P.ammo[WP_KINETIC] = 6; shotStreak = 0; P.kinDashT = 1;
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.6f, 30);
+        P.vel = v3(12, 6, 5);
+        fire_kinetic();
+        fprintf(f, "elan sur le cote a 13 m/s : degats %.1f, vitesse apres %.1f, vy %.1f (attendu 85, 0, 6)\n",
+                1000 - E[0].hp, hlen(P.vel), P.vel.y);
+
+        reset_game();                                      /* 3. tir rate : le freinage s'applique quand meme */
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 1.2f;
+        P.ammo[WP_KINETIC] = 6; shotStreak = 0; P.kinDashT = 1;
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.6f, 30);
+        P.vel = v3(0, 0, -15);
+        fire_kinetic();
+        fprintf(f, "elan rate a 15 m/s : vitesse apres %.1f, chaine %d (attendu 0, 0)\n", hlen(P.vel), shotStreak);
+
+        reset_game();                                      /* 4. chaine : 3 tirs a 15 m/s */
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
+        P.ammo[WP_KINETIC] = 6; shotStreak = 0; P.kinDashT = 1;
+        for (int s = 0; s < 3; s++) {
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.6f, 30);
+            P.vel = v3(0, 0, -15);
+            fire_kinetic();
+            dm[s] = 1000 - E[0].hp;
+        }
+        fprintf(f, "elan chaine a 15 m/s : degats %.2f / %.2f / %.2f (attendu 95 / 109.25 / 123.5)\n", dm[0], dm[1], dm[2]);
+
+        reset_game();                                      /* 5. piece : ricochet x1,5 sur les degats convertis */
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0.1f;
+        P.ammo[WP_KINETIC] = 6; shotStreak = 0; P.kinDashT = 1;
+        P.vel = v3(0, 0, -20);
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-34, 3, 22);
+        throw_coin();
+        for (int i = 0; i < 30; i++) { coin_tick(TICK); P.pos = vadd(P.pos, vmul(P.vel, TICK)); }
+        {
+            int c0 = -1;
+            for (int i = 0; i < MAXCOIN; i++) if (CO[i].alive && c0 < 0) c0 = i;
+            V3 d = vsub(CO[c0].pos, eye_pos());
+            P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
+        }
+        fire_kinetic();
+        fprintf(f, "elan piece a 20 m/s : degats au drone %.1f, vitesse apres %.1f (attendu 142.5, 5)\n", 1000 - E[0].hp, hlen(P.vel));
+
+        reset_game();                                      /* 6. slide : degats pleins, le tir arrete le slide */
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
+        player_tick(TICK, 0, 0);                           /* pose au sol */
+        P.ammo[WP_KINETIC] = 6; shotStreak = 0; P.kinDashT = 1;
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.6f, 30);
+        act[A_CROUCH] = 1; P.vel = v3(0, 0, -12);
+        player_tick(TICK, 0, 0);
+        int slid = P.sliding;
+        fire_kinetic();
+        player_tick(TICK, 0, 0);
+        memset(act, 0, sizeof act);
+        fprintf(f, "elan en slide : slide avant=%d, degats %.1f, slide apres=%d (attendu 1, 95, 0)\n", slid, 1000 - E[0].hp, P.sliding);
+
+        reset_game();                                      /* 7. chargeur vide : clic sec, bascule, aucun freinage */
+        P.pos = P.prevPos = v3(-20, 6, 40); P.yaw = 0; P.pitch = 0;
+        P.loadout[0] = WP_KINETIC; P.loadout[1] = WP_RAIL; P.weapon = WP_KINETIC;
+        P.ammo[WP_KINETIC] = 0; P.fireCd = 0; P.switchT = 0;
+        P.vel = v3(0, 0, -15);
+        botHeld[A_FIRE] = 1;
+        game_tick(TICK);
+        botHeld[A_FIRE] = 0;
+        fprintf(f, "elan a sec : munitions %d, arme %s, vitesse %.1f (attendu 0, RAILGUN, 15)\n", P.ammo[WP_KINETIC],
+                ammoDef[P.weapon].name, hlen(P.vel));
+
+        /* 10 a 14. fenetre du dash-tir (en l'air, sans friction) */
+        float wv[7];
+        static const int pre[7] = { 0, 12, 13, 24, 73, 30, -1 };   /* ticks apres le dash ; -1 = cas 14 */
+        for (int s = 0; s < 6; s++) {
+            reset_game();
+            memset(act, 0, sizeof act);
+            P.pos = P.prevPos = v3(-20, 8, 40); P.yaw = 0; P.pitch = 0;
+            P.dashCharge = 2; P.kinDashT = 1;
+            if (s == 3) P.vel = v3(0, 0, -9.5f);
+            player_tick(TICK, 0, 1);                       /* dash */
+            for (int i = 0; i < pre[s]; i++) player_tick(TICK, 0, 0);
+            if (s == 5) {                                  /* 14. deuxieme dash pendant le malus, puis 24 ticks */
+                player_tick(TICK, 0, 1);
+                for (int i = 0; i < 24; i++) player_tick(TICK, 0, 0);
+            }
+            wv[s] = kin_vdep();
+            if (s == 3) wv[6] = hlen(P.vel);
+        }
+        fprintf(f, "dash-tir : vdep %.1f apres 0 tick (attendu 15)\n", wv[0]);
+        fprintf(f, "dash-tir : vdep %.1f apres 12 ticks, %.1f apres 13 ticks (attendu 15, 0)\n", wv[1], wv[2]);
+        fprintf(f, "dash-tir : vdep %.1f apres 24 ticks depuis 9.5 m/s, vitesse %.1f (attendu 9.5, 18)\n", wv[3], wv[6]);
+        fprintf(f, "dash-tir : vdep %.1f apres 73 ticks (attendu 15)\n", wv[4]);
+        fprintf(f, "dash-tir : vdep %.1f apres un 2e dash pendant le malus + 24 ticks (attendu 0)\n", wv[5]);
+
+        reset_game();                                      /* 15. la melee remplit la jauge de l'Elan (80 pts) */
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
+        P.loadout[0] = WP_KINETIC; P.loadout[1] = WP_RAIL; P.weapon = WP_KINETIC;
+        P.ammo[WP_KINETIC] = 3; P.ammoGauge[WP_KINETIC] = 0;
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.6f, 38);
+        melee();
+        P.meleeCd = 0; P.parryWin = 0; hitstop = 0;
+        melee();
+        fprintf(f, "elan jauge : 2 coups d'epee -> munitions %d, jauge %.0f (attendu 4, 20)\n", P.ammo[WP_KINETIC],
+                P.ammoGauge[WP_KINETIC]);
+    }
+
     /* grappin plus nerveux : vitesse atteinte en 0,5 s vers un mur */
     reset_game();
     P.pos = P.prevPos = v3(-20, 0, 30); P.yaw = PI; P.pitch = 0.35f;
@@ -5521,6 +5850,33 @@ static void run_tests(const char *path) {
     NP[1].hp = 100;
     net_hit(1, 200, v3(0, 0, 0), W_MELEE);
     fprintf(f, "plafond PvP : une touche de 200 laisse %.0f PV (attendu 40)" "\n", NP[1].hp);
+
+    /* Elan en LAN simule : x0,7 et plafond 60 par l'hote, puis aucune recharge passive */
+    {
+        static const float vs[3] = { 0, 9.5f, 15 };
+        float hpLeft[3];
+        NP[1].disp = v3(-20, 0, 31); vf(NP[1].st.pos, NP[1].disp);
+        for (int s = 0; s < 3; s++) {
+            P.pos = P.prevPos = v3(-20, 0, 41); P.yaw = 0; P.pitch = 0;
+            P.ammo[WP_KINETIC] = 6; shotStreak = 0; P.kinDashT = 1; hitstop = 0;
+            NP[1].hp = 100; NP[1].alive = 1;
+            P.vel = v3(0, 0, -vs[s]);
+            fire_kinetic();
+            hpLeft[s] = NP[1].hp;
+        }
+        fprintf(f, "elan PvP a 0 / 9.5 / 15 m/s : PV cible %.2f / %.2f / %.2f (attendu 86 / 52.75 / 40)\n",
+                hpLeft[0], hpLeft[1], hpLeft[2]);
+        reset_game();
+        dmMode = 1;
+        NP[1].hp = 100;
+        P.pos = P.prevPos = v3(-20, 0, 41); P.yaw = PI; P.pitch = 0;   /* vers le mur : aucune touche */
+        P.loadout[0] = WP_KINETIC; P.loadout[1] = WP_RAIL; P.weapon = WP_KINETIC;
+        P.ammo[WP_KINETIC] = 6; P.ammoGauge[WP_KINETIC] = 0; P.fireCd = 0; P.switchT = 0;
+        botHeld[A_FIRE] = 1;
+        for (int i = 0; i < 119; i++) { nowT += TICK; game_tick(TICK); }
+        botHeld[A_FIRE] = 0;
+        fprintf(f, "elan tenu 0.99 s : munitions %d, jauge %.0f (attendu 4, 0)\n", P.ammo[WP_KINETIC], P.ammoGauge[WP_KINETIC]);
+    }
 
     /* parry d'epee : je suis en fenetre de parry quand l'epee adverse arrive, puis plus */
     {
@@ -5703,7 +6059,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     const char *shotPath = NULL;
     if (cmd && strncmp(cmd, "--shot ", 7) == 0) { shotMode = 1; shotPath = cmd + 7; }
 
-    /* mode bot : velocity.exe --bot host|join [--name N] [--time S] [--log fichier] [--botshot fichier.bmp] */
+    /* mode bot : velocity.exe --bot host|join [--name N] [--time S] [--log fichier] [--botshot fichier.bmp] [--loadout a,b[,m]] */
     {
         static char args[1024];
         snprintf(args, sizeof args, "%s", cmd ? cmd : "");
@@ -5720,6 +6076,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             else if (!strcmp(t, "--lanep")) lanEp = 1;
             else if (!strcmp(t, "--nolan")) lanOff = 1;
             else if (!strcmp(t, "--spec")) botSpec = 1;
+            else if (!strcmp(t, "--loadout") && (t = strtok(NULL, " ")))   /* --loadout a,b[,m] : WP_* et MK_* (matchs de bots) */
+                sscanf(t, "%d,%d,%d", &wantLoadout[0], &wantLoadout[1], &wantMelee);
         }
     }
 
@@ -5820,6 +6178,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         snprintf(msg, sizeof msg, "VAGUE %d", wave); msgT = 2;
         if (strstr(shotPath, "rail")) { P.weapon = 0; P.switchT = 0; P.fireCd = 0; }
         shotStreak = 4; P.meleeT = 0.12f; P.vel = v3(0, 0, -14);   /* pour voir le HUD des deux axes */
+        if (strstr(shotPath, "elan")) {                   /* Elan : un tir plein, puis la fenetre du dash-tir ouverte */
+            P.loadout[1] = WP_KINETIC; P.weapon = WP_KINETIC; P.switchT = 0; P.fireCd = 0; P.meleeT = 0;
+            P.ammo[WP_KINETIC] = 5; P.ammoGauge[WP_KINETIC] = 30;
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 300; E[0].pos = vadd(eye_pos(), vmul(view_dir(), 12));
+            P.vel = v3(0, 0, -16); P.kinDashT = 1;
+            fire_kinetic();
+            P.fireCd = 0; P.kinT = 0; muzzleT = 0; P.vel = v3(0, 0, -16); P.kinDashT = 0.03f;
+            impactT = 0; hitstop = 0;                     /* on veut voir le rayon, pas l'impact frame */
+        }
         if (strstr(shotPath, "impact") || strstr(shotPath, "fx")) {   /* un kill au rail a pleine vitesse */
             P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2; P.fireCd = 0; P.meleeT = 0;
             E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 60; E[0].pos = vadd(eye_pos(), vmul(view_dir(), 9));
