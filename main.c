@@ -351,6 +351,36 @@ enum { MX_REMOTE, MX_FUSE, MX_THIRD, MX_SHOT, MX_FLY, MX_COUNT };   /* origine d
 #define FLAIL_COIN_HIT_R    0.4f    /* marge de touche de la piece frappee */
 #define FLAIL_COMBO_T       1.0f    /* fenetre du combo fleau -> rail (visuel seulement) */
 /* --- fin Fleau --- */
+/* --- Egide (bouclier) : maintenir = leve, cone frontal, jauge tenue par l'hote, parry parfait qui renvoie le rail --- */
+#define SHIELD_COS           -0.34f  /* bloque si dot(dir du coup, face) < -0.34 : demi-angle 70 deg */
+#define SHIELD_COS_HOST      -0.17f  /* tolerance de l'hote pour confirmer un blocage : demi-angle 80 deg */
+#define SHIELD_GAUGE_MAX     120.0f  /* jauge : degats PvP absorbables */
+#define SHIELD_REGEN         30.0f   /* regeneration par seconde, bouclier baisse */
+#define SHIELD_BROKEN_T      3.0f    /* bouclier brise : indisponible 3 s */
+#define SHIELD_BLAST_FRAC    0.5f    /* part d'un souffle bloquee de face */
+#define SHIELD_KNOCK_MULT    0.5f    /* recul d'un coup bloque */
+#define SHIELD_GROUND_SPEED  7.0f    /* vitesse au sol bouclier leve */
+#define SHIELD_BRAKE         40.0f   /* freinage au sol au-dessus de 7 m/s */
+#define SHIELD_AIR_MULT      0.5f    /* acceleration aerienne bouclier leve */
+#define SHIELD_TAP           0.15f   /* relache avant : coup de bouclier */
+#define SHIELD_PARRY_WIN     0.15f   /* fenetre du parry parfait apres la levee */
+#define SHIELD_REARM         0.3f    /* baisse au moins 0.3 s pour rouvrir la fenetre parfaite */
+#define SHIELD_GRACE         0.15f   /* tolerance de latence de l'hote (comme MELEE_PARRY_GRACE) */
+#define SHIELD_REFLECT_PVP   60.0f   /* rail renvoye par un parry parfait */
+#define SHIELD_RIP_T         1.0f    /* bouclier arrache par un grappin adverse */
+#define SHIELD_BASH_DMG      25.0f
+#define SHIELD_BASH_PER_MS   3.0f
+#define SHIELD_BASH_RANGE    2.2f
+#define SHIELD_BASH_KNOCK    14.0f
+#define SHIELD_BASH_CD       0.5f
+#define SHIELD_BASH_WHIFF_CD 0.8f    /* coup de bouclier dans le vide */
+#define SHIELD_BASH_ANIM     0.18f   /* animation de poussee */
+#define SHIELD_HOST_CONVERT  1       /* l'hote convertit en bloc un coup direct qu'il voit arriver de face (favorise le defenseur) */
+#define ST_SHIELD            0x40    /* NetPState.pad : bouclier leve */
+enum { SHS_DOWN, SHS_UP, SHS_BROKEN };
+enum { SHE_CLAIM, SHE_CLAIM_BLAST, SHE_BLOCK, SHE_BREAK, SHE_PERFECT, SHE_DENIED, SHE_RIP };   /* EV_SHIELD.sub */
+enum { SHB_DIRECT, SHB_BLAST, SHB_NEVER };                /* hit_player : coup direct, souffle (50 %), jamais bloque */
+/* --- fin Egide --- */
 
 /* Axe tir : chaque touche successive augmente degats et cadence, un tir rate remet a zero */
 #define STREAK_MAX        8
@@ -390,7 +420,7 @@ static const AmmoDef ammoDef[WP_COUNT] = {
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
 static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 1, 1 };   /* chaque arme codee passe sa case a 1 */
-static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 1, 0, 0 };
+static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 1, 0, 1 };
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, MINE_CD, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
@@ -410,6 +440,7 @@ enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_LANCE_COUCH, S_LANCE_THRUST, S_LANCE_HIT, S_LANCE_CLASH,        /* Lance */
        S_MINE_THROW, S_MINE_STICK, S_MINE_BEEP,           /* Ventouse */
        S_FLAIL_SWING, S_FLAIL_HIT, S_FLAIL_COIN,          /* Fleau */
+       S_SHIELD_UP, S_SHIELD_BLOCK, S_SHIELD_BREAK, S_SHIELD_BASH,   /* Egide */
        S_COUNT };
 typedef struct { short *data; int len; } Sound;
 /* loop : voix en boucle (Tesla), jamais volee par play ; fade : baisse de volume par echantillon (arret sans clic) */
@@ -905,6 +936,41 @@ static void make_sounds(void) {
     }
     sounds[S_FLAIL_COIN] = mksound(b, n);
     /* --- fin Fleau --- */
+    /* --- Egide --- */
+    /* levee : souffle passe-bas tres court + clic sinus 900 Hz */
+    b = sbuf(0.08f, &n); lp = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        lp += 0.15f * (noise() - lp);
+        b[i] = lp * 1.2f * expf(-t * 60) + sinf(t * 2 * PI * 900) * 0.35f * expf(-t * 90);
+    }
+    sounds[S_SHIELD_UP] = mksound(b, n);
+    /* blocage : "clang" 520 / 780 / 1170 Hz, plus grave que le parry, + bruit d'impact */
+    b = sbuf(0.5f, &n);
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        b[i] = (sinf(t * 2 * PI * 520) * 0.3f + sinf(t * 2 * PI * 780) * 0.2f + sinf(t * 2 * PI * 1170) * 0.12f) * expf(-t * 9) +
+               noise() * 0.5f * expf(-t * 70);
+    }
+    sounds[S_SHIELD_BLOCK] = mksound(b, n);
+    /* casse : bruit large + sinus qui glisse de 400 a 120 Hz */
+    b = sbuf(0.6f, &n); ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (400 - 280 * fminf(t / 0.6f, 1)) / SR;
+        b[i] = noise() * 0.45f * expf(-t * 8) + sinf(ph * 2 * PI) * 0.4f * expf(-t * 5);
+    }
+    sounds[S_SHIELD_BREAK] = mksound(b, n);
+    /* coup de bouclier : coup sourd 110 -> 60 Hz + partiel metallique 640 Hz */
+    b = sbuf(0.3f, &n); ph = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (60 + 50 * expf(-t * 20)) / SR;
+        b[i] = sinf(ph * 2 * PI) * 0.8f * expf(-t * 14) + sinf(t * 2 * PI * 640) * 0.25f * expf(-t * 12) +
+               noise() * 0.3f * expf(-t * 80);
+    }
+    sounds[S_SHIELD_BASH] = mksound(b, n);
+    /* --- fin Egide --- */
 }
 
 static void audio_init(void) {
@@ -1157,6 +1223,11 @@ typedef struct {
     float flailT, flailParriedT, flailLastT;
     V3 flailHitPos;
     int flailHitN, flailLastTgt;
+    /* --- Egide : etat SHS_*, jauge (copie locale, l'hote fait autorite en LAN), duree tenue / baissee (rearmement de la
+     * fenetre parfaite), brise 3 s, arrache 1 s, un seul belier par accroche ; animation de levee (0..1), eclat recent --- */
+    int shieldState, shieldRamDone;
+    float shieldGauge, shieldHeldT, shieldDownT, shieldBrokenT, shieldRipT;
+    float shieldAnim, shieldHitT;
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -1192,6 +1263,7 @@ typedef struct {
     unsigned int mineSeq;
     V3 mineOfs, mineN;
     float mineT, mineArmT, mineBeepT;
+    int mineShield;                                       /* Egide : mine collee sur la face d'un bouclier leve */
 } Proj;
 #define MAXPR 128
 static Proj PR[MAXPR];
@@ -1257,6 +1329,9 @@ typedef struct {
     int teslaVisHit;
     double lastLanceT;                                    /* Lance : derniere fois vu lance couchee (hote) */
     unsigned char lanceSeen;                              /* Lance : ST_LANCE au tick precedent (front montant -> son) */
+    /* --- Egide : derniere fois vu bouclier leve (hote) ; jauge, brise, arrache (hote : autorite ; clients : miroir) --- */
+    double lastShieldT;
+    float shieldGauge, shieldBrokenT, shieldRipT;
     struct sockaddr_in addr;      /* hote seulement */
 } NetPlayer;
 
@@ -1280,6 +1355,17 @@ static void np_aabb(int i, float grow, V3 *mn, V3 *mx) {
 static int np_target(int i) { return dmMode && i != myId && NP[i].active && NP[i].alive; }
 /* vitesse relative entre le joueur et une cible : c'est elle qui compte pour les coups */
 static float rel_speed(V3 targetVel) { return vlen(vsub(P.vel, targetVel)); }
+/* --- Egide : face d'un joueur distant (comme view_dir, en 3D : regarder en l'air protege d'un pique), bouclier leve --- */
+static V3 np_face(int i) {
+    float cp = cosf(NP[i].st.pitch);
+    return v3(sinf(NP[i].st.yaw) * cp, sinf(NP[i].st.pitch), -cosf(NP[i].st.yaw) * cp);
+}
+static int np_shield_up(int i) { return (NP[i].st.pad & 0x0F) == MK_SHIELD && (NP[i].st.pad & ST_SHIELD); }
+static V3 shield_front_ofs(int i) {                       /* devant le torse de i, depuis ses pieds (mine collee au bouclier) */
+    float yaw = i == myId ? P.yaw : NP[i].st.yaw;
+    return v3(sinf(yaw) * 0.55f, 1.05f, -cosf(yaw) * 0.55f);
+}
+/* --- fin Egide --- */
 
 static int botMode;                                       /* 1 = bot hote, 2 = bot client (tests reseau) */
 static void netlog(const char *fmt, ...);
@@ -1310,6 +1396,15 @@ static int mine_tear(Proj *p, V3 f);
 static void net_fx_mine(int sub, unsigned int netId, V3 a, V3 b, int target, float x);
 static void net_hit_id(int target, float dmg, V3 knock, int weapon, unsigned int netId);   /* net_hit + netId de l'objet */
 /* --- fin Ventouse --- */
+/* --- Egide : point d'entree unique des degats sur un joueur (definis avec les autres net_*) ---
+ * hit_player : le bouclier d'abord (shield_intercept), puis l'EV_HIT. dir = direction du coup vers la cible. Renvoie 1 si la
+ * touche part, 0 si elle est revendiquee comme bloquee (l'hote arbitre). hit_player_ex : blast = SHB_* ; netId, f4..f6 =
+ * champs propres a l'arme (Scie : renvois ; Lance : vitesse, v_c, couchee ; Ventouse : netId de la mine) */
+static int hit_player(int i, float dmg, V3 knock, int w, V3 dir);
+static int hit_player_ex(int i, float dmg, V3 knock, int w, V3 dir, int blast, unsigned int netId, float f4, float f5, float f6);
+static int shield_faces(int i, V3 dir, int blast);        /* le joueur i bloquerait-il ce coup ? (sans effet) */
+static void shield_rip(int i);                            /* mon grappin arrache le bouclier de i */
+/* --- fin Egide --- */
 
 /* ------------------------------------------------------------------ */
 /* Entrees                                                             */
@@ -1568,6 +1663,7 @@ static float enemy_radius(int type);
 static void damage_enemy(int i, float dmg, V3 knock);
 static void slam_land(float vyImpact);                    /* Enclume : definies avec la melee */
 static void slam_contact(void);
+static void shield_ram(void);                             /* Egide : belier (definie avec la melee) */
 
 /* Apres l'impact sur la cible accrochee : rebond vers le haut avec le grappin recharge,
  * pour enchainer sur la suivante. */
@@ -1624,7 +1720,10 @@ static void grapple_tick(float dt, int press, int held) {
         if (target >= 0 || ptarget >= 0) {
             P.hook = HOOK_ATTACHED;
             if (target >= 0) { P.hookEnemy = target + 1; P.hookPos = P.anchor = E[target].pos; E[target].flash = 0.12f; }
-            else { P.hookPlayer = ptarget + 1; P.hookPos = P.anchor = np_center(ptarget); }
+            else {
+                P.hookPlayer = ptarget + 1; P.hookPos = P.anchor = np_center(ptarget);
+                if (np_shield_up(ptarget)) shield_rip(ptarget);   /* Egide : l'accroche arrache le bouclier 1 s */
+            }
             P.ropeLen = vlen(vsub(P.anchor, pcenter()));
             P.hookBlockT = 0;
             P.airJumps = 1;
@@ -1665,11 +1764,12 @@ static void grapple_tick(float dt, int press, int held) {
         float dist = vlen(d);
         V3 dir = vmul(d, 1.0f / fmaxf(dist, 0.01f));
         if (onTarget && dist < tr + 1.6f) {               /* impact : degats selon la vitesse relative */
+            if (P.meleeKind == MK_SHIELD && P.shieldState == SHS_UP) { shield_ram(); return; }   /* Egide : belier */
             float impact = rel_speed(e ? e->vel : np_vel(pl));
             float dmg = GRAPPLE_STRIKE_DMG + impact * GRAPPLE_STRIKE_PER_MS;
             V3 hit = P.anchor;
             if (e) damage_enemy(P.hookEnemy - 1, dmg, vmul(dir, 14));
-            else net_hit(pl, dmg * PVP_SCALE, vadd(vmul(dir, 14), v3(0, 4, 0)), W_HOOK);
+            else hit_player(pl, dmg * PVP_SCALE, vadd(vmul(dir, 14), v3(0, 4, 0)), W_HOOK, dir);
             impact_frame(hit, 0.07f);
             grapple_bounce(hit, dir);
             return;
@@ -1709,6 +1809,9 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
         P.anvilState = ANVIL_IDLE; P.meleeCd = SLAM_CD; diving = 0;
         wish = wishIn; hasWish = hasWishIn;
     }
+    /* Egide : bouclier leve = ni dash ni slide, 7 m/s au sol, air-strafe divise par 2 ; aucune penalite au grappin */
+    int shPen = P.shieldState == SHS_UP && P.hook != HOOK_ATTACHED && alive;
+    if (shPen) { dashPress = 0; P.sliding = 0; }
 
     P.slideCd -= dt; P.wallJumpCd -= dt;
     P.kinDashT = fminf(P.kinDashT + dt, 10);              /* Elan : temps depuis le dernier dash */
@@ -1721,7 +1824,7 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     else if (P.crouch && pos_free(P.pos, H_STAND)) P.crouch = 0;
     float hs = hlen(P.vel);
     if (P.sliding && (!P.crouch || !P.grounded || hs < SLIDE_END)) P.sliding = 0;
-    if (P.grounded && P.crouch && !P.sliding && hs > SLIDE_MIN) {
+    if (P.grounded && P.crouch && !P.sliding && hs > SLIDE_MIN && !shPen) {
         P.sliding = 1;
         if (P.slideCd <= 0) {
             V3 hd = vnorm(v3(P.vel.x, 0, P.vel.z));
@@ -1803,11 +1906,15 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
         if (away > 0) P.vel = vsub(P.vel, vmul(P.wallN, away));
         P.vel = vsub(P.vel, vmul(P.wallN, 0.5f));                   /* colle au mur */
     } else if (P.grounded && !P.sliding) {
-        accelerate(wish, P.crouch ? CROUCH_SPEED : RUN_SPEED, GROUND_ACCEL, 1e9f, dt);
+        accelerate(wish, P.crouch ? CROUCH_SPEED : shPen ? SHIELD_GROUND_SPEED : RUN_SPEED, GROUND_ACCEL, 1e9f, dt);
+        if (shPen) {                                      /* Egide : freinage progressif jusqu'a 7 m/s */
+            float h = hlen(P.vel);
+            if (h > SHIELD_GROUND_SPEED) { float k = fmaxf(SHIELD_GROUND_SPEED, h - SHIELD_BRAKE * dt) / h; P.vel.x *= k; P.vel.z *= k; }
+        }
     } else if (P.sliding) {
         accelerate(wish, RUN_SPEED, 3, 0.5f, dt);
     } else {
-        accelerate(wish, RUN_SPEED, AIR_ACCEL, AIR_CAP, dt);
+        accelerate(wish, RUN_SPEED, AIR_ACCEL * (shPen ? SHIELD_AIR_MULT : 1), AIR_CAP, dt);
     }
 
     /* gravite */
@@ -1917,6 +2024,36 @@ static void damage_player(float dmg) {
     }
 }
 
+/* --- Egide : effets et bouclier du joueur local (solo : orbes et kamikazes ; le LAN passe par l'hote) --- */
+static int shieldBlocks, shieldBreaks, shieldPerfects, shieldDenied, shieldConverted, shieldRips;   /* journal (hote) */
+static int shieldBashes, shieldBashHits, shieldRams, shieldRaises;                                 /* journal (moi) */
+static float shieldUpSum;                                 /* duree totale bouclier leve (moi) */
+static void shield_spark_fx(V3 at, V3 dir) {              /* etincelles cyan-blanc au point d'impact */
+    for (int k = 0; k < 16; k++)
+        add_part(at, vadd(vmul(dir, -3), vmul(rand_dir(), 6)), k & 1 ? v3(0.5f, 0.9f, 1) : v3(1, 1, 1), 0.3f, 0.08f, 6);
+}
+static void shield_break_fx(V3 at) {
+    shards(at, v3(0.4f, 0.75f, 0.9f), 14, 8);
+    burst(at, v3(0.6f, 0.9f, 1), 30, 8, 0.4f, 0.1f);
+}
+static int shield_local_faces(V3 dir) {
+    return P.meleeKind == MK_SHIELD && P.shieldState == SHS_UP && !P.dead && vdot(dir, view_dir()) < SHIELD_COS;
+}
+static void shield_local_break(void) {                    /* jauge vide : brise 3 s */
+    P.shieldGauge = 0; P.shieldState = SHS_BROKEN; P.shieldBrokenT = SHIELD_BROKEN_T;
+    shield_break_fx(vadd(eye_pos(), vmul(view_dir(), 0.6f)));
+    play(S_SHIELD_BREAK, 0.9f, 1.0f);
+    snprintf(popText, sizeof popText, "BOUCLIER BRISE"); popT = 1.2f;
+}
+static void shield_absorb_local(float x, V3 dir) {        /* solo : le bouclier prend le coup */
+    P.shieldGauge -= x; P.shieldHitT = 0.2f;
+    shield_spark_fx(vadd(eye_pos(), vmul(view_dir(), 0.6f)), dir);
+    play(S_SHIELD_BLOCK, 0.8f, frange(0.95f, 1.05f));
+    shake += 0.1f;
+    if (P.shieldGauge <= 0) shield_local_break();
+}
+/* --- fin Egide --- */
+
 static void kill_enemy(int i, int byPlayer) {
     Enemy *e = &E[i];
     e->alive = 0;
@@ -1969,7 +2106,8 @@ static int explode_ex(V3 c, float radius, float dmg, int byPlayer, float knock, 
         float d = vlen(dv), R = radius + 0.5f;
         if (d < R) {
             float f = 1 - d / R;
-            net_hit_id(i, dmg * (0.3f + 0.7f * f) * PVP_SCALE, vmul(vnorm(dv), knock * f + 3), weapon, netId);
+            hit_player_ex(i, dmg * (0.3f + 0.7f * f) * PVP_SCALE, vmul(vnorm(dv), knock * f + 3), weapon, vnorm(dv), SHB_BLAST,
+                          netId, 0, 0, 0);                /* Egide : souffle de face, 50 % bloques (la moitie passe : touche) */
             hit++;
         }
     }
@@ -2096,6 +2234,8 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     P.lanceHitT = 10; P.lanceHitWho = 0; P.meleeCd = 0;
     P.flailT = P.flailParriedT = P.flailLastT = 0;      /* Fleau : chaine au repos */
     P.flailHitN = P.flailLastTgt = 0;
+    P.shieldState = SHS_DOWN; P.shieldGauge = SHIELD_GAUGE_MAX;   /* Egide : bouclier baisse, jauge pleine, fenetre parfaite armee */
+    P.shieldBrokenT = P.shieldRipT = P.shieldHeldT = P.shieldAnim = P.shieldHitT = 0; P.shieldDownT = 1; P.shieldRamDone = 0;
     melee_start_swing();
 }
 static void weapon_select(int w) { if (w != P.weapon) { P.weapon = w; P.switchT = SWITCH_TIME; } }
@@ -2148,7 +2288,7 @@ static int try_parry(float range0, float speedMult) {
         parried++;
         P.swingLanded = 1;
         parry_feedback(p->pos);
-        melee_parry_points(PTS_PARRY);                    /* une fois par coup, meme si plusieurs renvois */
+        melee_parry_points(P.meleeKind == MK_SHIELD ? PTS_SHIELD_PERFECT : PTS_PARRY);   /* une fois par coup ; Egide : parfait */
         if (p->parries > 1) { snprintf(popText, sizeof popText, "PARRY x%d", p->parries); popT = 1.0f; }
     }
     return parried;
@@ -2230,7 +2370,10 @@ static void anvil_strike(void) {
         float dist = vlen(d), reach = dist - 0.5f;
         if (reach > anvil_range(rel)) continue;
         if (reach > 0.8f && vdot(vmul(d, 1.0f / dist), f) < ANVIL_CONE) continue;
-        net_hit(i, anvil_dmg(rel) * PVP_SCALE, vadd(vmul(f, ANVIL_KNOCK), v3(0, ANVIL_KNOCK_UP, 0)), W_SLAM);
+        if (!hit_player(i, anvil_dmg(rel) * PVP_SCALE, vadd(vmul(f, ANVIL_KNOCK), v3(0, ANVIL_KNOCK_UP, 0)), W_SLAM, vnorm(d))) {
+            parried++;                                    /* Egide : coup au sol bloque de face */
+            continue;
+        }
         burst(c, v3(1, 0.7f, 0.35f), 24, 9, 0.35f, 0.14f);
         hits++;
     }
@@ -2346,7 +2489,9 @@ static void slam_resolve(float vyImpact, int directP, int directE) {
     if (botMode) netlog("enclume : onde |vy| %.1f, rayon %.1f, degats %.0f, %d touche(s)", vy, R, D, hits);
     /* le rebond est decide chez le frappeur avant l'arbitrage : chez l'hote, une onde paree
      * (EV_MELEE_PARRY, arbitre tout de suite) ecrase donc bien le rebond et rend les points */
-    for (int k = 0; k < nt; k++) net_hit(tgt[k], tdmg[k], tkn[k], W_SLAM);
+    for (int k = 0; k < nt; k++)                          /* Egide : l'onde passe sous le bouclier ; le contact direct est bloque */
+        hit_player_ex(tgt[k], tdmg[k], tkn[k], W_SLAM, vnorm(vsub(np_center(tgt[k]), pcenter())), directP >= 0 ? SHB_DIRECT : SHB_NEVER,
+                      0, 0, 0, 0);
 }
 static void slam_land(float vyImpact) { slam_resolve(vyImpact, -1, -1); }
 
@@ -2465,7 +2610,10 @@ static void lance_press(void) {
             if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
         }
         hit = 1;
-    } else if (best >= 0) hit = 1;
+    } else if (best >= 0) {
+        hit = !shield_faces(best, vnorm(vsub(np_center(best), eye)), SHB_DIRECT);   /* Egide : estoc bloque = ni dash ni points */
+        parried += !hit;
+    }
     for (int k = 0; k < 14; k++)                          /* trait de l'estoc */
         add_part(vadd(eye, vmul(f, 0.8f + k * 0.18f)), vmul(f, 4), v3(0.9f, 0.9f, 1), 0.12f, 0.06f, 0);
     if (dmMode) net_fx_melee(eye, f, sp);                 /* EV_MELEE : le recepteur lit meleeKind dans pad */
@@ -2483,7 +2631,8 @@ static void lance_press(void) {
         float rel = rel_speed(np_vel(best));
         V3 c = np_center(best);
         burst(c, v3(1, 0.85f, 0.6f), 16, 8, 0.3f, 0.1f);
-        net_hit_lance(best, lance_thrust_dmg(rel) * PVP_SCALE, vadd(vmul(f, 8 + rel * 0.5f), v3(0, 3, 0)), sp, rel, 0);
+        hit_player_ex(best, lance_thrust_dmg(rel) * PVP_SCALE, vadd(vmul(f, 8 + rel * 0.5f), v3(0, 3, 0)), W_LANCE,
+                      vnorm(vsub(c, eye)), SHB_DIRECT, 0, sp, rel, 0);
     }
 }
 
@@ -2501,7 +2650,10 @@ static void lance_strike(int i, int isP, float vc) {
         lanceJoustHook++;
     }
     lanceJousts++; lanceVcSum += vc;
-    lance_win();                                          /* effets locaux avant l'envoi (voir lance_press) */
+    if (isP && shield_faces(i, dir, SHB_DIRECT)) {        /* Egide : joute bloquee, lance relevee, ni dash ni points */
+        P.vel = vmul(P.vel, LANCE_KEEP);                  /* (la cible ne recoit que 30 % : l'hote divise le recul par 2) */
+        P.lanceState = LS_IDLE; P.meleeCd = LANCE_HIT_CD; P.lanceVc = 0;
+    } else lance_win();                                   /* effets locaux avant l'envoi (voir lance_press) */
     lance_juice(c, dir, vc);
     if (!isP) {
         damage_enemy(i, dmg, knock);
@@ -2509,7 +2661,7 @@ static void lance_strike(int i, int isP, float vc) {
     } else {
         if (botMode) netlog("joute : v_c %.1f -> %s", vc, NP[i].name);
         P.lanceHitT = 0; P.lanceHitWho = i + 1;           /* avant l'envoi : chez l'hote, EV_LANCE revient tout de suite */
-        net_hit_lance(i, dmg * PVP_SCALE, knock, spd, vc, 1);
+        hit_player_ex(i, dmg * PVP_SCALE, knock, W_LANCE, dir, SHB_DIRECT, 0, spd, vc, 1);
     }
 }
 
@@ -2667,7 +2819,7 @@ static int flail_coin_hit(Coin *c, V3 dir, float len) {
     V3 at = vadd(c->pos, vmul(dir, bt));
     c->pos = at;
     if (be >= 0) damage_enemy(be, FLAIL_COIN_DMG, vmul(dir, 8));
-    else net_hit(bp, FLAIL_COIN_DMG * PVP_SCALE, vmul(dir, 6), W_COIN);
+    else hit_player(bp, FLAIL_COIN_DMG * PVP_SCALE, vmul(dir, 6), W_COIN, dir);   /* Egide : piece frappee, projectile */
     burst(at, v3(1, 0.85f, 0.3f), 22, 8, 0.35f, 0.12f);
     hitMarker = 0.2f;
     impact_frame(at, 0.05f);
@@ -2738,6 +2890,11 @@ static void flail_swing(void) {
         float rel = rel_speed(np_vel(i));
         V3 c = np_center(i);
         if (!flail_in_arc(eye, c, 0.5f, rel, 1)) continue;
+        if (shield_faces(i, vnorm(vsub(c, eye)), SHB_DIRECT)) {   /* Egide : bloque (traction / 2 par l'hote), ni dash ni points */
+            tgt[nt] = i; trel[nt++] = rel;
+            flail_mark_hit(c); parried++;
+            continue;
+        }
         if (!hits) { rel0 = rel; first = NP[i].name; }
         tgt[nt] = i; trel[nt++] = rel;
         flail_mark_hit(c); flailRelSum += rel;
@@ -2770,7 +2927,8 @@ static void flail_swing(void) {
         int i = tgt[k];
         V3 c = np_center(i), h = vnorm(v3(eye.x - c.x, 0, eye.z - c.z));
         P.flailLastTgt = i + 1; P.flailLastT = FLAIL_COMBO_T;
-        net_hit(i, flail_dmg(trel[k]) * PVP_SCALE, vadd(vmul(h, FLAIL_PULL), v3(0, FLAIL_PULL_UP, 0)), W_FLAIL);
+        if (!hit_player(i, flail_dmg(trel[k]) * PVP_SCALE, vadd(vmul(h, FLAIL_PULL), v3(0, FLAIL_PULL_UP, 0)), W_FLAIL,
+                        vnorm(vsub(c, eye)))) P.flailLastT = 0;   /* Egide : bloque, pas de combo fleau -> rail */
     }
 }
 
@@ -2830,7 +2988,10 @@ static void melee(void) {
         float dist = vlen(d), reach = dist - 0.5f;
         if (reach > melee_range(rel)) continue;
         if (reach > 0.8f && vdot(vmul(d, 1.0f / dist), f) < MELEE_CONE) continue;
-        net_hit(i, melee_dmg(rel) * PVP_SCALE, vadd(vmul(f, 8 + rel * 0.5f), v3(0, 3, 0)), W_MELEE);
+        if (!hit_player(i, melee_dmg(rel) * PVP_SCALE, vadd(vmul(f, 8 + rel * 0.5f), v3(0, 3, 0)), W_MELEE, vnorm(d))) {
+            parried++;                                    /* Egide : bloque = ni dash ni points, mais pas un coup dans le vide */
+            continue;
+        }
         burst(c, v3(1, 0.8f, 0.5f), 20, 8, 0.3f, 0.12f);
         hits++;
     }
@@ -2856,6 +3017,117 @@ static void melee(void) {
         play(S_PUNCH, 0.9f, frange(0.9f, 1.1f));
     }
 }
+
+/* --- Egide (bouclier) ---------------------------------------------------- */
+/* Maintenir la melee = bouclier leve (bloque les coups de face, jauge de 120 tenue par l'hote) ; un tap = coup de bouclier.
+ * La levee ouvre une fenetre de parry ordinaire (0,15 s) si le bouclier etait baisse depuis 0,3 s : c'est le parry parfait.
+ * Leve pendant la traction du grappin : arriver au contact donne un coup de bouclier gratuit (belier). */
+/* coup de bouclier : ram = belier (sans recharge, degats de l'impact du grappin, la cible accrochee touchee d'office) */
+static void shield_bash(int ram) {
+    V3 eye = eye_pos(), f = view_dir();
+    float sp = vlen(P.vel), base = ram ? GRAPPLE_STRIKE_DMG : SHIELD_BASH_DMG;
+    int hits = 0, blk = 0;
+    for (int i = 0; i < MAXE; i++) {
+        Enemy *e = &E[i];
+        if (!e->alive) continue;
+        V3 d = vsub(e->pos, eye);
+        float dist = vlen(d), reach = dist - enemy_radius(e->type);
+        int forced = ram && P.hookEnemy == i + 1;
+        if (!forced && (reach > SHIELD_BASH_RANGE || (reach > 0.8f && vdot(vmul(d, 1.0f / dist), f) < MELEE_CONE))) continue;
+        float rel = rel_speed(e->vel);
+        if (e->type == EN_RUSHER) {                       /* kamikaze : explose contre le bouclier, comme un parry */
+            V3 at = e->pos;
+            damage_enemy(i, 9999, vmul(f, 10));
+            parry_feedback(at);
+            melee_parry_points(PTS_PARRY);
+        } else {
+            damage_enemy(i, base + SHIELD_BASH_PER_MS * rel, vmul(f, SHIELD_BASH_KNOCK));
+            if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
+        }
+        hits++;
+    }
+    for (int i = 0; i < MAXP; i++) {                     /* LAN : les autres joueurs */
+        if (!np_target(i)) continue;
+        V3 c = np_center(i), d = vsub(c, eye);
+        float dist = vlen(d), reach = dist - 0.5f;
+        int forced = ram && P.hookPlayer == i + 1;
+        if (!forced && (reach > SHIELD_BASH_RANGE || (reach > 0.8f && vdot(vmul(d, 1.0f / dist), f) < MELEE_CONE))) continue;
+        float rel = rel_speed(np_vel(i));
+        if (!hit_player(i, (base + SHIELD_BASH_PER_MS * rel) * PVP_SCALE, vadd(vmul(f, SHIELD_BASH_KNOCK), v3(0, 3, 0)), W_SHIELD,
+                        vnorm(d))) { blk++; continue; }   /* bouclier contre bouclier */
+        burst(c, v3(0.6f, 0.85f, 1), 20, 8, 0.3f, 0.12f);
+        hits++;
+    }
+    for (int k = 0; k < 14; k++)                          /* poussee : un mur de particules droit devant */
+        add_part(vadd(eye, vadd(vmul(f, 0.9f + 0.05f * k), vmul(rand_dir(), 0.35f))), vmul(f, 5), v3(0.6f, 0.85f, 1), 0.15f, 0.07f, 0);
+    if (dmMode) net_fx_melee(eye, f, sp);                 /* EV_MELEE : le recepteur lit meleeKind dans pad */
+    P.meleeT = SHIELD_BASH_ANIM;
+    shieldBashes++;
+    if (hits) {
+        shieldBashHits++;
+        P.dashCharge = fminf(2, P.dashCharge + 1);
+        melee_hit_points(meleePts[MK_SHIELD]);
+        hitMarker = 0.18f; shake += 0.2f;
+        hitstop = fmaxf(hitstop, 0.05f);
+        play(S_SHIELD_BASH, 0.9f, frange(0.95f, 1.05f));
+    } else play(S_SHIELD_BASH, 0.45f, 1.4f);
+    if (!ram) P.meleeCd = hits || blk ? SHIELD_BASH_CD : SHIELD_BASH_WHIFF_CD;
+    if (botMode) netlog("bouclier : %s, %d touche(s), %d bloque(s)", ram ? "belier" : "coup de bouclier", hits, blk);
+}
+/* belier : bouclier leve au contact de la cible accrochee ; remplace l'impact du grappin (une seule touche, W_SHIELD) */
+static void shield_ram(void) {
+    V3 hit = P.anchor, dir = vnorm(vsub(P.anchor, pcenter()));
+    P.shieldRamDone = 1; shieldRams++;
+    shield_bash(1);
+    impact_frame(hit, 0.07f);
+    grapple_bounce(hit, dir);
+}
+static void shield_ram_check(void) {
+    V3 eye = eye_pos(), c;
+    float r;
+    if (P.hookEnemy) { Enemy *e = &E[P.hookEnemy - 1]; if (!e->alive) return; c = e->pos; r = enemy_radius(e->type); }
+    else if (P.hookPlayer) { if (!np_target(P.hookPlayer - 1)) return; c = np_center(P.hookPlayer - 1); r = 0.5f; }
+    else return;
+    if (vlen(vsub(c, eye)) - r <= SHIELD_BASH_RANGE) shield_ram();
+}
+/* machine a etats (a la place de melee()) : press = appui du tick, held = touche tenue */
+static void shield_tick(float dt, int press, int held) {
+    P.shieldBrokenT -= dt; P.shieldRipT -= dt; P.shieldHitT -= dt;
+    P.shieldAnim = clampf(P.shieldAnim + (P.shieldState == SHS_UP ? dt : -dt) / 0.08f, 0, 1);   /* levee : 0,08 s (visuel) */
+    if (P.dead) { P.shieldState = SHS_DOWN; P.shieldHeldT = 0; return; }
+    if (P.shieldState == SHS_BROKEN && P.shieldBrokenT <= 0) { P.shieldState = SHS_DOWN; P.shieldDownT = 0; }
+    if (P.shieldState == SHS_UP && (P.shieldRipT > 0 || P.shieldBrokenT > 0)) { P.shieldState = SHS_DOWN; P.shieldDownT = 0; }
+    if (!dmMode && P.shieldState == SHS_UP && P.shieldGauge <= 0) shield_local_break();   /* solo : jauge vide (LAN : SHE_BREAK) */
+    if (press && P.shieldState == SHS_DOWN && P.shieldRipT <= 0 && P.shieldBrokenT <= 0) {   /* levee instantanee */
+        P.shieldState = SHS_UP; P.shieldHeldT = 0; P.sliding = 0; shieldRaises++;
+        melee_start_swing();                              /* une levee = un "coup" : points de parry et de touche une fois */
+        if (P.shieldDownT >= SHIELD_REARM) { P.parryWin = SHIELD_PARRY_WIN; P.swingLanded = 1; }   /* fenetre parfaite */
+        play(S_SHIELD_UP, 0.5f, 1.0f);
+    } else if (press && P.shieldState != SHS_UP) play(S_HIT, 0.4f, 0.5f);   /* brise ou arrache : clic sec */
+    if (P.shieldState == SHS_UP) {
+        P.shieldHeldT += dt; shieldUpSum += dt;
+        if (!held) {                                      /* relache : coup de bouclier si c'etait un tap */
+            P.shieldState = SHS_DOWN; P.shieldDownT = 0;
+            if (P.shieldHeldT < SHIELD_TAP && P.meleeCd <= 0) shield_bash(0);
+        } else if (P.hook == HOOK_ATTACHED && !P.shieldRamDone) shield_ram_check();
+    } else {
+        P.shieldDownT += dt;
+        if (P.shieldState == SHS_DOWN) P.shieldGauge = fminf(SHIELD_GAUGE_MAX, P.shieldGauge + SHIELD_REGEN * dt);   /* LAN : prediction */
+    }
+    if (P.hook != HOOK_ATTACHED) P.shieldRamDone = 0;
+}
+/* clients : jauge miroir des autres porteurs (rendu), regeneree d'apres ST_SHIELD ; l'hote le fait dans host_tick */
+static void shield_remote_tick(float dt) {
+    if (netMode == NET_HOST) return;
+    for (int i = 0; i < MAXP; i++) {
+        NetPlayer *n = &NP[i];
+        if (i == myId || !n->active) continue;
+        n->shieldBrokenT -= dt; n->shieldRipT -= dt;
+        if (n->alive && !(n->st.pad & ST_SHIELD) && n->shieldBrokenT <= 0)
+            n->shieldGauge = fminf(SHIELD_GAUGE_MAX, n->shieldGauge + SHIELD_REGEN * dt);
+    }
+}
+/* --- fin Egide --- */
 
 static V3 muzzle(void) {
     V3 f = view_dir(), r = v3(cosf(P.yaw), 0, sinf(P.yaw)), u = vcross(r, f);
@@ -2998,7 +3270,7 @@ static int ricochet(int ci, float dmg, int depth) {
     if (dmMode) net_fx_rail(o, at, 1);
     burst(at, v3(1, 0.9f, 0.5f), 25, 9, 0.4f, 0.14f);
     if (te >= 0) damage_enemy(te, dmg, vmul(dir, 10));
-    else net_hit(tp, dmg * PVP_SCALE, vmul(dir, 6), W_COIN);
+    else if (!hit_player(tp, dmg * PVP_SCALE, vmul(dir, 6), W_COIN, dir)) return 0;   /* Egide : ricochet de face bloque */
     if (stolen) snprintf(popText, sizeof popText, "PIECE VOLEE !");
     else snprintf(popText, sizeof popText, depth ? "RICOCHET x%d" : "RICOCHET", depth + 1);
     popT = 1.0f;
@@ -3022,6 +3294,12 @@ static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut
         float t;
         if (mine_shootable(&PR[i]) && ray_sphere(eye, d, PR[i].pos, MINE_HIT_R, tw, &t)) { tw = t; mineHit = i; coinHit = -1; }
     }
+    for (int i = 0; i < MAXP; i++) {                     /* --- Egide : le tir s'arrete sur un bouclier leve de face --- */
+        V3 mn, mx; float t;
+        if (!np_target(i) || !shield_faces(i, d, SHB_DIRECT)) continue;
+        np_aabb(i, 0.05f, &mn, &mx);
+        if (ray_box(eye, d, mn, mx, tw, &t, NULL) && t < tw) { tw = t; coinHit = mineHit = -1; }
+    }
     for (int i = 0; i < MAXE; i++) {
         float t;
         if (E[i].alive && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type), tw, &t)) {
@@ -3036,8 +3314,7 @@ static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut
         np_aabb(i, 0.05f, &mn, &mx);
         if (ray_box(eye, d, mn, mx, tw, &t, NULL)) {
             burst(vadd(eye, vmul(d, t)), v3(1, 1, 1), 15, 8, 0.3f, 0.12f);
-            net_hit(i, dmg * PVP_SCALE, vmul(d, knockP), w);
-            hit = 1;
+            if (hit_player(i, dmg * PVP_SCALE, vmul(d, knockP), w, d)) hit = 1;   /* Egide : bloque = rate (chaine) */
         }
     }
     if (coinHit >= 0) {
@@ -3308,7 +3585,9 @@ static void fire_shotgun(void) {
         V3 at = A.np[i] ? A.hp[i] : np_center(i);
         if (A.np[i] >= 8 && vlen(vsub(np_center(i), eye)) < 6) { juice = 1; juiceAt = at; }
         burst(at, v3(1, 0.45f, 0.2f), 12, 7, 0.3f, 0.1f);
-        net_hit(i, A.p[i] * PVP_SCALE, vadd(A.kp[i], v3(0, 2, 0)), W_SHOTGUN);
+        if (!hit_player_ex(i, A.p[i] * PVP_SCALE, vadd(A.kp[i], v3(0, 2, 0)), W_SHOTGUN, A.np[i] ? d : vnorm(vsub(np_center(i), eye)),
+                           A.np[i] ? SHB_DIRECT : SHB_BLAST, 0, 0, 0, 0) && A.np[i])
+            pellets -= A.np[i];                           /* Egide : plombs bloques = rates (eclat seul : souffle, 50 %) */
     }
     for (int b = 0; b < nMineHit; b++)                    /* --- Ventouse : chaque mine touchee explose une fois --- */
         if (PR[mineList[b]].alive && PR[mineList[b]].kind == PR_MINE) {
@@ -3408,6 +3687,7 @@ static int tesla_trace(V3 eye, V3 d, float range, int shooter, TeslaTgt out[3], 
         for (int i = 0; i < MAXCOIN; i++)
             if (CO[i].alive && CO[i].teslaT <= 0 && ray_sphere(eye, d, CO[i].pos, COIN_RADIUS, tw, &t)) coins[(*nc)++] = i;
     }
+    if (n && out[0].kind == TK_PLAYER && shield_faces(out[0].idx, d, SHB_DIRECT)) return n;   /* Egide : pas de chaine depuis un bouclier */
     for (int k = 0; n && k < TESLA_CHAIN_N; k++) {
         V3 from = out[n - 1].at;
         float best = TESLA_CHAIN_R + 1e-3f;
@@ -3448,7 +3728,8 @@ static void tesla_flush_one(int kind, int idx) {          /* envoie et remet a z
     } else if (kind == TK_PLAYER && idx >= 0 && idx < MAXP) {
         float tot = tesla_total(teslaArcP[idx], teslaRelP[idx]);
         teslaArcP[idx] = teslaRelP[idx] = 0;
-        if (tot > 0 && np_target(idx)) net_hit(idx, tot * PVP_SCALE, v3(0, 0, 0), W_TESLA);
+        if (tot > 0 && np_target(idx))                    /* Egide : une tranche de 0,2 s bloquee de face (~10 sur la jauge) */
+            hit_player(idx, tot * PVP_SCALE, v3(0, 0, 0), W_TESLA, vnorm(vsub(np_center(idx), eye_pos())));
     }
 }
 static void tesla_flush(void) {                           /* fin de la fenetre de 0,2 s, arret de l'arc, mort */
@@ -3760,7 +4041,15 @@ static void saw_strike(Proj *p, V3 dir, float t, int he, int hp) {
     float rel = vlen(vsub(p->vel, he >= 0 ? E[he].vel : np_vel(hp)));
     float dmg = saw_dmg(rel) * (p->sawBounces ? SAW_RETURN_PARRY_DMG_MULT : 1);   /* renvoi : x0,9 */
     if (he >= 0) damage_enemy(he, dmg, vmul(dir, 6));
-    else net_hit_saw(hp, dmg * PVP_SCALE, vadd(vmul(dir, 5), v3(0, 2, 0)), W_SAW, p->sawBounces);
+    else if (!hit_player_ex(hp, dmg * PVP_SCALE, vadd(vmul(dir, 5), v3(0, 2, 0)), W_SAW, dir, SHB_DIRECT, 0, (float)p->sawBounces, 0, 0)) {
+        V3 n;                                             /* Egide : bloquee = ratee, elle tombe et se plante sous l'impact */
+        float g = ray_world(at, v3(0, -1, 0), 50, &n);
+        p->pos = at; p->vel = v3(0, 0, 0);
+        if (g < 50) saw_plant(p, vadd(at, v3(0, -g, 0)), n, v3(0, -1, 0), rayBox);
+        else { p->sawState = SAW_LOST; p->sawT = 0; }
+        if (botMode) netlog("scie : bloquee par le bouclier de %s", NP[hp].name);
+        return;
+    }
     if (p->sawBounces) {                                  /* renvoi qui touche = parry reussi : points a l'autre arme */
         ammo_points(PTS_PARRY, AP_PARRY);
         sawStat[SS_BHIT]++;
@@ -3801,7 +4090,7 @@ static void saw_recall_hurt(Proj *p, V3 dir, float len) {
         if (!np_target(j)) continue;
         np_aabb(j, SAW_HIT_GROW, &mn, &mx);
         if (ray_box(p->pos, dir, mn, mx, len, &te, NULL)) {
-            net_hit_saw(j, saw_dmg(vlen(vsub(p->vel, np_vel(j)))) * PVP_SCALE, vmul(dir, 5), W_SAW, 0);
+            hit_player_ex(j, saw_dmg(vlen(vsub(p->vel, np_vel(j)))) * PVP_SCALE, vmul(dir, 5), W_SAW, dir, SHB_DIRECT, 0, 0, 0, 0);
             p->sawHurt = 1; return;
         }
     }
@@ -3928,7 +4217,7 @@ static void saw_tick(Proj *p, float dt) {
             if (ray_box(p->pos, dir, mn, mx, t, &te, NULL) && te < t) {
                 V3 at = vadd(p->pos, vmul(dir, te));
                 float rel = vlen(vsub(p->vel, np_vel(p->owner)));
-                net_hit_saw(p->owner, saw_dmg(rel) * PVP_SCALE, vadd(vmul(dir, 5), v3(0, 2, 0)), W_PARRY, 0);
+                hit_player_ex(p->owner, saw_dmg(rel) * PVP_SCALE, vadd(vmul(dir, 5), v3(0, 2, 0)), W_PARRY, dir, SHB_DIRECT, 0, 0, 0, 0);
                 saw_hit_fx(at, 0, rel);
                 p->alive = 0;                             /* le lanceur la rattrape chez lui */
                 return;
@@ -4053,7 +4342,8 @@ static int mine_explode(Proj *p, int boosted, int byShot) {
     }
     if (p->mineState == MS_PLAYER && a >= 0 && a < MAXP && np_target(a)) {
         V3 kd = vnorm(vadd(vnorm(vsub(np_center(a), c)), v3(0, 0.6f, 0)));
-        net_hit_id(a, dmg * PVP_SCALE, vmul(kd, MINE_KNOCK + 3), W_MINE, p->netId);
+        V3 sd = p->mineShield ? vmul(np_face(a), -1) : vnorm(vsub(np_center(a), c));   /* Egide : collee au bouclier = de face */
+        hit_player_ex(a, dmg * PVP_SCALE, vmul(kd, MINE_KNOCK + 3), W_MINE, sd, SHB_BLAST, p->netId, 0, 0, 0);
         sp = a; hits++;
         impact_frame(c, 0.06f); hitstop = fmaxf(hitstop, 0.05f);
         if (p->owner == myId) { mineArmedT += p->mineT; mineArmedN++; }
@@ -4166,9 +4456,11 @@ static void mine_tick(Proj *p, float dt) {
                 V3 o = vsub(hit, NP[hp].disp);
                 o.x = clampf(o.x, -(HW + 0.05f), HW + 0.05f); o.z = clampf(o.z, -(HW + 0.05f), HW + 0.05f);
                 o.y = clampf(o.y, 0.1f, np_height(hp));
+                p->mineShield = shield_faces(hp, dir, SHB_DIRECT);   /* Egide : collee sur la face du bouclier */
+                if (p->mineShield) o = shield_front_ofs(hp);
                 p->mineState = MS_PLAYER; p->mineAttach = hp + 1; p->mineOfs = o; p->mineArmT = MINE_ARM_PLAYER;
                 p->pos = vadd(NP[hp].disp, o); p->mineFell = 0;
-                if (dmMode) net_fx_mine(MINE_EV_PLAYER, p->netId, o, v3(0, 0, 0), hp, 0);
+                if (dmMode) net_fx_mine(MINE_EV_PLAYER, p->netId, o, v3(0, 0, 0), hp, (float)p->mineShield);
                 mineStickP++;
                 if (botMode) netlog("ventouse : mine collee sur %s", NP[hp].name);
             } else if (t < len) {                         /* decor : point + normale */
@@ -4205,6 +4497,7 @@ static void mine_tick(Proj *p, float dt) {
             break;
         }
         float h = a == myId ? pheight() : np_height(a);
+        if (p->mineShield) p->mineOfs = shield_front_ofs(a);   /* Egide : elle suit la face du bouclier */
         if (p->mineOfs.y > h) p->mineOfs.y = h;           /* porteur accroupi : la mine ne flotte pas */
         p->pos = vadd(mine_base(p), p->mineOfs);
         if ((p->mineArmT -= dt) < 0.5f * TICK) p->mineArmT = 0;   /* armee au 72e tick, sans erreur d'arrondi */
@@ -4294,6 +4587,12 @@ static void proj_tick(float dt) {
             V3 q = vadd(p->pos, step);
             if (!P.dead && q.x > mn.x - 0.25f && q.x < mx.x + 0.25f && q.y > mn.y - 0.25f && q.y < mx.y + 0.25f &&
                 q.z > mn.z - 0.25f && q.z < mx.z + 0.25f) {
+                if (shield_local_faces(dir)) {            /* Egide : l'orbe s'ecrase sur le bouclier */
+                    shield_absorb_local(12, dir);
+                    burst(q, v3(1, 0.3f, 0.9f), 20, 5, 0.4f, 0.12f);
+                    p->alive = 0;
+                    continue;
+                }
                 damage_player(12);
                 P.vel = vadd(P.vel, vmul(dir, 3));
                 burst(q, v3(1, 0.3f, 0.9f), 20, 5, 0.4f, 0.12f);
@@ -4363,8 +4662,10 @@ static void enemy_tick(float dt) {
             float sp = 10.5f + fminf(wave * 0.3f, 3);
             e->vel = vlerp(e->vel, vmul(dir, sp), fminf(1, dt * 1.6f));
             if (!P.dead && dist < 1.4f && P.hookEnemy != i + 1) {
-                damage_player(18);
-                P.vel = vadd(P.vel, vmul(dir, 9));
+                int blk = shield_local_faces(dir);       /* Egide : contact sur le bouclier, recul x0,5 */
+                if (blk) shield_absorb_local(18, dir);
+                else damage_player(18);
+                P.vel = vadd(P.vel, vmul(dir, blk ? 9 * SHIELD_KNOCK_MULT : 9));
                 kill_enemy(i, 0);
                 continue;
             }
@@ -4432,7 +4733,7 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   9
+#define NET_VER   10
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
@@ -4441,7 +4742,8 @@ enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KIL
        EV_SAW = 16,                                       /* Scie */
        EV_MINE = 17,                                      /* Ventouse : sub = MINE_EV_* */
        EV_TESLA = 18,                                     /* Tesla : relais (0) ou decharge renvoyee (1) */
-       EV_LANCE = 20,                                     /* Lance : choc de joute, emis par l'hote seulement */
+       EV_SHIELD = 19,                                    /* Egide : sub = SHE_* (revendication du tireur, decisions de l'hote) */
+       EV_LANCE = 20,                                    /* Lance : choc de joute, emis par l'hote seulement */
        EV_SLAM = 21 };                                    /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
 
 #pragma pack(push, 1)
@@ -4580,6 +4882,7 @@ static void pack_state(NetPState *s) {
     if (P.anvilState == ANVIL_DIVE) s->pad |= ST_SLAM;
     if (P.teslaOn) s->pad |= ST_ZAP;                      /* Tesla : chaque client recalcule l'arc */
     if (P.lanceState == LS_COUCH) s->pad |= ST_LANCE;   /* Lance couchee : la pointe brille chez les autres */
+    if (P.meleeKind == MK_SHIELD && P.shieldState == SHS_UP && !P.dead) s->pad |= ST_SHIELD;   /* Egide : bouclier leve */
 }
 
 static void find_local_ip(void) {
@@ -4755,6 +5058,53 @@ static void net_hit_id(int target, float dmg, V3 knock, int weapon, unsigned int
     net_emit(&e);
 }
 /* --- fin Ventouse : evenements --- */
+/* --- Egide : point d'entree unique des degats sur un joueur ---------- */
+/* le joueur i (moi compris : rendu de l'arc) bloquerait-il un coup venant dans la direction dir ? Souffle : pas par en dessous */
+static int shield_faces(int i, V3 dir, int blast) {
+    if (blast == SHB_NEVER || i < 0 || i >= MAXP) return 0;
+    if (blast == SHB_BLAST && dir.y > 0.75f) return 0;   /* roquette dans les pieds */
+    if (i == myId) return P.meleeKind == MK_SHIELD && P.shieldState == SHS_UP && vdot(dir, view_dir()) < SHIELD_COS;
+    return np_shield_up(i) && NP[i].shieldBrokenT <= 0 && NP[i].shieldRipT <= 0 && vdot(dir, np_face(i)) < SHIELD_COS;
+}
+/* appele par toute arme juste avant l'EV_HIT : renvoie 1 si le coup est revendique comme bloque (EV_SHIELD CLAIM) ;
+ * l'hote tranche (bloque, refuse, parfait). Prediction locale : etincelles et son */
+static int shield_intercept(int i, V3 dir, float dmg, V3 knock, int w, int blast, unsigned int netId) {
+    if (w == W_SELF || i == myId || !shield_faces(i, dir, blast)) return 0;
+    NetEvent e = ev_new(EV_SHIELD);
+    e.sub = blast == SHB_BLAST ? SHE_CLAIM_BLAST : SHE_CLAIM; e.target = (unsigned char)i; e.actor = (unsigned char)w;
+    e.netId = netId;
+    e.f[0] = dmg; vf(&e.f[1], dir); vf(&e.f[4], knock);
+    shield_spark_fx(vsub(np_center(i), vmul(dir, 0.5f)), dir);
+    play(S_SHIELD_BLOCK, 0.6f * atten(np_center(i)), frange(0.95f, 1.05f));
+    if (botMode) netlog("bouclier : %s bloque (revendique), arme %d, %.0f", pname(i), w, dmg);
+    net_emit(&e);
+    return 1;
+}
+static int hit_player_ex(int i, float dmg, V3 knock, int w, V3 dir, int blast, unsigned int netId, float f4, float f5, float f6) {
+    if (shield_intercept(i, dir, dmg, knock, w, blast, netId)) return 0;
+    if (i != myId && i < MAXP) dmg_number(np_center(i), fminf(dmg, PVP_HIT_CAP));
+    flail_combo_check(i, w);                              /* Fleau : combo fleau -> rail (visuel) */
+    NetEvent e = ev_new(EV_HIT);
+    e.target = (unsigned char)i; e.sub = (unsigned char)w; e.netId = netId;
+    e.f[0] = dmg; vf(&e.f[1], knock); e.f[4] = f4; e.f[5] = f5; e.f[6] = f6;
+    net_emit(&e);
+    return 1;
+}
+static int hit_player(int i, float dmg, V3 knock, int w, V3 dir) {
+    return hit_player_ex(i, dmg, knock, w, dir, SHB_DIRECT, 0, 0, 0, 0);
+}
+/* mon grappin s'accroche au porteur : son bouclier est arrache 1 s (le grappineur fait autorite sur son accroche) */
+static void shield_rip(int i) {
+    NetEvent e = ev_new(EV_SHIELD);
+    e.sub = SHE_RIP; e.target = (unsigned char)i;
+    NP[i].shieldRipT = SHIELD_RIP_T;
+    for (int k = 0; k < 10; k++) add_part(np_center(i), vmul(rand_dir(), 6), v3(1, 0.6f, 0.2f), 0.3f, 0.08f, 4);
+    play(S_SHIELD_BLOCK, 0.7f * atten(np_center(i)), 0.6f);
+    snprintf(popText, sizeof popText, "BOUCLIER ARRACHE"); popT = 1.0f;
+    if (botMode) netlog("bouclier : celui de %s arrache au grappin", pname(i));
+    net_emit(&e);
+}
+/* --- fin Egide : evenements --- */
 
 static void kfeed_add(int killer, int victim, int kind, int info) {
     memmove(&kfeed[1], &kfeed[0], sizeof kfeed - sizeof kfeed[0]);
@@ -4879,6 +5229,7 @@ static void mine_apply(const NetEvent *ev) {
         int t = ev->target;
         if (t >= MAXP) break;
         p->mineState = MS_PLAYER; p->mineAttach = t + 1; p->mineOfs = a; p->mineArmT = MINE_ARM_PLAYER; p->mineFell = 0;
+        p->mineShield = ev->f[6] > 0.5f;                  /* Egide : collee sur la face du bouclier */
         p->pos = vadd(mine_base(p), a);
         mine_stuck_fx(p, t == myId ? 1.0f : 0.6f * atten(p->pos));
         if (t == myId) {                                  /* alerte : bip, contour rouge (HUD), il faut parer */
@@ -4919,6 +5270,102 @@ static void mine_apply(const NetEvent *ev) {
     }
 }
 /* --- fin Ventouse : reception --- */
+
+/* --- Egide : reception des decisions de l'hote (les CLAIM ne font rien ici : le resultat suit) --- */
+static V3 any_center(int i) { return i == myId ? pcenter() : np_center(i); }
+static void shield_apply(const NetEvent *ev) {
+    int t = ev->target, a = ev->actor;
+    if (t >= MAXP) return;
+    V3 ct = any_center(t);
+    switch (ev->sub) {
+    case SHE_BLOCK: {                                     /* actor = attaquant, f[0] absorbe, f[1] jauge, f[2] passe, f[3..5] recul */
+        V3 dir = a < MAXP ? vnorm(vsub(ct, any_center(a))) : v3(0, 0, -1);
+        NP[t].shieldGauge = ev->f[1];
+        shield_spark_fx(vsub(ct, vmul(dir, 0.5f)), dir);
+        if (t == myId) {
+            P.shieldGauge = ev->f[1]; P.shieldHitT = 0.2f;
+            P.vel = vadd(P.vel, fv(ev->f + 3));
+            if (ev->f[4] > 2) P.grounded = 0;
+            hitstop = fmaxf(hitstop, 0.03f); shake += 0.12f;
+            play(S_SHIELD_BLOCK, 0.9f, frange(0.95f, 1.05f));
+            if (ev->f[2] > 0) { P.hurtFlash = 0.4f; play(S_HURT, 0.6f, 1.0f); }   /* souffle : la moitie passe */
+            if (a < MAXP) { hurtFrom = np_center(a); hurtDirT = 0.8f; }
+        } else {
+            NP[t].flashT = 0.06f;
+            if (a != myId) play(S_SHIELD_BLOCK, 0.6f * atten(ct), 1.0f);
+        }
+        if (a == myId) {                                  /* moi, l'attaquant : la prediction a deja joue le son */
+            hitstop = fmaxf(hitstop, 0.03f);
+            snprintf(popText, sizeof popText, "BLOQUE"); popT = 0.8f;
+        }
+        netlog("bouclier : %s bloque %s, %.0f absorbe, jauge %.0f%s", pname(t), pname(a), ev->f[0], ev->f[1],
+               ev->f[2] > 0 ? " (souffle : la moitie passe)" : "");
+        break;
+    }
+    case SHE_BREAK:                                       /* actor = celui qui l'a brise */
+        NP[t].shieldGauge = 0; NP[t].shieldBrokenT = SHIELD_BROKEN_T;
+        shield_break_fx(t == myId ? vadd(eye_pos(), vmul(view_dir(), 0.6f)) : ct);
+        play(S_SHIELD_BREAK, t == myId ? 1.0f : 0.8f * atten(ct), 1.0f);
+        if (t == myId) {
+            P.shieldGauge = 0; P.shieldState = SHS_BROKEN; P.shieldBrokenT = SHIELD_BROKEN_T;
+            snprintf(popText, sizeof popText, "BOUCLIER BRISE"); popT = 1.2f;
+        } else if (a == myId) { snprintf(popText, sizeof popText, "BOUCLIER BRISE !"); popT = 1.2f; }
+        netlog("bouclier : celui de %s brise", pname(t));
+        break;
+    case SHE_PERFECT: {                                   /* actor = porteur, target = tireur, f[0..2] -> f[3..5], f[6] renvoye */
+        V3 pa = fv(ev->f), pb = fv(ev->f + 3), dir = vnorm(vsub(pb, pa));
+        if (a >= MAXP) break;
+        add_beam(pa, pb, v3(1, 0.85f, 0.3f), 0.7f);
+        add_beam(pa, pb, v3(1, 1, 1), 0.2f);
+        if (a == myId) {
+            parry_feedback(pa);
+            melee_parry_points(PTS_SHIELD_PERFECT);       /* parfait : 100 points au lieu de 50 */
+            snprintf(popText, sizeof popText, "RENVOYE !"); popT = 1.2f;
+            play(S_RAIL, 0.7f, 1.3f);
+        } else play(S_PARRY, 0.7f * atten(pa), 0.85f);
+        if (t == myId) {
+            P.vel = vadd(P.vel, vmul(dir, 4));
+            P.hurtFlash = 0.6f; shake += 0.3f; hurtFrom = pa; hurtDirT = 1.2f;
+            play(S_HURT, 0.8f, 1.0f);
+            snprintf(popText, sizeof popText, "RENVOYE PAR %s", pname(a)); popT = 1.2f;
+        } else NP[t].flashT = 0.12f;
+        impact_frame(a == myId || t == myId ? pa : pb, 0.08f);
+        netlog("bouclier : parry parfait de %s, %.0f renvoyes a %s", pname(a), ev->f[6], pname(t));
+        break;
+    }
+    case SHE_DENIED: {                                    /* comme un EV_HIT : actor = attaquant, f[0] degats, f[1..3] recul, f[4] arme */
+        int w = (int)ev->f[4];
+        if (t == myId) {
+            P.vel = vadd(P.vel, fv(ev->f + 1));
+            if (ev->f[2] > 2) P.grounded = 0;
+            P.hurtFlash = 0.6f; shake += 0.25f;
+            play(S_HURT, 0.8f, frange(0.9f, 1.1f));
+            if (a < MAXP) { hurtFrom = np_center(a); hurtDirT = 1.2f; }
+        } else {
+            burst(ct, v3(1, 0.35f, 0.3f), 14, 6, 0.3f, 0.1f);
+            NP[t].flashT = 0.12f;
+        }
+        if (a == myId) {                                  /* la revendication etait fausse : c'etait une touche */
+            hitMarker = 0.18f; play(S_HIT, 0.6f, 1.0f);
+            if (is_melee_w(w)) { melee_hit_points(meleePts[P.meleeKind]); P.dashCharge = fminf(2, P.dashCharge + 1); }
+        }
+        netlog("bouclier : blocage de %s refuse (attaquant %s, arme %d)", pname(t), pname(a), w);
+        break;
+    }
+    case SHE_RIP:                                         /* emis par le grappineur */
+        NP[t].shieldRipT = SHIELD_RIP_T;
+        for (int k = 0; k < 10; k++) add_part(ct, vmul(rand_dir(), 6), v3(1, 0.6f, 0.2f), 0.3f, 0.08f, 4);
+        play(S_SHIELD_BLOCK, (t == myId ? 0.9f : 0.6f * atten(ct)), 0.6f);
+        if (t == myId) {
+            P.shieldRipT = SHIELD_RIP_T;
+            if (P.shieldState == SHS_UP) { P.shieldState = SHS_DOWN; P.shieldDownT = 0; }
+            snprintf(popText, sizeof popText, "BOUCLIER ARRACHE"); popT = 1.0f;
+        }
+        netlog("bouclier : celui de %s arrache par %s", pname(t), pname(ev->from));
+        break;
+    }
+}
+/* --- fin Egide : reception --- */
 
 static void pickup_taken(int i, int who) {
     PU[i].t = PICKUP_RESPAWN;
@@ -5020,6 +5467,12 @@ static void apply_event(const NetEvent *ev) {
             play(S_FLAIL_SWING, 0.6f * atten(a), 1.0f);
             break;
         }                                                 /* --- fin Fleau --- */
+        if (ev->from < MAXP && (NP[ev->from].st.pad & 15) == MK_SHIELD) {   /* Egide : coup de bouclier, mur de particules */
+            for (int k = 0; k < 14; k++)
+                add_part(vadd(a, vadd(vmul(b, 0.9f + 0.05f * k), vmul(rand_dir(), 0.35f))), vmul(b, 5), v3(0.6f, 0.85f, 1), 0.15f, 0.07f, 0);
+            play(S_SHIELD_BASH, 0.5f * atten(a), 1.3f);
+            break;
+        }
         if (ev->from < MAXP && (NP[ev->from].st.pad & 15) == MK_LANCE) {   /* estoc de la Lance : trait droit */
             for (int k = 0; k < 14; k++) add_part(vadd(a, vmul(b, 0.8f + k * 0.18f)), vmul(b, 4), v3(0.9f, 0.9f, 1), 0.12f, 0.06f, 0);
             play(S_LANCE_THRUST, 0.6f * atten(a), 1.0f);
@@ -5088,6 +5541,7 @@ static void apply_event(const NetEvent *ev) {
         int t = ev->target;
         if (t >= MAXP) break;
         NP[t].alive = 1; NP[t].disp = a; vf(NP[t].st.pos, a);
+        NP[t].shieldGauge = SHIELD_GAUGE_MAX; NP[t].shieldBrokenT = NP[t].shieldRipT = 0;   /* Egide : bouclier neuf */
         saw_remove_owner(t);                              /* Scie : pas de fantome d'une vie precedente */
         if (t == myId) {
             P.pos = P.prevPos = a; P.vel = v3(0, 0, 0);
@@ -5163,7 +5617,7 @@ static void apply_event(const NetEvent *ev) {
         play(S_PUNCH, 0.8f * atten(mid), 1.6f);
         if (def == myId) {
             parry_feedback(mid);
-            ammo_points(PTS_PARRY, AP_PARRY);             /* decision de l'hote : souvent apres la fin du coup */
+            ammo_points(P.meleeKind == MK_SHIELD ? (float)PTS_SHIELD_PERFECT : (float)PTS_PARRY, AP_PARRY);   /* decision de l'hote ; Egide : parfait */
             snprintf(popText, sizeof popText, clash ? "CHOC D'EPEES !" : "PARRY !");
             if (clash) P.vel = vadd(P.vel, vadd(vmul(vnorm(vsub(pd, pa)), 8), v3(0, 3, 0)));
         }
@@ -5248,6 +5702,9 @@ static void apply_event(const NetEvent *ev) {
         break;
     case EV_MINE:                                         /* Ventouse */
         mine_apply(ev);
+        break;
+    case EV_SHIELD:                                       /* Egide */
+        shield_apply(ev);
         break;
     case EV_TESLA:                                        /* --- Tesla --- */
         if (ev->sub == 0) {                               /* relais active par un autre : sa copie flotte et crepite */
@@ -5438,11 +5895,147 @@ static void host_take_pickup(int i, int who) {
     apply_event(&e);
 }
 
+/* degats arbitres : PV, plafond par touche, temps pour tuer, kill (EV_HIT, et les decisions du bouclier) */
+static void host_apply_damage(int from, int v, float dmgIn, int w) {
+    float before = NP[v].hp;
+    float dmg = w == W_SELF ? dmgIn : fminf(dmgIn, PVP_HIT_CAP);   /* plafond par touche */
+    if (before >= 99.9f) lifeFirstHitT[v] = nowT;
+    if (w == W_SLAM) { slamLastHitT[v] = nowT; slamLastBy[v] = from; }   /* onde puis rail : le combo vise */
+    else if (w == W_RAIL && slamLastHitT[v] > 0 && slamLastBy[v] == from && nowT - slamLastHitT[v] < 1.5) {
+        slamRailCombos++; slamLastHitT[v] = 0;
+    }
+    NP[v].hp -= dmg;
+    if (NP[v].hp <= 0 && NP[v].alive) {
+        if (w != W_SELF) {
+            ttkSum += nowT - lifeFirstHitT[v]; ttkN++;
+            if (before >= 99.9f) oneShots++;              /* tue d'un seul coup a pleine vie */
+        }
+        host_kill(from, v, w);
+    }
+}
+
+/* Tesla : la victime v qui pare renvoie la decharge du tireur s ; renvoie 1 si la touche est annulee */
+static int tesla_host_reflect(int v, int s) {
+    if (NP[s].teslaReflT > 0 && nowT - NP[s].teslaReflT < TESLA_STUN) return 1;   /* deja en vol apres un renvoi */
+    if (nowT - NP[v].lastParryT < parry_grace(W_TESLA, NP[v].st.pad & 15)) {
+        NP[s].teslaReflT = nowT; teslaReflects++;
+        NP[v].hp = fminf(100, NP[v].hp + PARRY_HEAL);
+        NetEvent e = ev_new(EV_TESLA);
+        e.sub = 1; e.actor = (unsigned char)v; e.target = (unsigned char)s;
+        vf(e.f, v == myId ? pcenter() : np_center(v));
+        net_emit(&e);
+        apply_event(&e);
+        if (NP[s].alive && (NP[s].hp -= TESLA_REFLECT_DMG) <= 0) host_kill(v, s, W_TESLA);
+        return 1;
+    }
+    return 0;
+}
+
+/* coup de melee (ou impact de grappin) de `from` pare par v : EV_MELEE_PARRY (choc si les deux paraient) */
+static void host_melee_parry(int v, int from, int w, int couched) {
+    int clash = is_melee_w(w) && w != W_FLAIL && !couched && from < MAXP &&   /* Fleau : chaines croisees */
+                nowT - NP[from].lastParryT < MELEE_PARRY_GRACE;
+    if (w == W_SLAM) slamParried++;
+    if (w == W_LANCE) lanceHostParried++;
+    if (w == W_FLAIL) flailHostParried++;                 /* Fleau */
+    NetEvent e = ev_new(EV_MELEE_PARRY);
+    e.actor = (unsigned char)v; e.target = (unsigned char)from; e.sub = (unsigned char)clash;
+    e.f[0] = (float)w;                                    /* arme paree : l'attaquant rend ses points de melee */
+    NP[v].hp = fminf(100, NP[v].hp + PARRY_HEAL);
+    if (clash) clashes++; else meleeParries++;
+    net_emit(&e);
+    apply_event(&e);
+}
+
+/* --- Egide : arbitrage ------------------------------------------------- */
+static int is_hitscan_w(int w) { return w == W_RAIL || w == W_COIN || w == W_KINETIC || w == W_SHOTGUN; }
+/* coups directs que l'hote peut convertir en bloc (il ne connait ni la piece ni le centre d'un souffle ; l'onde passe dessous) */
+static int shield_direct_w(int w) {
+    return (is_hitscan_w(w) && w != W_COIN) || (is_melee_w(w) && w != W_SLAM) || w == W_HOOK || w == W_SAW || w == W_TESLA;
+}
+static int host_shield_ok(int v, V3 dir, float cosLim) {   /* bouclier leve (tolerance de latence), ni brise ni arrache, de face */
+    return (NP[v].st.pad & 0x0F) == MK_SHIELD && NP[v].shieldBrokenT <= 0 && NP[v].shieldRipT <= 0 &&
+           nowT - NP[v].lastShieldT < SHIELD_GRACE && vdot(dir, np_face(v)) < cosLim;
+}
+static int host_shield_perfect(int v) { return nowT - NP[v].lastParryT < MELEE_PARRY_GRACE; }
+/* parry parfait d'un tir hitscan : renvoye au tireur (60 au plus), jauge intacte, +10 PV ; un kill revient au porteur */
+static void host_shield_reflect(int v, int from, float dmg) {
+    float back = fminf(dmg, SHIELD_REFLECT_PVP);
+    shieldPerfects++; parryCount++;
+    NP[v].hp = fminf(100, NP[v].hp + PARRY_HEAL);
+    NetEvent e = ev_new(EV_SHIELD);
+    e.sub = SHE_PERFECT; e.actor = (unsigned char)v; e.target = (unsigned char)from;
+    vf(e.f, np_center(v)); vf(e.f + 3, np_center(from)); e.f[6] = back;
+    net_emit(&e);
+    apply_event(&e);
+    if (from < MAXP && NP[from].active && NP[from].alive) host_apply_damage(v, from, back, W_SHIELD);
+}
+/* coup bloque : la jauge prend le coup (un souffle : la moitie, l'autre moitie passe), recul / 2, casse a 0 */
+static void host_shield_block(int v, int from, int w, float dmg, V3 kn, int blast) {
+    float absorbed = fminf(blast ? dmg * SHIELD_BLAST_FRAC : dmg, PVP_HIT_CAP);
+    float passed = blast ? fminf(dmg * (1 - SHIELD_BLAST_FRAC), PVP_HIT_CAP) : 0;
+    NP[v].shieldGauge = fmaxf(0, NP[v].shieldGauge - absorbed);
+    shieldBlocks++;
+    NetEvent e = ev_new(EV_SHIELD);
+    e.sub = SHE_BLOCK; e.actor = (unsigned char)from; e.target = (unsigned char)v;
+    e.f[0] = absorbed; e.f[1] = NP[v].shieldGauge; e.f[2] = passed; vf(e.f + 3, vmul(kn, SHIELD_KNOCK_MULT)); e.f[6] = (float)w;
+    net_emit(&e);
+    apply_event(&e);
+    if (passed > 0) host_apply_damage(from, v, passed, w);
+    if (NP[v].shieldGauge <= 0 && NP[v].alive) {         /* le coup qui brise est absorbe en entier */
+        NP[v].shieldBrokenT = SHIELD_BROKEN_T; shieldBreaks++;
+        NetEvent b = ev_new(EV_SHIELD);
+        b.sub = SHE_BREAK; b.target = (unsigned char)v; b.actor = (unsigned char)from;
+        net_emit(&b);
+        apply_event(&b);
+    }
+}
+/* EV_SHIELD : revendications des tireurs (CLAIM), arrachage (RIP). Les decisions ne viennent que de l'hote */
+static int shield_host(const NetEvent *ev) {
+    int v = ev->target, from = ev->from, w = ev->actor, blast = ev->sub == SHE_CLAIM_BLAST;
+    if (ev->sub == SHE_RIP) {
+        if (v >= MAXP) return 1;
+        NP[v].shieldRipT = SHIELD_RIP_T; shieldRips++;
+        return 0;
+    }
+    if (ev->sub != SHE_CLAIM && !blast) return from != myId;
+    if (v >= MAXP || from >= MAXP || w >= W_COUNT || !NP[v].active || !NP[v].alive || matchOver) return 1;
+    if (ev->netId && mine_fate(ev->netId) && mine_fate(ev->netId)->who != from) {   /* Ventouse : decision perdue */
+        mineHitsIgnored++;
+        return 1;
+    }
+    float dmg = ev->f[0];
+    V3 dir = fv(ev->f + 1), kn = fv(ev->f + 4);
+    if (w == W_TESLA && tesla_host_reflect(v, from)) return 1;
+    if (!host_shield_ok(v, dir, SHIELD_COS_HOST)) {      /* refus : le coup suit le chemin normal (parry, degats complets) */
+        NetEvent h = ev_new(EV_HIT);
+        h.from = (unsigned char)from; h.target = (unsigned char)v; h.sub = (unsigned char)w; h.netId = ev->netId;
+        h.f[0] = dmg; vf(h.f + 1, kn);
+        shieldDenied++;
+        if (!host_handle(&h)) {
+            NetEvent d = ev_new(EV_SHIELD);
+            d.sub = SHE_DENIED; d.actor = (unsigned char)from; d.target = (unsigned char)v;
+            d.f[0] = dmg; vf(d.f + 1, kn); d.f[4] = (float)w;
+            net_emit(&d);
+            apply_event(&d);
+        }
+        return 1;
+    }
+    if (!blast && host_shield_perfect(v)) {               /* fenetre parfaite */
+        if (is_hitscan_w(w)) { host_shield_reflect(v, from, dmg); return 1; }
+        if (is_parryable_w(w)) { host_melee_parry(v, from, w, 0); return 1; }
+    }
+    host_shield_block(v, from, w, dmg, kn, blast);
+    return 1;
+}
+/* --- fin Egide : arbitrage --- */
+
 /* arbitre un evenement ; renvoie 1 s'il est annule : il ne doit alors ni s'appliquer ni etre relaye
  * (sinon la victime d'un coup pare subirait quand meme le recul et le flash) */
 static int host_handle(const NetEvent *ev) {
     if (ev->kind == EV_PICKUP) { host_take_pickup(ev->sub, ev->from); return 0; }
     if (ev->kind == EV_MINE) return mine_host(ev);        /* Ventouse */
+    if (ev->kind == EV_SHIELD) return shield_host(ev);    /* Egide */
     if (ev->kind == EV_HIT) {
         int v = ev->target;
         if (ev->sub >= W_COUNT) return 1;
@@ -5460,53 +6053,28 @@ static int host_handle(const NetEvent *ev) {
             netlog("lance %s : v %.1f, vitesse %.1f", couched ? "couchee" : "estoc", ev->f[5], ev->f[4]);
         }
         if (v >= MAXP || !NP[v].active || !NP[v].alive || matchOver) return 1;
-        if (ev->sub == W_TESLA && ev->from < MAXP) {      /* --- Tesla : la victime qui pare renvoie la decharge --- */
-            int s = ev->from;
-            if (NP[s].teslaReflT > 0 && nowT - NP[s].teslaReflT < TESLA_STUN) return 1;   /* deja en vol apres un renvoi */
-            if (nowT - NP[v].lastParryT < parry_grace(W_TESLA, NP[v].st.pad & 15)) {
-                NP[s].teslaReflT = nowT; teslaReflects++;
-                NP[v].hp = fminf(100, NP[v].hp + PARRY_HEAL);
-                NetEvent e = ev_new(EV_TESLA);
-                e.sub = 1; e.actor = (unsigned char)v; e.target = (unsigned char)s;
-                vf(e.f, v == myId ? pcenter() : np_center(v));
-                net_emit(&e);
-                apply_event(&e);
-                if (NP[s].alive && (NP[s].hp -= TESLA_REFLECT_DMG) <= 0) host_kill(v, s, W_TESLA);
+        if (ev->sub == W_TESLA && ev->from < MAXP && tesla_host_reflect(v, ev->from)) return 1;   /* Tesla : decharge renvoyee */
+        int shieldFace = 1;                               /* --- Egide : face exigee pour parer, renvoi du hitscan, conversion --- */
+        if ((NP[v].st.pad & 0x0F) == MK_SHIELD && ev->sub != W_SELF && ev->from < MAXP) {
+            V3 sd = vnorm(vsub(np_center(v), np_center(ev->from)));   /* ligne attaquant -> victime vue par l'hote */
+            int perfect = host_shield_perfect(v), face = vdot(sd, np_face(v)) < SHIELD_COS;
+            if (is_parryable_w(ev->sub) && ev->sub != W_SLAM) shieldFace = face;   /* l'onde se pare toujours au timing */
+            if (is_hitscan_w(ev->sub) && perfect && face) { host_shield_reflect(v, ev->from, ev->f[0]); return 1; }
+            if (SHIELD_HOST_CONVERT && shield_direct_w(ev->sub) && !(perfect && is_parryable_w(ev->sub) && face) &&
+                host_shield_ok(v, sd, SHIELD_COS)) {
+                shieldConverted++;
+                hitCount[ev->sub]--;                      /* bloque : pas une touche */
+                host_shield_block(v, ev->from, ev->sub, ev->f[0], fv(ev->f + 1), 0);
                 return 1;
             }
-        }                                                 /* --- fin Tesla --- */
+        }                                                 /* --- fin Egide --- */
         /* coup de melee ou impact de grappin pendant la fenetre de parry de la victime : c'est pare */
-        if (is_parryable_w(ev->sub) && nowT - NP[v].lastParryT < parry_grace(ev->sub, NP[v].st.pad & 15)) {
-            int clash = is_melee_w(ev->sub) && ev->sub != W_FLAIL && !couched && ev->from < MAXP &&   /* Fleau : chaines croisees */
-                        nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
-            if (ev->sub == W_SLAM) slamParried++;
-            if (ev->sub == W_LANCE) lanceHostParried++;
-            if (ev->sub == W_FLAIL) flailHostParried++;   /* Fleau */
-            NetEvent e = ev_new(EV_MELEE_PARRY);
-            e.actor = (unsigned char)v; e.target = ev->from; e.sub = (unsigned char)clash;
-            e.f[0] = (float)ev->sub;                      /* arme paree : l'attaquant rend ses points de melee */
-            NP[v].hp = fminf(100, NP[v].hp + PARRY_HEAL);
-            if (clash) clashes++; else meleeParries++;
-            net_emit(&e);
-            apply_event(&e);
+        if (is_parryable_w(ev->sub) && nowT - NP[v].lastParryT < parry_grace(ev->sub, NP[v].st.pad & 15) && shieldFace) {
+            host_melee_parry(v, ev->from, ev->sub, couched);
             return 1;
         }
         if (couched && lance_host_joust(ev)) return 1;   /* Lance : choc de joute */
-        float before = NP[v].hp;
-        float dmg = ev->sub == W_SELF ? ev->f[0] : fminf(ev->f[0], PVP_HIT_CAP);   /* plafond par touche */
-        if (before >= 99.9f) lifeFirstHitT[v] = nowT;
-        if (ev->sub == W_SLAM) { slamLastHitT[v] = nowT; slamLastBy[v] = ev->from; }   /* onde puis rail : le combo vise */
-        else if (ev->sub == W_RAIL && slamLastHitT[v] > 0 && slamLastBy[v] == ev->from && nowT - slamLastHitT[v] < 1.5) {
-            slamRailCombos++; slamLastHitT[v] = 0;
-        }
-        NP[v].hp -= dmg;
-        if (NP[v].hp <= 0) {
-            if (ev->sub != W_SELF) {
-                ttkSum += nowT - lifeFirstHitT[v]; ttkN++;
-                if (before >= 99.9f) oneShots++;          /* tue d'un seul coup a pleine vie */
-            }
-            host_kill(ev->from, v, ev->sub);
-        }
+        host_apply_damage(ev->from, v, ev->f[0], ev->sub);
     } else if (ev->kind == EV_SAW && ev->sub < 6) {
         sawHostStat[ev->sub]++;                           /* Scie : compteurs du journal, rien a arbitrer */
     } else if (ev->kind == EV_PARRY && ev->from < MAXP) {
@@ -5578,6 +6146,14 @@ static void host_tick(float dt) {
     if (P.lanceState == LS_COUCH) NP[myId].lastLanceT = nowT;   /* Lance : choc de joute */
     NP[myId].disp = P.pos;
     P.hp = NP[myId].hp;
+    if ((NP[myId].st.pad & ST_SHIELD) && NP[myId].shieldBrokenT <= 0 && NP[myId].shieldRipT <= 0) NP[myId].lastShieldT = nowT;
+    for (int i = 0; i < MAXP; i++) {                      /* Egide : l'hote tient la jauge de chacun */
+        NetPlayer *n = &NP[i];
+        if (!n->active) continue;
+        n->shieldBrokenT -= dt; n->shieldRipT -= dt;
+        if (n->alive && !(n->st.pad & ST_SHIELD) && n->shieldBrokenT <= 0)
+            n->shieldGauge = fminf(SHIELD_GAUGE_MAX, n->shieldGauge + SHIELD_REGEN * dt);
+    }
     if (!matchOver) {
         matchT += dt;
         if (matchT >= MATCH_TIME) {
@@ -5668,6 +6244,8 @@ static void host_recv(PkHead *h, int n, struct sockaddr_in *from) {
             NP[id].st = ((PkState *)h)->st; NP[id].recvT = nowT;
             if (NP[id].st.flags & NF_PARRY) NP[id].lastParryT = nowT;
             if (NP[id].st.pad & ST_LANCE) NP[id].lastLanceT = nowT;   /* Lance couchee */
+            if ((NP[id].st.pad & ST_SHIELD) && NP[id].shieldBrokenT <= 0 && NP[id].shieldRipT <= 0)
+                NP[id].lastShieldT = nowT;                /* Egide : un client ne prolonge pas un bouclier brise ou arrache */
         }
         break;
     case PK_EVENT:
@@ -6386,7 +6964,7 @@ static char botShot[260];
 static int botSpec;                                       /* --spec : le bot client regarde la partie au lieu d'y jouer */
 static float bot_melee_reach(float rel) {
     return P.meleeKind == MK_ANVIL ? anvil_range(rel) : P.meleeKind == MK_LANCE ? LANCE_THRUST_RANGE :
-           P.meleeKind == MK_FLAIL ? flail_range(rel) : melee_range(rel);
+           P.meleeKind == MK_FLAIL ? flail_range(rel) : P.meleeKind == MK_SHIELD ? SHIELD_BASH_RANGE : melee_range(rel);
 }
 
 /* Le bot joue comme un joueur de movement shooter : bhop permanent, air-strafe en balancant
@@ -6401,6 +6979,56 @@ static void bot_think(float dt) {
     if (P.dead) return;
     float hs = hlen(P.vel);
     botSpeedSum += hs * dt; botAliveT += dt; botMaxSpeed = fmaxf(botMaxSpeed, hs);
+
+    /* --- Egide : bouclier leve face a un rail (ou un Elan) qui me vise de loin, ou a une roquette qui arrive (une fois sur
+     * deux) : 0,6 s au plus, puis 0,8 s baisse pour regenerer ; jamais sous 40 de jauge. Grappin sur un joueur : belier --- */
+    if (P.meleeKind == MK_SHIELD) {
+        static double shUntil, shRest;
+        static unsigned int shRocket;
+        static int shRocketGo, shWho = -1;
+        V3 eye = eye_pos(), at = v3(0, 0, 0);
+        int threat = -1;
+        if (P.shieldState != SHS_BROKEN && P.shieldRipT <= 0 && P.shieldGauge >= 40 && nowT >= shRest) {
+            for (int i = 0; i < MAXP && threat < 0; i++) {
+                if (!np_target(i) || (NP[i].st.weapon != WP_RAIL && NP[i].st.weapon != WP_KINETIC)) continue;
+                V3 e = np_eye(i), to = vsub(pcenter(), e);
+                float dl = vlen(to);
+                if (dl < 8 || vdot(np_face(i), vmul(to, 1.0f / dl)) < 0.97f || !los(eye, e)) continue;
+                threat = i; at = np_center(i);
+            }
+            for (int i = 0; i < MAXPR && threat < 0; i++) {
+                Proj *p = &PR[i];
+                if (!p->alive || (p->kind != PR_ROCKET && p->kind != PR_PARRIED) || p->owner == myId) continue;
+                V3 to = vsub(eye, p->pos);
+                float d = vlen(to);
+                if (d > 8 || d < MELEE_RANGE + 1.2f || vdot(p->vel, to) <= 0) continue;
+                if (shRocket != p->netId) { shRocket = p->netId; shRocketGo = frand() < 0.5f; }
+                if (shRocketGo) { threat = MAXP; at = p->pos; }
+            }
+        }
+        if (threat >= 0 && nowT >= shUntil && P.shieldState != SHS_UP) {
+            shUntil = nowT + 0.6; shWho = threat;
+            netlog("bouclier leve contre %s", threat < MAXP ? pname(threat) : "une roquette");
+        }
+        if (nowT < shUntil && P.shieldState != SHS_BROKEN && P.shieldRipT <= 0 && P.shieldGauge >= 20) {
+            if (threat >= 0) {                            /* face a la menace */
+                V3 d = vsub(at, eye);
+                P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(clampf(d.y / fmaxf(vlen(d), 0.01f), -1, 1));
+            }
+            botHeld[A_MELEE] = 1; botHeld[A_FWD] = 1; botHeld[A_JUMP] = 1;
+            if (P.shieldState == SHS_DOWN) botPress[A_MELEE] = 1;
+            return;
+        }
+        if (shUntil > 0 && nowT >= shUntil) {             /* fin du blocage : on baisse pour regenerer */
+            shUntil = 0; shRest = nowT + 0.8;
+            netlog("bouclier baisse (contre %s), jauge %.0f", shWho >= 0 && shWho < MAXP ? pname(shWho) : "roquette", P.shieldGauge);
+        }
+        if (P.hook == HOOK_ATTACHED && P.hookPlayer && P.shieldState != SHS_BROKEN && P.shieldRipT <= 0) {
+            botHeld[A_MELEE] = 1;                         /* belier : bouclier tenu pendant la traction */
+            if (P.shieldState == SHS_DOWN) botPress[A_MELEE] = 1;
+        }
+    }
+    /* --- fin Egide --- */
 
     /* un adversaire tout proche lance son epee : une fois sur deux, on pare (ou on frappe en meme temps) */
     static double swingSeenT;
@@ -7043,6 +7671,7 @@ static void spec_tick(float dt) {
     coin_tick(dt);
     anvil_remote_tick();                                  /* trainee des piques */
     lance_remote_tick();                                  /* son des lances couchees */
+    shield_remote_tick(dt);                               /* Egide : jauges miroirs */
     if (matchOver) matchEndT -= dt;
     fx_tick(dt);
 }
@@ -7125,13 +7754,15 @@ static void game_tick(float dt) {
     if (P.meleeKind == MK_LANCE) {                        /* Lance : appui = estoc, maintien = lance couchee */
         if (!P.dead && meleePress && P.meleeCd <= 0 && P.lanceState == LS_IDLE) lance_press();
         lance_tick(dt, act[A_MELEE]);                     /* maintenu : act, pas actP */
-    } else if (!P.dead && meleePress && P.meleeCd <= 0) melee();
+    } else if (P.meleeKind == MK_SHIELD) shield_tick(dt, meleePress, act[A_MELEE]);   /* Egide : maintenu = leve, tap = coup */
+    else if (!P.dead && meleePress && P.meleeCd <= 0) melee();
+    shield_remote_tick(dt);                               /* Egide : jauges miroirs (clients) */
     if (P.parryWin > 0) {
         if (!P.dead) try_parry(P.meleeKind == MK_FLAIL ? FLAIL_PARRY_RANGE : MELEE_RANGE + 1.5f,   /* Fleau : 6 m, renvoi x0,8 */
                                P.meleeKind == MK_FLAIL ? FLAIL_PARRY_SPEED : 1);
         P.parryWin -= dt;
         /* coup dans le vide : on paie le risque (la Lance, elle, decide a 0,15 s : estoc seul ou lance couchee) */
-        if (P.parryWin <= 0 && !P.swingLanded && P.lanceState != LS_THRUST) {
+        if (P.parryWin <= 0 && !P.swingLanded && P.lanceState != LS_THRUST && P.meleeKind != MK_SHIELD) {
             int anvil = P.meleeKind == MK_ANVIL, flail = P.meleeKind == MK_FLAIL;
             P.meleeCd = fmaxf(P.meleeCd, anvil ? ANVIL_WHIFF_CD - ANVIL_PARRY_WINDOW :
                                          flail ? FLAIL_WHIFF_CD - FLAIL_PARRY_WINDOW : MELEE_WHIFF_CD - PARRY_WINDOW);
@@ -7156,12 +7787,13 @@ static void game_tick(float dt) {
     }
     P.sawCd -= dt;                                        /* Scie : delai entre deux lancers */
     P.recoil *= expf(-dt * 9);
-    if (!P.dead && P.weapon != WP_TESLA && !tesla_stunned() && (act[A_FIRE] || lmbp) && P.fireCd <= 0 && P.switchT <= 0) {
+    int shieldUp = P.shieldState == SHS_UP;              /* Egide : bouclier leve = pas de tir (pieces et detonation permises) */
+    if (!P.dead && !shieldUp && P.weapon != WP_TESLA && !tesla_stunned() && (act[A_FIRE] || lmbp) && P.fireCd <= 0 && P.switchT <= 0) {
         if (wp_has_ammo(P.weapon)) fire_weapon();
         else if (P.weapon == WP_SAW) saw_dry(lmbp);
         else dry_fire();
     }
-    tesla_tick(dt, !P.dead && P.weapon == WP_TESLA && (act[A_FIRE] || lmbp) && P.switchT <= 0);   /* Tesla : tir maintenu */
+    tesla_tick(dt, !P.dead && !shieldUp && P.weapon == WP_TESLA && (act[A_FIRE] || lmbp) && P.switchT <= 0);   /* Tesla : tir maintenu */
     if (!P.dead && (actP[A_DETONATE_ALL] || actP[A_DETONATE_ONE])) mine_remote(actP[A_DETONATE_ALL]);   /* Ventouse : quelle que soit l'arme */
     if (!P.dead && !wp_has_ammo(P.loadout[0]) && !wp_has_ammo(P.loadout[1])) dryT += dt;
     ammoGainT -= dt; dryHintT -= dt;
@@ -7798,6 +8430,62 @@ static void draw_flail_vm(void) {
 }
 /* --- fin Fleau : rendu --- */
 
+/* --- Egide : rendu ------------------------------------------------------ */
+static V3 shield_col(float gauge) {                       /* bord : cyan a 120 -> rouge a 0 */
+    return vlerp(v3(1, 0.2f, 0.15f), v3(0.3f, 0.9f, 1), clampf(gauge / SHIELD_GAUGE_MAX, 0, 1));
+}
+/* plaque centree sur l'origine, face vers -z : face (alpha < 1 = semi-transparente), bord colore, fissures sous 60 */
+static void shield_plate(float w, float h, float th, V3 face, float alpha, V3 edge, float gauge) {
+    float x = w * 0.5f, y = h * 0.5f, b = fminf(w, h) * 0.07f;
+    glDisable(GL_LIGHTING);
+    glColor3f(edge.x, edge.y, edge.z);                    /* bord opaque */
+    box_faces(v3(-x, y - b, -th * 1.4f), v3(x, y, th * 0.4f));
+    box_faces(v3(-x, -y, -th * 1.4f), v3(x, -y + b, th * 0.4f));
+    box_faces(v3(-x, -y, -th * 1.4f), v3(-x + b, y, th * 0.4f));
+    box_faces(v3(x - b, -y, -th * 1.4f), v3(x, y, th * 0.4f));
+    if (gauge < SHIELD_GAUGE_MAX * 0.5f) {                /* fissures : plus nombreuses quand la jauge baisse */
+        int n = gauge < SHIELD_GAUGE_MAX * 0.25f ? 6 : 3;
+        glLineWidth(2);
+        glColor3f(0.05f, 0.05f, 0.08f);
+        glBegin(GL_LINES);
+        for (int k = 0; k < n; k++) {
+            float a0 = k * 2.4f + 0.3f, cx = 0.15f * w * cosf(a0 * 1.7f), cy = 0.1f * h * sinf(a0);
+            glVertex3f(cx, cy, -th * 1.05f);
+            glVertex3f(cx + cosf(a0) * x * 0.8f, cy + sinf(a0) * y * 0.8f, -th * 1.05f);
+        }
+        glEnd();
+    }
+    glEnable(GL_LIGHTING);
+    if (alpha < 1) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); }
+    glColor4f(face.x, face.y, face.z, alpha);
+    box_faces(v3(-x + b, -y + b, -th), v3(x - b, y - b, 0));
+    if (alpha < 1) { glDepthMask(GL_TRUE); glDisable(GL_BLEND); }
+}
+/* viewmodel : baisse en bas a gauche (incline), leve devant la vue (face transparente pour garder la visee) */
+static void draw_shield_vm(void) {
+    if (P.shieldState == SHS_BROKEN) {                    /* brise : le bras seul */
+        glColor3f(0.2f, 0.18f, 0.17f);
+        box_faces(v3(-0.5f, -0.4f, -0.3f), v3(-0.4f, -0.3f, -0.1f));
+        return;
+    }
+    float k = P.shieldAnim * P.shieldAnim * (3 - 2 * P.shieldAnim);
+    /* reperes du viewmodel (decale de +0,2 / -0,19 et reduit de moitie) : leve, la plaque est centree sur le viseur */
+    V3 mn = vlerp(v3(-0.95f, -0.45f, -0.36f), v3(-0.78f, 0.0f, -0.40f), k);
+    V3 mx = vlerp(v3(-0.55f, 0.0f, -0.30f), v3(-0.02f, 0.72f, -0.34f), k);
+    V3 c = vlerp(mn, mx, 0.5f), sz = vsub(mx, mn);
+    float push = P.meleeT > 0 ? 0.25f * sinf(PI * clampf(1 - P.meleeT / SHIELD_BASH_ANIM, 0, 1)) : 0;
+    V3 edge = P.parryWin > 0 ? v3(1, 1, 1) : shield_col(P.shieldGauge);
+    if (P.shieldHitT > 0) edge = vlerp(edge, v3(1, 1, 1), clampf(P.shieldHitT / 0.2f, 0, 1));
+    glPushMatrix();
+    glTranslatef(c.x, c.y, c.z - push);
+    glRotatef(25 * (1 - k), 0, 1, 0);
+    glColor3f(0.2f, 0.18f, 0.17f);                        /* poignee (en bas : ne cache pas le viseur une fois leve) */
+    box_faces(v3(-0.03f, -sz.y * 0.5f + 0.02f, 0.0f), v3(0.03f, -sz.y * 0.5f + 0.1f, 0.12f));
+    shield_plate(sz.x, sz.y, 0.03f, v3(0.55f, 0.6f, 0.68f), k > 0.5f ? 0.3f : 1.0f, edge, P.shieldGauge);
+    glPopMatrix();
+}
+/* --- fin Egide : rendu --- */
+
 static void draw_viewmodel(float aspect) {
     glClear(GL_DEPTH_BUFFER_BIT);
     set_frustum(60, aspect, 0.01f, 10);
@@ -7820,6 +8508,7 @@ static void draw_viewmodel(float aspect) {
     if (P.meleeKind == MK_ANVIL) draw_anvil_vm();
     else if (P.meleeKind == MK_LANCE) draw_lance_vm();    /* Lance : toujours visible */
     else if (P.meleeKind == MK_FLAIL) draw_flail_vm();    /* Fleau : manche toujours visible, tete au repos */
+    else if (P.meleeKind == MK_SHIELD) { }                /* Egide : dessinee apres l'arme (face transparente) */
     else if (P.meleeT > 0) {                              /* coup d'epee : balayage de droite a gauche */
         float k = clampf(1 - P.meleeT / 0.25f, 0, 1), heat = clampf(vlen(P.vel) / 30, 0, 1);
         glPushMatrix();
@@ -7950,6 +8639,7 @@ static void draw_viewmodel(float aspect) {
         glColor3f(1.0f * ready, 0.5f * ready, 0.1f * ready);
         box_faces(v3(-0.058f, 0.015f, -0.3f), v3(0.058f, 0.03f, -0.02f));
     }
+    if (P.meleeKind == MK_SHIELD) { glEnable(GL_LIGHTING); draw_shield_vm(); }   /* Egide : apres l'arme (transparence) */
 }
 
 /* ------------------------------------------------------------------ */
@@ -8531,6 +9221,23 @@ static void draw_remote_players(void) {
                 flail_head_model(v3(0, -0.38f, -0.345f), 0.08f);
             }
             glPopMatrix();
+        } else if ((n->st.pad & 15) == MK_SHIELD) {       /* --- Egide : leve devant le torse (bord = jauge), sinon au flanc --- */
+            V3 pc = v3(c[0] * 0.6f, c[1] * 0.6f, c[2] * 0.6f);
+            if (n->st.pad & ST_SHIELD) {
+                float push = n->st.melee ? 0.25f * sinf(PI * (1 - n->st.melee / 255.0f)) : 0;
+                glPushMatrix();
+                glTranslatef(0, (0.3f + h - 0.25f) * 0.5f, -0.48f - push);
+                shield_plate(0.9f, h - 0.55f, 0.04f, pc, 1, (n->st.flags & NF_PARRY) ? v3(1, 1, 1) : shield_col(n->shieldGauge),
+                             n->shieldGauge);
+                glPopMatrix();
+            } else if (n->shieldBrokenT <= 0) {           /* baisse (brise : rien) */
+                float push = n->st.melee ? 0.5f * sinf(PI * (1 - n->st.melee / 255.0f)) : 0;   /* coup de bouclier */
+                glPushMatrix();
+                glTranslatef(-0.42f, h * 0.5f, -0.05f - push);
+                glRotatef(push > 0 ? 0.0f : 75.0f, 0, 1, 0);
+                shield_plate(0.5f, 0.7f, 0.04f, pc, 1, shield_col(n->shieldGauge), n->shieldGauge);
+                glPopMatrix();
+            }
         } else if (n->st.melee) {                         /* epee en plein balayage */
             float k = 1 - n->st.melee / 255.0f;
             glPushMatrix();
@@ -8972,6 +9679,19 @@ static void draw_hud(void) {
             }
             glEnd();
         }                                                 /* --- fin Fleau --- */
+    } else if (P.meleeKind == MK_SHIELD) {                /* --- Egide : etat, apercu du coup de bouclier, jauge en 4 segments --- */
+        mcd = SHIELD_BASH_CD;
+        if (P.shieldState == SHS_BROKEN) snprintf(buf, sizeof buf, "BRISE %.1f s", fmaxf(P.shieldBrokenT, 0));
+        else if (P.shieldRipT > 0) snprintf(buf, sizeof buf, "ARRACHE");
+        else if (P.shieldState == SHS_UP) snprintf(buf, sizeof buf, "LEVE %d", (int)P.shieldGauge);
+        else snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)((SHIELD_BASH_DMG + SHIELD_BASH_PER_MS * sp3) * pvp), SHIELD_BASH_RANGE);
+        V3 sc = P.shieldState == SHS_BROKEN ? v3(0.5f, 0.2f, 0.2f) : shield_col(P.shieldGauge);
+        for (int s = 0; s < 4; s++) {
+            float fill = clampf((P.shieldGauge - s * 30) / 30, 0, 1);
+            rect(mx + s * 46.0f, by - 100.0f, 42, 7, 0.1f, 0.1f, 0.15f, 0.7f);
+            if (fill > 0) rect(mx + s * 46.0f, by - 100.0f, 42 * fill, 7, sc.x, sc.y, sc.z, P.shieldState == SHS_UP ? 1.0f : 0.75f);
+        }
+        if (P.parryWin > 0 && P.shieldState == SHS_UP) text_c(0, cx, cy + 40, "PARFAIT", 1, 1, 0.85f, 0.9f);
     } else snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(melee_dmg(sp3) * pvp), melee_range(sp3));
     text(1, mx, by - 48.0f, buf, 1, 1 - mk * 0.45f, 1 - mk * 0.85f, 1);
     rect(mx, by - 36.0f, 180, 6, 0.1f, 0.1f, 0.15f, 0.7f);
@@ -9794,6 +10514,24 @@ static const NetEvent *flail_test_last_hit(void) {
     return NULL;
 }
 /* --- fin Fleau : outils des tests --- */
+/* --- Egide : outils des tests --- */
+/* remise a zero : Egide en melee, rail en main (2 munitions), immobile en (-20, 0, 41), vue vers -z */
+static void egide_test_reset(void) {
+    reset_game();
+    hitstop = 0;
+    memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+    memset(DN, 0, sizeof DN);
+    P.meleeKind = MK_SHIELD; P.pos = P.prevPos = v3(-20, 0, 41); P.yaw = 0; P.pitch = 0; P.vel = v3(0, 0, 0); P.grounded = 1;
+    P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2; P.fireCd = 0; P.switchT = 0; shotStreak = 0;
+}
+/* LAN simule (je suis l'hote, 0) : NP[1] en t ; shield = son bouclier leve vers yaw (jauge pleine), sinon Egide baissee */
+static void egide_test_lan(V3 t, int shield, float yaw) {
+    lance_test_lan(t);
+    NP[0].shieldGauge = NP[1].shieldGauge = SHIELD_GAUGE_MAX;
+    NP[1].st.pad = (unsigned char)(MK_SHIELD | (shield ? ST_SHIELD : 0)); NP[1].st.yaw = yaw;
+    NP[1].lastShieldT = shield ? nowT : 0;
+}
+/* --- fin Egide : outils des tests --- */
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
 static void run_tests(const char *path) {
@@ -11568,6 +12306,223 @@ static void run_tests(const char *path) {
     }
     /* --- fin Fleau --- */
 
+    /* --- Egide (bouclier) --- */
+    {
+        double savedNow = nowT;
+        {   /* 1. penalites : au sol a 12 m/s, bouclier leve, 1 s en avancant -> 7 m/s ; ni dash ni slide ; au grappin : aucune */
+            egide_test_reset();
+            P.shieldState = SHS_UP; P.vel = v3(0, 0, -12); act[A_FWD] = 1;
+            for (int i = 0; i < 120; i++) player_tick(TICK, 0, 0);
+            float h = hlen(P.vel);
+            P.dashCharge = 2;
+            player_tick(TICK, 0, 1);
+            float dc = P.dashCharge, hd = hlen(P.vel);
+            act[A_CROUCH] = 1;
+            player_tick(TICK, 0, 0);
+            int sl = P.sliding;
+            act[A_CROUCH] = 0;
+            egide_test_reset();
+            P.shieldState = SHS_UP; P.vel = v3(0, 0, -12); act[A_FWD] = 1;
+            P.hook = HOOK_ATTACHED; P.anchor = P.hookPos = v3(-20, 1.5f, 15); P.ropeLen = 100;
+            hookPressIn = 0; hookHeldIn = 1;
+            for (int i = 0; i < 30; i++) player_tick(TICK, 0, 0);
+            float hh = hlen(P.vel);
+            hookHeldIn = 0; act[A_FWD] = 0;
+            fprintf(f, "egide penalites : vitesse %.2f, dash %.1f (vitesse %.1f), slide %d ; au grappin %.1f (attendu 7.00, 2.0 (7.0), 0 ; > 7)\n",
+                    h, dc, hd, sl, hh);
+        }
+        {   /* 2. air-strafe 0,4 s : vue qui tourne a 2,2 rad/s (comme le test du bhop), puis strafe optimal a chaque tick */
+            float gain[2][2];
+            for (int m = 0; m < 2; m++)
+                for (int s = 0; s < 2; s++) {
+                    egide_test_reset();
+                    P.shieldState = s ? SHS_UP : SHS_DOWN;
+                    P.pos = P.prevPos = v3(-20, 4, 41); P.grounded = 0; P.vel = v3(0, 0, -10); act[A_RIGHT] = 1;
+                    for (int i = 0; i < 48; i++) {
+                        if (!m) P.yaw += 2.2f * TICK;
+                        else {                            /* souhait a l'angle qui maximise le gain : vdot(vel, wish) = cap - a */
+                            float v = hlen(P.vel), a = AIR_ACCEL * (s ? SHIELD_AIR_MULT : 1) * RUN_SPEED * TICK;
+                            float c = clampf(fmaxf(0, AIR_CAP - a) / v, -1, 1), sn = sqrtf(1 - c * c);
+                            V3 vh = v3(P.vel.x / v, 0, P.vel.z / v), w = v3(vh.x * c - vh.z * sn, 0, vh.z * c + vh.x * sn);
+                            P.yaw = atan2f(w.z, w.x);             /* la droite (A_RIGHT) = (cos yaw, 0, sin yaw) */
+                        }
+                        player_tick(TICK, 0, 0);
+                    }
+                    gain[m][s] = hlen(P.vel) - 10;
+                    act[A_RIGHT] = 0;
+                }
+            fprintf(f, "egide air-strafe : vue a 2,2 rad/s gain %.2f / %.2f (rapport %.2f) ; optimal %.2f / %.2f (rapport %.2f) "
+                       "(attendu rapports < 1 ; le plafond AIR_CAP limite l'effet, voir la fiche, question 4)\n",
+                    gain[0][0], gain[0][1], gain[0][1] / fmaxf(gain[0][0], 1e-3f),
+                    gain[1][0], gain[1][1], gain[1][1] / fmaxf(gain[1][0], 1e-3f));
+        }
+        {   /* 3. tireur, cible bouclier leve de face : rail 1 -> jauge 60, rail 2 -> brise, rail 3 -> 60 de degats */
+            egide_test_reset();
+            egide_test_lan(v3(-20, 0, 31), 1, PI);
+            fire_rail(); hitstop = 0;
+            float hp1 = NP[1].hp, g1 = NP[1].shieldGauge;
+            P.ammo[WP_RAIL] = 2; P.fireCd = 0; shotStreak = 0;
+            fire_rail(); hitstop = 0;
+            float g2 = NP[1].shieldGauge, b2 = NP[1].shieldBrokenT;
+            P.ammo[WP_RAIL] = 2; P.fireCd = 0; shotStreak = 0;
+            fire_rail(); hitstop = 0;
+            fprintf(f, "egide de face : PV %.0f jauge %.0f ; jauge %.0f brise %.1f s ; PV %.0f, chaine %d (attendu 100 60 ; 0 3.0 ; 40, 1)\n",
+                    hp1, g1, g2, b2, NP[1].hp, shotStreak);
+        }
+        {   /* 4. de flanc (bouclier tourne de 90 degres) : touche */
+            egide_test_reset();
+            egide_test_lan(v3(-20, 0, 31), 1, PI * 0.5f);
+            fire_rail(); hitstop = 0;
+            fprintf(f, "egide de flanc : PV %.0f, jauge %.0f (attendu 40, 120)\n", NP[1].hp, NP[1].shieldGauge);
+        }
+        {   /* 5. le rail s'arrete sur le bouclier : la cible derriere n'est pas touchee */
+            egide_test_reset();
+            egide_test_lan(v3(-20, 0, 31), 1, PI);
+            NP[2].active = NP[2].alive = 1; NP[2].hp = 100; snprintf(NP[2].name, 16, "Derriere");
+            NP[2].disp = v3(-20, 0, 24); vf(NP[2].st.pos, NP[2].disp);
+            fire_rail(); hitstop = 0;
+            fprintf(f, "egide rail arrete : PV porteur %.0f, PV derriere %.0f (attendu 100, 100)\n", NP[1].hp, NP[2].hp);
+        }
+        {   /* 6. parry parfait (je suis le porteur, levee a l'instant) : le rail de 1 lui revient a 60, jauge intacte */
+            egide_test_reset();
+            egide_test_lan(v3(-20, 0, 31), 0, 0);
+            NP[0].hp = 95;
+            shield_tick(TICK, 1, 1);                       /* levee : fenetre parfaite (baisse depuis 1 s) */
+            host_tick(TICK);
+            NetEvent e = ev_new(EV_HIT);
+            e.from = 1; e.target = 0; e.sub = W_RAIL; e.f[0] = 70; e.eid = 0x02000501;
+            vf(&e.f[1], v3(0, 0, 4));
+            host_event_in(&e);
+            hitstop = 0;
+            fprintf(f, "egide parfait : PV tireur %.0f, PV porteur %.0f, jauge %.0f, parfaits %d (attendu 40, 100, 120, 1)\n",
+                    NP[1].hp, NP[0].hp, NP[0].shieldGauge, shieldPerfects);
+        }
+        {   /* 7. revendication refusee : bouclier baisse depuis 1 s chez l'hote -> degats complets */
+            egide_test_reset();
+            egide_test_lan(v3(-20, 0, 31), 0, 0);
+            P.shieldState = SHS_UP;
+            host_tick(TICK);
+            P.shieldState = SHS_DOWN; nowT += 1;
+            host_tick(TICK);
+            NetEvent e = ev_new(EV_SHIELD);
+            e.from = 1; e.target = 0; e.sub = SHE_CLAIM; e.actor = W_RAIL; e.f[0] = 70; e.eid = 0x02000502;
+            vf(&e.f[1], v3(0, 0, 1)); vf(&e.f[4], v3(0, 0, 4));
+            int den = shieldDenied;
+            host_event_in(&e);
+            fprintf(f, "egide refus : PV %.0f, refus +%d (attendu 40, +1)\n", NP[0].hp, shieldDenied - den);
+        }
+        {   /* 8. conversion : EV_HIT du rail, mon bouclier leve de face hors fenetre parfaite -> bloque par l'hote */
+            egide_test_reset();
+            egide_test_lan(v3(-20, 0, 31), 0, 0);
+            P.shieldState = SHS_UP; P.shieldDownT = 0;
+            host_tick(TICK);
+            NetEvent e = ev_new(EV_HIT);
+            e.from = 1; e.target = 0; e.sub = W_RAIL; e.f[0] = 70; e.eid = 0x02000503;
+            vf(&e.f[1], v3(0, 0, 4));
+            int cv = shieldConverted;
+            host_event_in(&e);
+            hitstop = 0;
+            fprintf(f, "egide conversion : PV %.0f, jauge hote %.0f / locale %.0f, conversions +%d (attendu 100, 60 / 60, +1)\n",
+                    NP[0].hp, NP[0].shieldGauge, P.shieldGauge, shieldConverted - cv);
+        }
+        {   /* 9. souffle a 1 m : de face 50 % bloques ; de dos et sous les pieds rien */
+            float loss[3];
+            static const float cz[3] = { 32, 30, 31 }, cy[3] = { 0.9f, 0.9f, -0.2f };
+            for (int s = 0; s < 3; s++) {
+                egide_test_reset();
+                egide_test_lan(v3(-20, 0, 31), 1, PI);
+                explode(v3(-20, cy[s], cz[s]), ROCKET_RADIUS, ROCKET_DMG, 1);
+                hitstop = 0;
+                loss[s] = 100 - NP[1].hp;
+            }
+            fprintf(f, "egide souffle : perte de face %.1f, de dos %.1f, sous les pieds %.1f (attendu ~33, 60, 60)\n", loss[0], loss[1], loss[2]);
+        }
+        {   /* 10. coup de bouclier (tap) : cible a 1,5 m, v_rel 10 -> (25 + 30) x 0,7 = 38,5 ; dash +1 */
+            egide_test_reset();
+            egide_test_lan(v3(-20, 0, 39), 0, 0);
+            NP[1].st.pad = 0;
+            P.vel = v3(0, 0, -10); P.dashCharge = 0.5f;
+            shield_tick(TICK, 1, 0);                       /* appui et relache dans le meme tick */
+            hitstop = 0;
+            fprintf(f, "egide coup de bouclier : PV %.1f, dash %.1f, recharge %.2f (attendu 61.5, 1.5, 0.50)\n",
+                    NP[1].hp, P.dashCharge, P.meleeCd);
+        }
+        lance_test_lan(v3(-20, 0, 31));                    /* fin du LAN simule */
+        memset(NP, 0, sizeof NP);
+        {   /* 11. regeneration (solo) : jauge vide -> brise 3 s, puis 0 -> 120 en 4 s */
+            egide_test_reset();
+            dmMode = 0;
+            P.shieldState = SHS_UP; P.shieldGauge = 0;
+            shield_tick(TICK, 0, 1);
+            int st0 = P.shieldState;
+            for (int i = 0; i < 360; i++) shield_tick(TICK, 0, 0);
+            int st3 = P.shieldState; float g3 = P.shieldGauge;
+            for (int i = 0; i < 480; i++) shield_tick(TICK, 0, 0);
+            fprintf(f, "egide regeneration : etat %d ; a 3 s etat %d jauge %.1f ; a 7 s jauge %.1f (attendu 2 ; 0, < 0.5 ; 120.0)\n",
+                    st0, st3, g3, P.shieldGauge);
+        }
+        {   /* 12. orbe (solo) : de face sur le bouclier (12 sur la jauge), de dos dans le corps */
+            float hp[2], g[2];
+            for (int s = 0; s < 2; s++) {
+                egide_test_reset();
+                dmMode = 0;
+                P.shieldState = SHS_UP; P.yaw = s ? PI : 0;
+                spawn_proj(PR_ORB, v3(-20, 1.7f, 37), v3(0, 0, 16));
+                for (int i = 0; i < 60; i++) proj_tick(TICK);
+                hp[s] = P.hp; g[s] = P.shieldGauge;
+            }
+            fprintf(f, "egide orbe : de face PV %.0f jauge %.0f ; de dos PV %.0f (attendu 100 108 ; 88)\n", hp[0], g[0], hp[1]);
+        }
+        {   /* 13. arrache par le grappin adverse : levee impossible pendant 1 s */
+            egide_test_reset();
+            egide_test_lan(v3(-20, 0, 31), 0, 0);
+            NetEvent e = ev_new(EV_SHIELD);
+            e.from = 1; e.target = 0; e.sub = SHE_RIP; e.eid = 0x02000504;
+            host_event_in(&e);
+            shield_tick(TICK, 1, 1);
+            int up0 = P.shieldState == SHS_UP;
+            for (int i = 0; i < 120; i++) shield_tick(TICK, 0, 0);
+            shield_tick(TICK, 1, 1);
+            fprintf(f, "egide arrache : levee pendant %d, apres 1 s %d, arrache chez l'hote %.2f s (attendu 0, 1, 1.00)\n",
+                    up0, P.shieldState == SHS_UP, NP[0].shieldRipT);
+        }
+        {   /* 14. Tesla de face : une tranche de 0,2 s (2 impulsions, 9,8) bloquee, pas de chaine vers la cible voisine */
+            egide_test_reset();
+            P.meleeKind = MK_SWORD;
+            egide_test_lan(v3(-20, 0, 31), 1, PI);
+            NP[2].active = NP[2].alive = 1; NP[2].hp = 100; snprintf(NP[2].name, 16, "Voisin");
+            NP[2].disp = v3(-17, 0, 31); vf(NP[2].st.pos, NP[2].disp);
+            P.loadout[0] = WP_TESLA; P.loadout[1] = WP_RAIL; P.weapon = WP_TESLA; P.ammo[WP_TESLA] = 60;
+            for (int i = 0; i < 25; i++) { NP[1].lastShieldT = nowT; tesla_test_run(1, i < 24); }   /* ST_SHIELD recu a chaque tick */
+            fprintf(f, "egide tesla : PV porteur %.0f, jauge %.1f, PV voisin %.0f (attendu 100, 110.2, 100)\n",
+                    NP[1].hp, NP[1].shieldGauge, NP[2].hp);
+        }
+        {   /* 15. belier : bouclier leve au grappin sur un joueur -> coup de bouclier gratuit (W_SHIELD), rebond */
+            egide_test_reset();
+            egide_test_lan(v3(-20, 0, 33), 0, 0);
+            NP[1].st.pad = 0;
+            P.shieldState = SHS_UP; P.shieldDownT = 0;
+            P.hook = HOOK_ATTACHED; P.hookPlayer = 2; P.anchor = P.hookPos = np_center(1); P.ropeLen = 10;
+            hookHeldIn = 1;
+            int h0 = hitCount[W_SHIELD], i = 0;
+            for (; i < 120 && P.hook == HOOK_ATTACHED; i++) {
+                nowT += TICK;
+                player_tick(TICK, 0, 0);
+                shield_tick(TICK, 0, 1);
+            }
+            hookHeldIn = 0; hitstop = 0;
+            fprintf(f, "egide belier : touches bouclier +%d, PV cible %.0f, grappin %d, vy %.1f (attendu +1, < 70, 0, > 5)\n",
+                    hitCount[W_SHIELD] - h0, NP[1].hp, P.hook, P.vel.y);
+        }
+        lance_test_lan(v3(-20, 0, 31));
+        memset(NP, 0, sizeof NP);
+        memset(act, 0, sizeof act);
+        reset_game();
+        dmMode = 0; hitstop = 0;
+        nowT = savedNow;
+    }
+    /* --- fin Egide --- */
+
     /* reglages : sauvegarde puis rechargement de velocity.ini */
     {
         int savedBot = botMode;
@@ -11837,6 +12792,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             NP[2].st.pad = MK_FLAIL; NP[2].st.melee = 0;
             P.meleeKind = MK_FLAIL;                       /* et mon fleau au repos */
         }
+        if (strstr(shotPath, "egide")) {                  /* Egide : Rival bouclier leve vers moi (jauge entamee), Ninja baisse */
+            NP[1].st.pad = MK_SHIELD | ST_SHIELD; NP[1].st.melee = 0; NP[1].st.flags = 0; NP[1].shieldGauge = 50;
+            NP[1].st.yaw = atan2f(6.5f, -7.0f);
+            NP[2].st.pad = MK_SHIELD; NP[2].shieldGauge = 120;
+            P.meleeKind = MK_SHIELD; P.shieldState = SHS_UP; P.shieldAnim = 1; P.shieldGauge = 80;   /* et le mien leve */
+        }
         P.pos = P.prevPos = v3(0, 0, 24); P.yaw = -0.1f; P.pitch = 0.08f; P.hp = 100;
         if (strstr(shotPath, "eventail")) {               /* Rival a l'Eventail : son tir recu (traceurs recalcules) */
             NP[1].st.weapon = WP_SHOTGUN; NP[1].st.flags = 0; NP[1].st.melee = 0;
@@ -11932,6 +12893,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             flail_swing();
             P.flailT = FLAIL_ANIM * (strstr(shotPath, "vide") ? 0.5f : 0.7f);
             hitstop = 0; impactT = 0; P.meleeT = 0;
+        }
+        if (strstr(shotPath, "egide")) {                  /* Egide : bouclier baisse ("bas") ou leve, jauge a 45 (fissures) */
+            hook_release(0);
+            memset(PA, 0, sizeof PA); memset(BM, 0, sizeof BM);
+            P.meleeKind = MK_SHIELD; P.meleeT = 0; P.weapon = WP_RAIL; P.switchT = 0; shotStreak = 0;
+            P.shieldGauge = 45;
+            if (!strstr(shotPath, "bas")) { P.shieldState = SHS_UP; P.shieldAnim = 1; }
         }
         if (strstr(shotPath, "scie")) {                   /* Scie : la mienne plantee, une adverse en vol (2 renvois) */
             hook_release(0);
@@ -12102,6 +13070,12 @@ done:
                    flailRelSum / (flailTargets ? flailTargets : 1), flailCoins, flailCoinHits, flailCombos);
         if (netMode == NET_HOST && (hitCount[W_FLAIL] || flailHostParried))
             netlog("fleau (arbitre) : touches %d, fleaux pares %d", hitCount[W_FLAIL], flailHostParried);
+        if (shieldRaises || shieldBashes)                 /* --- Egide --- */
+            netlog("egide (moi) : %d levees (%.1f s leve au total), %d coups de bouclier (%d touchent), %d beliers",
+                   shieldRaises, shieldUpSum, shieldBashes, shieldBashHits, shieldRams);
+        if (netMode == NET_HOST && (shieldBlocks || shieldDenied || shieldPerfects || hitCount[W_SHIELD]))
+            netlog("egide (arbitre) : blocages %d, casses %d, parfaits %d, refus %d, conversions %d, arrachages %d, touches %d",
+                   shieldBlocks, shieldBreaks, shieldPerfects, shieldDenied, shieldConverted, shieldRips, hitCount[W_SHIELD]);
     }
     net_shutdown();
     if (botLog) fclose(botLog);
