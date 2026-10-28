@@ -104,9 +104,6 @@ static V3 rand_dir(void) {
 #define GRAPPLE_STRIKE_PER_MS  3.0f   /* ...plus 3 par m/s de vitesse d'impact */
 
 #define RAIL_CD        0.85f
-#define RAIL_AMMO_START 5       /* munitions du railgun au (re)spawn */
-#define RAIL_AMMO_MAX   10
-#define PICKUP_AMMO     3       /* une cellule = 3 tirs */
 #define PICKUP_RESPAWN  12.0f
 
 /* Pieces facon Marksman (Ultrakill) : on lance une piece, un tir de rail qui la touche ricoche
@@ -148,6 +145,42 @@ static V3 rand_dir(void) {
 #define STREAK_MAX        8
 #define STREAK_DMG        0.15f   /* +15% de degats par touche */
 #define STREAK_RATE       0.05f   /* +5% de cadence par touche */
+
+/* Loadout : 1 arme de melee + 2 armes a distance. Aucune recharge passive : chaque arme a une jauge
+ * de points, remplie par la melee et les cellules ; jauge pleine = 1 munition. */
+enum { MK_SWORD, MK_ANVIL, MK_LANCE, MK_FLAIL, MK_FIST, MK_SHIELD, MK_COUNT };
+enum { WP_RAIL, WP_ROCKET, WP_SHOTGUN, WP_KINETIC, WP_SAW, WP_MINE, WP_TESLA, WP_COUNT };
+enum { AP_HIT, AP_KILL, AP_PARRY, AP_CELL, AP_LOST, AP_COUNT };   /* origine des points (journal) */
+#define PTS_MELEE_KILL     100     /* kill en melee, toutes armes */
+#define PTS_PARRY          50      /* parry reussi, une fois par coup */
+#define PTS_LANCE_JOUST    100     /* joute de la Lance (l'estoc = meleePts) */
+#define PTS_FIST_COMBO_MAX 50      /* Poings : au plus 50 points par combo */
+#define PTS_SHIELD_PERFECT 100     /* Egide : parry parfait (remplace PTS_PARRY) */
+#define PICKUP_SMALL       100     /* petite cellule : points a chaque arme du loadout */
+#define PICKUP_BIG         150     /* grande cellule (endroits exposes) */
+#define REFUND_UNDO_T      0.5f    /* coup declare pare par l'hote : on rend ses points s'il a moins de 0,5 s */
+#define SWITCH_TIME        0.22f   /* changement d'arme */
+#define DRYFIRE_CD         0.35f   /* delai entre deux clics a sec */
+#define ST_MASK            0xF0    /* NetPState.pad : bits 4-7 = etats d'arme, bits 0-3 = meleeKind */
+
+/* points de melee par coup qui touche (Lance : estoc ; Egide : coup de bouclier) */
+static const int meleePts[MK_COUNT] = { 50, 75, 50, 35, 25, 50 };
+
+/* gauge : points pour gagner 1 munition (0 = pas de jauge). Tesla : points par unite de batterie */
+typedef struct { const char *name; int start, max; float gauge; float r, g, b; } AmmoDef;
+static const AmmoDef ammoDef[WP_COUNT] = {
+    { "RAILGUN",   2,  2,   250, 0.40f, 0.85f, 1.00f },   /* tres haut degats : 2 tirs, tres lent */
+    { "ROQUETTES", 4,  8,   50,  1.00f, 0.60f, 0.20f },   /* 1 coup d'epee = 1 roquette */
+    { "EVENTAIL",  3,  6,   100, 1.00f, 0.85f, 0.35f },
+    { "ELAN",      3,  6,   80,  0.55f, 1.00f, 0.55f },
+    { "SCIE",      1,  1,   0,   0.90f, 0.90f, 0.95f },   /* objet unique : aucune jauge */
+    { "VENTOUSE",  1,  3,   150, 1.00f, 0.35f, 0.35f },
+    { "TESLA",     60, 100, 2.5f, 0.60f, 0.70f, 1.00f },  /* 1 point = 0,4 de batterie */
+};
+static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
+static unsigned char wpReady[WP_COUNT] = { 1, 1, 0, 0, 0, 0, 0 };   /* chaque arme codee passe sa case a 1 */
+static unsigned char mkReady[MK_COUNT] = { 1, 0, 0, 0, 0, 0 };
+static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, 0.5f, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
 /* Audio : mini mixeur waveOut + sons synthetises                      */
@@ -411,16 +444,18 @@ static int near2(float x, float z, float cx, float cz, float r) {
 #define MAP_S 1.4f
 static float ms(float v) { return v * MAP_S; }
 
-/* recharges du railgun posees sur la carte ; t > 0 : deja ramassee, revient dans t secondes */
+/* cellules de munitions posees sur la carte ; t > 0 : deja ramassee, revient dans t secondes.
+ * pts : points donnes a la jauge de chacune des deux armes du loadout (PICKUP_SMALL ou PICKUP_BIG) */
 #define MAXPICK 16
-typedef struct { V3 pos; float t, pending; } Pickup;
+typedef struct { V3 pos; float t, pending; int pts; } Pickup;
 static Pickup PU[MAXPICK];
 static int npu;
 
-static void addpickup(float x, float y, float z) {
+static void addpickup(float x, float y, float z, int pts) {
     if (npu >= MAXPICK) return;
     PU[npu].pos = v3(ms(x), y + 0.9f, ms(z));
     PU[npu].t = PU[npu].pending = 0;
+    PU[npu].pts = pts;
     npu++;
 }
 
@@ -465,13 +500,14 @@ static void build_level(void) {
     addpad(ms(9), ms(16), v3(-ms(1.8f), 20, ms(13)));
     addpad(-ms(9), -ms(16), v3(ms(1.8f), 20, -ms(13)));
 
-    addpickup(0, 13, 0);                                            /* recharges : sommet de la tour, */
-    addpickup(36, 7, 0); addpickup(-36, 7, 0);                      /* plateformes hautes, */
-    addpickup(0, 7, 36); addpickup(0, 7, -36);
+    /* cellules : grandes aux endroits exposes (tour, perchoirs), petites ailleurs ; l'ordre fixe les index reseau */
+    addpickup(0, 13, 0, PICKUP_BIG);                                /* sommet de la tour, */
+    addpickup(36, 7, 0, PICKUP_SMALL); addpickup(-36, 7, 0, PICKUP_SMALL);   /* plateformes hautes, */
+    addpickup(0, 7, 36, PICKUP_SMALL); addpickup(0, 7, -36, PICKUP_SMALL);
     for (int sx = -1; sx <= 1; sx += 2)
         for (int sz = -1; sz <= 1; sz += 2) {
-            addpickup(sx * 36.0f, 13, sz * 36.0f);                  /* perchoirs */
-            addpickup(sx * 46.0f, 0, sz * 46.0f);                   /* et coins au sol */
+            addpickup(sx * 36.0f, 13, sz * 36.0f, PICKUP_BIG);      /* perchoirs */
+            addpickup(sx * 46.0f, 0, sz * 46.0f, PICKUP_SMALL);     /* et coins au sol */
         }
 
     rng = 777;                                                      /* blocs de couverture */
@@ -577,9 +613,15 @@ typedef struct {
     float meleeCd, meleeT;
     float parryWin;                                       /* temps restant de la fenetre de parry */
     int swingLanded;                                      /* ce coup a-t-il touche ou pare quelque chose ? */
-    int railAmmo;
     float coins;                                          /* charges de pieces (0..COIN_MAX) */
     int hookPlayer;                                       /* 0 = aucun, sinon id du joueur accroche + 1 (LAN) */
+    int loadout[2];                                       /* deux WP_* distincts ; weapon = WP_* en main */
+    int meleeKind;                                        /* MK_* */
+    int ammo[WP_COUNT];                                   /* munitions (batterie Tesla 0..100) */
+    float ammoGauge[WP_COUNT];                            /* points vers la prochaine munition, 0 au maximum */
+    int swingHitPts, swingParryPts;                       /* ce coup a deja donne ses points de touche / de parry */
+    float undoPts[2];                                     /* points de la derniere touche par emplacement (annulables) */
+    double undoT;
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -629,7 +671,8 @@ static char msg[64], popText[32];
 
 enum { NET_OFF, NET_HOST, NET_CLIENT };
 enum { APP_MENU, APP_JOIN, APP_GAME };
-enum { W_RAIL, W_ROCKET, W_MELEE, W_HOOK, W_PARRY, W_SELF, W_COIN };
+enum { W_RAIL, W_ROCKET, W_MELEE, W_HOOK, W_PARRY, W_SELF, W_COIN, W_SLAM, W_LANCE, W_FLAIL, W_FIST,
+       W_SHIELD, W_SHOTGUN, W_KINETIC, W_SAW, W_MINE, W_TESLA, W_COUNT };
 enum { NF_CROUCH = 1, NF_SLIDE = 2, NF_WALLRUN = 4, NF_HOOK = 8, NF_DEAD = 16, NF_PARRY = 32 };
 
 typedef struct {                  /* ce que chaque joueur envoie de lui-meme */
@@ -1322,6 +1365,78 @@ static void parry_feedback(V3 where) {
     play(S_PARRY, 0.9f, 1.0f);
 }
 
+/* ------------------------------------------------------------------ */
+/* Loadout et munitions a jauge                                        */
+/* ------------------------------------------------------------------ */
+/* le choix vit hors de P (reset_game remet P a zero) et ne s'applique qu'au (re)spawn */
+static int wantLoadout[2] = { WP_RAIL, WP_ROCKET }, wantMelee = MK_SWORD;
+static int loadoutOpen;                                   /* ecran LOADOUT ouvert */
+static float ammoGainT, dryHintT, dryT;                   /* HUD : "+50" vert, panneau de melee qui clignote ; temps a sec */
+static int ammoGainSlot, ammoGainPts;                     /* emplacement qui clignote (2 = les deux) */
+static float apStat[AP_COUNT];                            /* journal : points par origine */
+static int cellsTaken;
+
+static int cur_slot(void) { return P.weapon == P.loadout[1]; }
+static int other_wp(void) { return P.loadout[cur_slot() ^ 1]; }
+static int wp_has_ammo(int w) { return P.ammo[w] > 0; }
+static int is_melee_w(int w) { return w == W_MELEE || (w >= W_SLAM && w <= W_SHIELD); }
+static int is_parryable_w(int w) { return is_melee_w(w) || w == W_HOOK; }
+static int wp_full(int w) { return ammoDef[w].gauge <= 0 || P.ammo[w] >= ammoDef[w].max; }
+static int loadout_full(void) { return wp_full(P.loadout[0]) && wp_full(P.loadout[1]); }
+static float gauge_frac(int w) {                          /* HUD : 0..1, pleine au maximum */
+    if (ammoDef[w].gauge <= 0) return 0;
+    return P.ammo[w] >= ammoDef[w].max ? 1 : P.ammoGauge[w] / ammoDef[w].gauge;
+}
+
+/* ajoute des points a la jauge de w ; chaque jauge pleine donne 1 munition. Renvoie les points inutilises */
+static float gauge_add(int w, float pts) {
+    const AmmoDef *d = &ammoDef[w];
+    if (d->gauge <= 0 || P.ammo[w] >= d->max) return pts;
+    P.ammoGauge[w] += pts;
+    while (P.ammoGauge[w] >= d->gauge) {
+        P.ammoGauge[w] -= d->gauge;
+        if (++P.ammo[w] >= d->max) { float rest = P.ammoGauge[w]; P.ammoGauge[w] = 0; return rest; }
+    }
+    return 0;
+}
+static void gauge_remove(int w, float pts) {              /* annulation : peut reprendre une munition */
+    if (ammoDef[w].gauge <= 0 || pts <= 0) return;
+    P.ammoGauge[w] -= pts;
+    while (P.ammoGauge[w] < 0 && P.ammo[w] > 0) { P.ammo[w]--; P.ammoGauge[w] += ammoDef[w].gauge; }
+    if (P.ammoGauge[w] < 0) P.ammoGauge[w] = 0;
+}
+
+/* points de melee : l'arme en main d'abord, le surplus a l'autre arme du loadout */
+static void ammo_points(float pts, int src) {
+    if (P.dead || pts <= 0) return;
+    int s = cur_slot(), a0 = P.ammo[P.loadout[0]], a1 = P.ammo[P.loadout[1]];
+    float rest = gauge_add(P.loadout[s], pts), lost = gauge_add(P.loadout[s ^ 1], rest);
+    apStat[src] += pts - lost; apStat[AP_LOST] += lost;
+    if (src == AP_HIT) {                                  /* memorise pour une annulation eventuelle */
+        P.undoPts[s] = pts - rest; P.undoPts[s ^ 1] = rest - lost; P.undoT = nowT;
+    }
+    if (pts - lost <= 0) return;
+    ammoGainT = 0.8f; ammoGainPts = (int)pts; ammoGainSlot = pts - rest > 0 ? s : s ^ 1;
+    if (P.ammo[P.loadout[0]] > a0 || P.ammo[P.loadout[1]] > a1) play(S_PAD, 0.5f, 3.0f);   /* munition gagnee */
+    else play(S_PAD, 0.35f, 2.4f);
+}
+static void melee_start_swing(void) { P.swingHitPts = P.swingParryPts = 0; }
+static void melee_hit_points(int pts) { if (!P.swingHitPts) { P.swingHitPts = 1; ammo_points((float)pts, AP_HIT); } }
+static void melee_parry_points(int pts) { if (!P.swingParryPts) { P.swingParryPts = 1; ammo_points((float)pts, AP_PARRY); } }
+
+static int loadout_valid(const int *l, int mk) {
+    return l[0] >= 0 && l[0] < WP_COUNT && l[1] >= 0 && l[1] < WP_COUNT && l[0] != l[1] &&
+           wpReady[l[0]] && wpReady[l[1]] && mk >= 0 && mk < MK_COUNT && mkReady[mk];
+}
+static void loadout_apply(void) {                         /* (re)spawn : munitions de depart, jauges vides, arme 1 en main */
+    if (!loadout_valid(wantLoadout, wantMelee)) { wantLoadout[0] = WP_RAIL; wantLoadout[1] = WP_ROCKET; wantMelee = MK_SWORD; }
+    P.loadout[0] = wantLoadout[0]; P.loadout[1] = wantLoadout[1]; P.meleeKind = wantMelee;
+    for (int w = 0; w < WP_COUNT; w++) { P.ammo[w] = ammoDef[w].start; P.ammoGauge[w] = 0; }
+    P.weapon = P.loadout[0]; P.switchT = 0; P.undoPts[0] = P.undoPts[1] = 0;
+    melee_start_swing();
+}
+static void weapon_select(int w) { if (w != P.weapon) { P.weapon = w; P.switchT = SWITCH_TIME; } }
+
 /* Coup de corps a corps (clic droit / V). Degats et portee montent avec la vitesse RELATIVE
  * entre le joueur et la cible : foncer sur quelqu'un qui fonce sur toi frappe tres fort.
  * Il pare aussi : orbes ennemies et roquettes adverses sont renvoyees, les kamikazes explosent. */
@@ -1361,6 +1476,7 @@ static int try_parry(void) {
         parried++;
         P.swingLanded = 1;
         parry_feedback(p->pos);
+        melee_parry_points(PTS_PARRY);                    /* une fois par coup, meme si plusieurs renvois */
         if (p->parries > 1) { snprintf(popText, sizeof popText, "PARRY x%d", p->parries); popT = 1.0f; }
     }
     return parried;
@@ -1372,6 +1488,7 @@ static void melee(void) {
     V3 r = v3(cosf(P.yaw), 0, sinf(P.yaw)), u = vcross(r, f);
     int hits = 0, parried = 0;
 
+    melee_start_swing();
     parried = try_parry();
 
     for (int i = 0; i < MAXE; i++) {
@@ -1386,10 +1503,14 @@ static void melee(void) {
             V3 at = e->pos;
             damage_enemy(i, 9999, vmul(f, 10));
             parry_feedback(at);
+            melee_parry_points(PTS_PARRY);                /* compte comme un parry, sans bonus de kill */
             parried++;
         } else {
             damage_enemy(i, melee_dmg(rel), vmul(f, 8 + rel * 0.5f));
-            if (!e->alive) P.hp = fminf(100, P.hp + 15);  /* bonus de soin des kills au corps a corps */
+            if (!e->alive) {
+                P.hp = fminf(100, P.hp + 15);             /* bonus de soin des kills au corps a corps */
+                ammo_points(PTS_MELEE_KILL, AP_KILL);
+            }
         }
         hits++;
     }
@@ -1418,6 +1539,7 @@ static void melee(void) {
     P.swingLanded = hits || parried;
     play(S_DASH, 0.4f, 1.8f);
     if (hits) {
+        melee_hit_points(meleePts[P.meleeKind]);          /* la melee remplit les jauges des armes a distance */
         P.dashCharge = fminf(2, P.dashCharge + 1);        /* toucher au corps a corps rend un dash */
         if (sp > 18) impact_frame(vadd(eye, vmul(f, 2)), 0.05f);
         hitMarker = 0.18f;
@@ -1528,7 +1650,7 @@ static int ricochet(int ci, float dmg, int depth) {
 }
 
 static void fire_rail(void) {
-    P.railAmmo--;
+    if (P.ammo[WP_RAIL] > 0) P.ammo[WP_RAIL]--;
     V3 eye = eye_pos(), d = view_dir(), n;
     float tw = ray_world(eye, d, 400, &n), mult = streak_mult();
     int hit = 0, coinHit = -1;
@@ -1593,6 +1715,7 @@ static Proj *spawn_proj(int kind, V3 pos, V3 vel) {
 static unsigned int rocketCounter;
 
 static void fire_rocket(void) {
+    if (P.ammo[WP_ROCKET] > 0) P.ammo[WP_ROCKET]--;      /* limitees : un rocket jump coute une roquette */
     Proj *p = spawn_proj(PR_ROCKET, eye_pos(), vmul(view_dir(), ROCKET_SPEED));
     if (p && dmMode) {
         p->netId = ((unsigned int)(myId + 1) << 24) | (++rocketCounter & 0xFFFFFF);
@@ -1777,7 +1900,7 @@ static void reset_game(void) {
     memset(&P, 0, sizeof P);
     P.pos = P.prevPos = v3(0, 0, 24);
     P.hp = 100; P.dashCharge = 2; P.airJumps = 1; P.eyeH = EYE_STAND; P.fovCur = fovBase;
-    P.railAmmo = RAIL_AMMO_START;
+    loadout_apply();
     P.coins = COIN_MAX;
     memset(CO, 0, sizeof CO);
     for (int i = 0; i < npu; i++) PU[i].t = PU[i].pending = 0;
@@ -1797,7 +1920,7 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   4
+#define NET_VER   5
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
@@ -1933,7 +2056,7 @@ static void pack_state(NetPState *s) {
                                (P.parryWin > 0 ? NF_PARRY : 0));
     s->weapon = (unsigned char)P.weapon;
     s->melee = (unsigned char)(clampf(P.meleeT / 0.25f, 0, 1) * 255);
-    s->pad = 0;
+    s->pad = (unsigned char)(P.meleeKind & 0x0F);      /* bits 4-7 : etats d'arme (ST_*), ajoutes par chaque arme */
 }
 
 static void find_local_ip(void) {
@@ -2042,10 +2165,13 @@ static void pickup_taken(int i, int who) {
     PU[i].t = PICKUP_RESPAWN;
     netlog("recharge : %s prend la cellule %d", pname(who), i);
     burst(PU[i].pos, v3(0.4f, 0.9f, 1.0f), 25, 5, 0.5f, 0.12f);
-    if (who == myId) {
-        P.railAmmo = P.railAmmo + PICKUP_AMMO > RAIL_AMMO_MAX ? RAIL_AMMO_MAX : P.railAmmo + PICKUP_AMMO;
-        snprintf(popText, sizeof popText, "+%d RAIL", PICKUP_AMMO);
+    if (who == myId) {                                    /* chaque arme du loadout recoit les points de la cellule */
+        float pts = (float)PU[i].pts;
+        for (int s = 0; s < 2; s++) { float lost = gauge_add(P.loadout[s], pts); apStat[AP_CELL] += pts - lost; apStat[AP_LOST] += lost; }
+        snprintf(popText, sizeof popText, "CELLULE +%d", PU[i].pts);
         popT = 1.0f;
+        ammoGainT = 0.8f; ammoGainPts = PU[i].pts; ammoGainSlot = 2;
+        cellsTaken++;
         play(S_PAD, 0.5f, 1.8f);
     } else {
         play(S_PAD, 0.3f * atten(PU[i].pos), 1.8f);
@@ -2120,6 +2246,7 @@ static void apply_event(const NetEvent *ev) {
             killerOfMe = k;
         }
         if (k == myId && v != myId) {
+            if (is_melee_w(ev->sub)) ammo_points(PTS_MELEE_KILL, AP_KILL);   /* kill en melee : +100 points */
             play(S_KILL, 0.7f, 1.0f);
             combo++; comboT = 3; hitMarker = 0.25f;
             snprintf(popText, sizeof popText, "ELIMINE %s", pname(v));
@@ -2136,7 +2263,7 @@ static void apply_event(const NetEvent *ev) {
             P.pos = P.prevPos = a; P.vel = v3(0, 0, 0);
             P.dead = 0; P.hp = 100; P.hook = HOOK_NONE; P.hookEnemy = P.hookPlayer = 0;
             P.dashCharge = 2; P.airJumps = 1; P.crouch = P.sliding = P.wallrun = 0;
-            P.railAmmo = RAIL_AMMO_START;
+            loadout_apply();
             P.coins = COIN_MAX;
             P.yaw = atan2f(-a.x, a.z); P.pitch = 0; P.eyeH = EYE_STAND; P.roll = 0;
             shotStreak = 0;
@@ -2187,10 +2314,15 @@ static void apply_event(const NetEvent *ev) {
         play(S_PUNCH, 0.8f * atten(mid), 1.6f);
         if (def == myId) {
             parry_feedback(mid);
+            ammo_points(PTS_PARRY, AP_PARRY);             /* decision de l'hote : souvent apres la fin du coup */
             snprintf(popText, sizeof popText, clash ? "CHOC D'EPEES !" : "PARRY !");
             if (clash) P.vel = vadd(P.vel, vadd(vmul(vnorm(vsub(pd, pa)), 8), v3(0, 3, 0)));
         }
         if (att == myId) {                                /* l'attaquant est repousse, epee bloquee */
+            if (is_melee_w((int)ev->f[0]) && nowT - P.undoT < REFUND_UNDO_T) {   /* le coup ne compte plus : on rend ses points */
+                gauge_remove(P.loadout[0], P.undoPts[0]); gauge_remove(P.loadout[1], P.undoPts[1]);
+                P.undoPts[0] = P.undoPts[1] = 0;
+            }
             P.vel = vadd(P.vel, vadd(vmul(vnorm(vsub(pa, pd)), clash ? 8.0f : 11.0f), v3(0, 3, 0)));
             P.grounded = 0;
             P.meleeCd = fmaxf(P.meleeCd, clash ? MELEE_CD : MELEE_PARRIED_CD);
@@ -2237,7 +2369,7 @@ static void host_kill(int killer, int victim, int kind) {
     if (killer != victim && killer < MAXP && NP[killer].kills >= FRAG_LIMIT) host_end_match(killer);
 }
 
-static int hitCount[7], parryCount;                       /* statistiques pour le journal du bot */
+static int hitCount[W_COUNT], parryCount;                       /* statistiques pour le journal du bot */
 static double lifeFirstHitT[MAXP], ttkSum;                /* temps pour tuer : du premier degat (a pleine vie) au kill */
 static int ttkN, oneShots, meleeParries, clashes;
 
@@ -2255,14 +2387,16 @@ static int host_handle(const NetEvent *ev) {
     if (ev->kind == EV_PICKUP) { host_take_pickup(ev->sub, ev->from); return 0; }
     if (ev->kind == EV_HIT) {
         int v = ev->target;
-        hitCount[ev->sub % 7]++;
+        if (ev->sub >= W_COUNT) return 1;
+        hitCount[ev->sub]++;
         netlog("degats : %s -> %s, %.0f (arme %d), PV avant %.0f", pname(ev->from), pname(v), ev->f[0], ev->sub, NP[v < MAXP ? v : 0].hp);
         if (v >= MAXP || !NP[v].active || !NP[v].alive || matchOver) return 1;
-        /* epee ou impact de grappin pendant la fenetre de parry de la victime : c'est pare */
-        if ((ev->sub == W_MELEE || ev->sub == W_HOOK) && nowT - NP[v].lastParryT < MELEE_PARRY_GRACE) {
-            int clash = ev->sub == W_MELEE && ev->from < MAXP && nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
+        /* coup de melee ou impact de grappin pendant la fenetre de parry de la victime : c'est pare */
+        if (is_parryable_w(ev->sub) && nowT - NP[v].lastParryT < MELEE_PARRY_GRACE) {
+            int clash = is_melee_w(ev->sub) && ev->from < MAXP && nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
             NetEvent e = ev_new(EV_MELEE_PARRY);
             e.actor = (unsigned char)v; e.target = ev->from; e.sub = (unsigned char)clash;
+            e.f[0] = (float)ev->sub;                      /* arme paree : l'attaquant rend ses points de melee */
             NP[v].hp = fminf(100, NP[v].hp + PARRY_HEAL);
             if (clash) clashes++; else meleeParries++;
             net_emit(&e);
@@ -3226,13 +3360,13 @@ static void bot_think(float dt) {
         aimYaw = (searchYaw += dt * 0.6f);                /* personne : on tourne en cherchant */
     }
 
-    /* presque plus de munitions rail et personne de proche : on va chercher une recharge */
+    /* une arme a sec et personne de proche : on va chercher une cellule (les grandes d'abord) */
     int seek = -1;
-    if (P.railAmmo < 2 && (best < 0 || bd > 25)) {
+    if ((!wp_has_ammo(P.loadout[0]) || !wp_has_ammo(P.loadout[1])) && (best < 0 || bd > 25)) {
         float sd = 90;
         for (int i = 0; i < npu; i++) {
             if (PU[i].t > 0 || PU[i].pos.y - P.pos.y > 3) continue;   /* seulement celles a portee de saut */
-            float d = vlen(vsub(PU[i].pos, P.pos));
+            float d = vlen(vsub(PU[i].pos, P.pos)) - (PU[i].pts == PICKUP_BIG ? 8 : 0);
             if (d < sd) { sd = d; seek = i; }
         }
     }
@@ -3325,10 +3459,15 @@ static void bot_think(float dt) {
         botNextHook = botT + 1.5f;
     }
 
-    /* le bot client alterne rail / roquettes (roquettes seulement de pres), et roquettes si le rail est vide */
-    P.weapon = (P.railAmmo <= 0 || (bd < 20 && ((int)(botT / 5 + botMode)) % 2)) ? 1 : 0;
-    /* contre-jeu : une piece adverse a portee ? on tire dedans pour la retourner contre son lanceur */
-    if (P.weapon == 0 && P.railAmmo > 0 && P.fireCd <= 0 && P.switchT <= 0) {
+    /* le bot alterne ses deux armes (la 2e seulement de pres), et prend l'autre si l'une est a sec */
+    int la = P.loadout[0], lb = P.loadout[1];
+    int pref = (bd < 20 && ((int)(botT / 5 + botMode)) % 2) ? lb : la;
+    if (!wp_has_ammo(pref)) pref = pref == la ? lb : la;
+    P.weapon = pref;
+    int dry = !wp_has_ammo(la) && !wp_has_ammo(lb);    /* a sec : il ne tire plus et va au contact (la melee recharge) */
+    /* contre-jeu : une piece adverse a portee ? on tire dedans pour la retourner contre son lanceur
+     * (seulement avec les 2 rails : on ne gaspille pas le dernier) */
+    if (P.weapon == WP_RAIL && P.ammo[WP_RAIL] >= 2 && P.fireCd <= 0 && P.switchT <= 0) {
         for (int i = 0; i < MAXCOIN; i++) {
             if (!CO[i].alive || CO[i].owner == myId || CO[i].life > 3.7f) continue;   /* reaction de 0,3 s */
             if (CO[i].netId % 2) continue;                /* le bot ne contre qu'une piece sur deux */
@@ -3345,7 +3484,7 @@ static void bot_think(float dt) {
 
     static int coinPlan;                                  /* a pleine vitesse : piece, puis tir dedans */
     static float coinPlanT, nextCoin;
-    if (!coinPlan && see && bd > 10 && bd < 55 && hs > 11 && P.coins >= 1 && P.railAmmo > 0 && P.weapon == 0 &&
+    if (!coinPlan && see && bd > 10 && bd < 55 && hs > 11 && P.coins >= 1 && P.ammo[WP_RAIL] > 0 && P.weapon == WP_RAIL &&
         P.fireCd < 0.3f && botT > nextCoin) {
         P.yaw = aimYaw; P.pitch = aimPitch;
         botPress[A_COIN] = 1;
@@ -3363,18 +3502,18 @@ static void bot_think(float dt) {
             coinPlan = 0;
         }
     }
-    if (!coinPlan && see && seeT > 0.3f && bd < 55 && P.fireCd <= 0 && P.switchT <= 0) {   /* recale la visee pour tirer */
+    if (!dry && !coinPlan && see && seeT > 0.3f && bd < 55 && P.fireCd <= 0 && P.switchT <= 0) {   /* recale la visee pour tirer */
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1;
     }
 
-    if (best >= 0 && bd > 14 && P.dashCharge >= 1 && botT > botNextDash) {    /* dash vers la cible */
+    if (best >= 0 && bd > (dry ? 4 : 14) && P.dashCharge >= 1 && botT > botNextDash) {    /* dash vers la cible */
         memset(botHeld, 0, sizeof botHeld);
         botHeld[A_FWD] = botHeld[A_JUMP] = 1;
         P.yaw = aimYaw;
         botPress[A_DASH] = 1;
         botNextDash = botT + 1.2f;
     }
-    if (see && bd > 10 && bd < GRAPPLE_RANGE && P.hook == HOOK_NONE && P.hookCd <= 0 && botT > botNextHook) {
+    if (see && bd > (dry ? 6 : 10) && bd < GRAPPLE_RANGE && P.hook == HOOK_NONE && P.hookCd <= 0 && botT > botNextHook) {
         P.yaw = aimYaw;                                   /* grappin sur la cible pour fondre dessus */
         botPress[A_HOOK] = 1;
         botNextHook = botT + 2.5f;
@@ -3400,7 +3539,7 @@ static void pickup_tick(float dt) {
     for (int i = 0; i < npu; i++) {
         if (netMode != NET_CLIENT && PU[i].t > 0) PU[i].t -= dt;
         PU[i].pending -= dt;
-        if (P.dead || PU[i].t > 0 || P.railAmmo >= RAIL_AMMO_MAX || PU[i].pending > 0) continue;
+        if (P.dead || PU[i].t > 0 || loadout_full() || PU[i].pending > 0) continue;
         if (vlen(vsub(pcenter(), PU[i].pos)) > 1.7f) continue;
         if (!dmMode) pickup_taken(i, myId);
         else if (netMode == NET_HOST) host_take_pickup(i, myId);
@@ -3442,6 +3581,31 @@ static void spec_tick(float dt) {
     fx_tick(dt);
 }
 
+/* tir de l'arme en main (chaque fire_* retire lui-meme sa munition) */
+static void fire_weapon(void) {
+    switch (P.weapon) {
+    case WP_RAIL:   fire_rail(); break;
+    case WP_ROCKET: fire_rocket(); break;
+    }
+}
+/* chargeur vide : clic sec, puis l'autre arme si elle peut tirer, sinon on pousse au contact */
+static void dry_fire(void) {
+    play(S_HIT, 0.5f, 0.45f);
+    P.fireCd = DRYFIRE_CD;
+    int o = other_wp();
+    if (wp_has_ammo(o)) { snprintf(popText, sizeof popText, "%s A SEC", ammoDef[P.weapon].name); weapon_select(o); }
+    else { snprintf(popText, sizeof popText, "A SEC : VA AU CONTACT !"); dryHintT = 2; }
+    popT = 1.0f;
+}
+static void cfg_save(void);
+static void loadout_cycle(int slot) {                     /* ecran de mort : arme prete suivante, echange si doublon */
+    int w = wantLoadout[slot];
+    do w = (w + 1) % WP_COUNT; while (!wpReady[w]);
+    if (w == wantLoadout[slot ^ 1]) wantLoadout[slot ^ 1] = wantLoadout[slot];
+    wantLoadout[slot] = w;
+    cfg_save();
+}
+
 static void game_tick(float dt) {
     /* hitstop : le monde se fige un instant sur les gros coups (les entrees attendent) */
     if (hitstop > 0) { hitstop -= dt; P.prevPos = P.pos; return; }
@@ -3460,11 +3624,17 @@ static void game_tick(float dt) {
         if (!dmMode && (rp || (lmbp && P.deathT > 1.0f))) { reset_game(); return; }
     } else gameTime += dt;
 
-    int nw = P.weapon;
-    if (w1) nw = 0;
-    if (w2) nw = 1;
-    if (swap) nw = 1 - P.weapon;
-    if (nw != P.weapon && !P.dead) { P.weapon = nw; P.switchT = 0.22f; }
+    if (P.dead) {                                         /* ecran de mort : les touches d'arme changent le loadout */
+        if (w1) loadout_cycle(0);
+        if (w2) loadout_cycle(1);
+        if (meleePress) { do wantMelee = (wantMelee + 1) % MK_COUNT; while (!mkReady[wantMelee]); cfg_save(); }
+    } else {
+        int nw = P.weapon;
+        if (w1) nw = P.loadout[0];
+        if (w2) nw = P.loadout[1];
+        if (swap) nw = other_wp();
+        weapon_select(nw);
+    }
 
     player_tick(dt, jp, dp);
 
@@ -3484,15 +3654,10 @@ static void game_tick(float dt) {
     P.fireCd -= dt; P.switchT -= dt;
     P.recoil *= expf(-dt * 9);
     if (!P.dead && (act[A_FIRE] || lmbp) && P.fireCd <= 0 && P.switchT <= 0) {
-        if (P.weapon == 1) fire_rocket();
-        else if (P.railAmmo > 0) fire_rail();
-        else {                                            /* chargeur vide : clic, et on passe aux roquettes */
-            play(S_HIT, 0.5f, 0.45f);
-            snprintf(popText, sizeof popText, "PLUS DE MUNITIONS RAIL");
-            popT = 1.0f;
-            P.weapon = 1; P.switchT = 0.22f; P.fireCd = 0.2f;
-        }
+        if (wp_has_ammo(P.weapon)) fire_weapon(); else dry_fire();
     }
+    if (!P.dead && !wp_has_ammo(P.loadout[0]) && !wp_has_ammo(P.loadout[1])) dryT += dt;
+    ammoGainT -= dt; dryHintT -= dt;
 
     if (!dmMode) enemy_tick(dt);
     proj_tick(dt);
@@ -3781,13 +3946,13 @@ static void draw_viewmodel(float aspect) {
         glPopMatrix();
     }
     if (muzzleT > 0) {                                    /* flash du canon */
-        float tip = P.weapon == 0 ? -0.64f : -0.6f, ms2 = 0.12f + 0.25f * (muzzleT / 0.08f);
+        float tip = P.weapon == WP_RAIL ? -0.64f : -0.6f, ms2 = 0.12f + 0.25f * (muzzleT / 0.08f);
         glDisable(GL_LIGHTING);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE);
         glDepthMask(GL_FALSE);
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, texDot);
-        if (P.weapon == 0) glColor4f(0.5f, 0.9f, 1.0f, 1); else glColor4f(1.0f, 0.6f, 0.2f, 1);
+        glColor4f(0.5f + 0.5f * ammoDef[P.weapon].r, 0.5f + 0.5f * ammoDef[P.weapon].g, 0.5f + 0.5f * ammoDef[P.weapon].b, 1);
         glBegin(GL_QUADS);
         glTexCoord2f(0, 0); glVertex3f(-ms2, -ms2, tip); glTexCoord2f(1, 0); glVertex3f(ms2, -ms2, tip);
         glTexCoord2f(1, 1); glVertex3f(ms2, ms2, tip); glTexCoord2f(0, 1); glVertex3f(-ms2, ms2, tip);
@@ -3798,7 +3963,7 @@ static void draw_viewmodel(float aspect) {
         glEnable(GL_LIGHTING);
     }
     float ready = P.fireCd <= 0 ? 1.0f : 0.35f;
-    if (P.weapon == 0) {
+    if (P.weapon == WP_RAIL) {
         glColor3f(0.25f, 0.27f, 0.32f);
         box_faces(v3(-0.05f, -0.06f, -0.42f), v3(0.05f, 0.04f, 0.12f));
         glColor3f(0.18f, 0.19f, 0.22f);
@@ -3859,6 +4024,7 @@ static void cfg_save(void) {
             myName, sens, fovBase, masterVol, invertY, showFps, fullscreen);
     fprintf(f, "impact_frames=%d" "\n" "screen_fx=%d" "\n", impactFrames, screenFx);
     fprintf(f, "online=%d" "\n", onlineOn);
+    fprintf(f, "loadout=%d,%d" "\n" "melee=%d" "\n", wantLoadout[0], wantLoadout[1], wantMelee);
     if (strcmp(lobbyAddr, LOBBY_DEFAULT)) fprintf(f, "lobby=%s" "\n", lobbyAddr);   /* le defaut peut changer avec une mise a jour */
     for (int a = 0; a < A_COUNT; a++) fprintf(f, "bind_%s=%d,%d" "\n", actId[a], binds[a][0], binds[a][1]);
     fclose(f);
@@ -3885,6 +4051,8 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
         else if (!strcmp(line, "online")) onlineOn = atoi(v) != 0;
         else if (!strcmp(line, "lobby") && v[0]) snprintf(lobbyAddr, sizeof lobbyAddr, "%s", v);
         else if (!strcmp(line, "fullscreen")) fs = atoi(v) != 0;
+        else if (!strcmp(line, "loadout")) sscanf(v, "%d,%d", &wantLoadout[0], &wantLoadout[1]);
+        else if (!strcmp(line, "melee")) wantMelee = atoi(v);
         else if (!strncmp(line, "bind_", 5))
             for (int a = 0; a < A_COUNT; a++)
                 if (!strcmp(line + 5, actId[a])) {
@@ -3896,6 +4064,7 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
                 }
     }
     fclose(f);
+    if (!loadout_valid(wantLoadout, wantMelee)) { wantLoadout[0] = WP_RAIL; wantLoadout[1] = WP_ROCKET; wantMelee = MK_SWORD; }
     return fs;
 }
 
@@ -3919,7 +4088,9 @@ static const float pcol[MAXP][3] = {
     { 0.3f, 0.8f, 1.0f }, { 1.0f, 0.45f, 0.3f }, { 0.5f, 1.0f, 0.4f }, { 1.0f, 0.85f, 0.3f },
     { 0.8f, 0.45f, 1.0f }, { 1.0f, 0.4f, 0.7f }, { 0.4f, 1.0f, 0.9f }, { 0.9f, 0.9f, 0.9f },
 };
-static const char *weaponNames[] = { "RAIL", "ROQUETTE", "EPEE", "GRAPPIN", "PARRY", "SOLO", "RICOCHET" };
+static const char *weaponNames[W_COUNT] = { "RAIL", "ROQUETTE", "EPEE", "GRAPPIN", "PARRY", "SOLO", "RICOCHET",
+                                            "ENCLUME", "LANCE", "FLEAU", "POINGS", "EGIDE", "EVENTAIL", "ELAN",
+                                            "SCIE", "VENTOUSE", "TESLA" };
 
 static int button(float x, float y, float w, float h, const char *label) {
     int hover = uiMX >= x && uiMX < x + w && uiMY >= y && uiMY < y + h;
@@ -4041,24 +4212,85 @@ static void draw_status(float x, float y) {
     if (netStatus[0] && nowT - netStatusT < 8) text(0, x, y, netStatus, 1, 0.65f, 0.3f, 1);
 }
 
+/* bouton de choix : cadre de la couleur de l'arme si elle est choisie, grise si l'arme n'est pas encore codee */
+static int sel_button(float x, float y, float w, float h, const char *label, int chosen, int ready, V3 col) {
+    int hover = ready && uiMX >= x && uiMX < x + w && uiMY >= y && uiMY < y + h;
+    if (chosen) rect(x - 3, y - 3, w + 6, h + 6, col.x, col.y, col.z, 1);
+    rect(x, y, w, h, hover ? 0.2f : 0.08f, hover ? 0.42f : 0.1f, hover ? 0.62f : 0.18f, 0.95f);
+    float k = ready ? 1.0f : 0.4f;
+    text_c(0, x + w * 0.5f, y + h * 0.5f + 5, ready ? label : "BIENTOT", k, k, k, 1);
+    if (hover && uiClick) { uiClick = 0; play(S_HIT, 0.4f, 1.5f); return 1; }
+    return 0;
+}
+
+static void loadout_pick(int slot, int w) {               /* choisir pour un emplacement l'arme de l'autre les echange */
+    if (w == wantLoadout[slot ^ 1]) wantLoadout[slot ^ 1] = wantLoadout[slot];
+    wantLoadout[slot] = w;
+}
+
+static void draw_loadout(float cx, float cy) {
+    char buf[128];
+    rect(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.85f);
+    text_c(2, cx, cy - 300, "LOADOUT", 0.5f, 0.9f, 1.0f, 1);
+    text_c(0, cx, cy - 266, "1 arme de melee + 2 armes a distance ; la melee remplit les jauges de munitions",
+           0.7f, 0.75f, 0.85f, 1);
+    float bw = winW < 1300 ? 118.0f : 150.0f, step = bw + 10, x0 = cx - step * WP_COUNT * 0.5f;
+    text(1, x0, cy - 215, "MELEE", 0.5f, 0.9f, 1.0f, 1);
+    for (int m = 0; m < MK_COUNT; m++)
+        if (sel_button(x0 + m * step, cy - 195, bw, 44, meleeNames[m], m == wantMelee, mkReady[m], v3(1, 0.85f, 0.4f)))
+            wantMelee = m;
+    for (int s = 0; s < 2; s++) {
+        float y = cy - 70 + s * 112.0f;
+        text(1, x0, y - 22, s ? "ARME 2" : "ARME 1", 0.5f, 0.9f, 1.0f, 1);
+        for (int w = 0; w < WP_COUNT; w++)
+            if (sel_button(x0 + w * step, y, bw, 44, ammoDef[w].name, w == wantLoadout[s], wpReady[w],
+                           v3(ammoDef[w].r, ammoDef[w].g, ammoDef[w].b)))
+                loadout_pick(s, w);
+    }
+    for (int s = 0; s < 2; s++) {
+        const AmmoDef *d = &ammoDef[wantLoadout[s]];
+        if (d->gauge <= 0) snprintf(buf, sizeof buf, "%s : objet unique, a recuperer", d->name);
+        else snprintf(buf, sizeof buf, "%s : %d au spawn, %d max, %.0f pts par tir (%.1f coups d'epee)", d->name, d->start,
+                      d->max, d->gauge, d->gauge / meleePts[MK_SWORD]);
+        text(0, x0, cy + 120 + s * 24.0f, buf, 0.8f, 0.82f, 0.9f, 1);
+    }
+    snprintf(buf, sizeof buf, "%s : %d pts par coup qui touche, +%d par kill, +%d par parry ; cellules : %d ou %d pts",
+             meleeNames[wantMelee], meleePts[wantMelee], PTS_MELEE_KILL, PTS_PARRY, PICKUP_SMALL, PICKUP_BIG);
+    text(0, x0, cy + 168, buf, 1, 0.85f, 0.5f, 1);
+    if (appState == APP_GAME) text(0, x0, cy + 194, "pris en compte au prochain respawn", 0.6f, 0.6f, 0.7f, 1);
+    if (button(cx - 105, cy + 220, 210, 50, "VALIDER")) { loadoutOpen = 0; cfg_save(); }
+    if (uiClick) uiClick = 0;
+}
+
+/* ecran de mort : les touches d'arme et de melee font defiler le loadout du prochain respawn */
+static void draw_death_loadout(float cx, float y) {
+    char buf[160];
+    snprintf(buf, sizeof buf, "[%s] < %s >    [%s] < %s >    [%s] < %s >", bind_text(A_WEAP1), ammoDef[wantLoadout[0]].name,
+             bind_text(A_WEAP2), ammoDef[wantLoadout[1]].name, bind_text(A_MELEE), meleeNames[wantMelee]);
+    text_c(0, cx, y, "LOADOUT DU PROCHAIN RESPAWN", 0.5f, 0.9f, 1.0f, 1);
+    text_c(1, cx, y + 32, buf, 1, 0.9f, 0.6f, 1);
+}
+
 static void draw_main_menu(float cx, float cy) {
     rect(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.7f);
     text_c(2, cx, cy - 300, "V E L O C I T Y", 0.5f, 0.9f, 1.0f, 1);
     text_c(0, cx, cy - 268, "movement shooter en C", 0.7f, 0.7f, 0.8f, 1);
     float bx = cx - 620, bw = 420, y = cy - 200;
     field(bx, y, bw, 48, "PSEUDO", myName, 1);
-    y += 80;
-    if (button(bx, y, bw, 54, "SOLO  -  VAGUES")) pendingAction = ACT_SOLO;
-    y += 68;
-    if (button(bx, y, bw, 54, "PARTIE RAPIDE  -  EN LIGNE")) pendingAction = ACT_QUICK;
-    y += 68;
-    if (button(bx, y, bw, 54, "HEBERGER UNE PARTIE")) pendingAction = ACT_HOST;
-    y += 68;
-    if (button(bx, y, bw, 54, "REJOINDRE / REGARDER")) pendingAction = ACT_BROWSE;
-    y += 68;
-    if (button(bx, y, bw, 54, "PARAMETRES")) settingsOpen = 1;
-    y += 68;
-    if (button(bx, y, bw, 54, "QUITTER")) pendingAction = ACT_QUIT;
+    y += 76;
+    if (button(bx, y, bw, 52, "SOLO  -  VAGUES")) pendingAction = ACT_SOLO;
+    y += 62;
+    if (button(bx, y, bw, 52, "PARTIE RAPIDE  -  EN LIGNE")) pendingAction = ACT_QUICK;
+    y += 62;
+    if (button(bx, y, bw, 52, "HEBERGER UNE PARTIE")) pendingAction = ACT_HOST;
+    y += 62;
+    if (button(bx, y, bw, 52, "REJOINDRE / REGARDER")) pendingAction = ACT_BROWSE;
+    y += 62;
+    if (button(bx, y, bw, 52, "LOADOUT")) loadoutOpen = 1;
+    y += 62;
+    if (button(bx, y, bw, 52, "PARAMETRES")) settingsOpen = 1;
+    y += 62;
+    if (button(bx, y, bw, 52, "QUITTER")) pendingAction = ACT_QUIT;
     draw_status(bx, y + 90);
     draw_controls(cx - 130, cy - 200);
     if (uiClick) { uiClick = 0; uiFocus = 0; }
@@ -4119,6 +4351,8 @@ static void draw_pause(float cx, float cy) {
     }
     if (button(bx, y, bw, 54, "REPRENDRE")) pendingAction = ACT_RESUME;
     y += 68;
+    if (button(bx, y, bw, 54, "LOADOUT")) loadoutOpen = 1;
+    y += 68;
     if (!dmMode) {
         if (button(bx, y, bw, 54, "RECOMMENCER")) pendingAction = ACT_RESTART;
         y += 68;
@@ -4162,7 +4396,7 @@ static void draw_killfeed(void) {
         if (f->t <= 0) continue;
         if (f->info) snprintf(buf, sizeof buf, "%s %s", pname(f->victim), f->info == 1 ? "a rejoint" : "a quitte");
         else if (f->killer == f->victim) snprintf(buf, sizeof buf, "%s s'est fait sauter", pname(f->victim));
-        else snprintf(buf, sizeof buf, "%s  [%s]  %s", pname(f->killer), weaponNames[f->kind % 7], pname(f->victim));
+        else snprintf(buf, sizeof buf, "%s  [%s]  %s", pname(f->killer), weaponNames[f->kind % W_COUNT], pname(f->victim));
         int mine = f->killer == myId || f->victim == myId;
         text(0, winW - 30.0f - fontW[0] * (float)strlen(buf), 64 + k * 26.0f, buf, 1, mine ? 0.85f : 1, mine ? 0.4f : 1,
              clampf(f->t, 0, 1));
@@ -4212,7 +4446,7 @@ static void draw_remote_players(void) {
         glPushMatrix();
         glTranslatef(0.42f, h - 0.6f, -0.1f);
         glRotatef(n->st.pitch * 180 / PI, 1, 0, 0);
-        if (n->st.weapon == 0) glColor3f(0.3f, 0.8f, 1.0f); else glColor3f(0.9f, 0.5f, 0.15f);
+        { const AmmoDef *wd = &ammoDef[n->st.weapon < WP_COUNT ? n->st.weapon : WP_RAIL]; glColor3f(wd->r * 0.9f, wd->g * 0.9f, wd->b * 0.9f); }
         box_faces(v3(-0.06f, -0.06f, -0.7f), v3(0.06f, 0.06f, 0.05f));
         glPopMatrix();
         if (n->st.melee) {                                /* epee en plein balayage */
@@ -4300,6 +4534,7 @@ static void draw_hud(void) {
 
     if (appState != APP_GAME) {
         if (settingsOpen && appState == APP_MENU) draw_settings(cx, cy);
+        else if (loadoutOpen && appState == APP_MENU) draw_loadout(cx, cy);
         else if (appState == APP_MENU) draw_main_menu(cx, cy);
         else draw_join_menu(cx, cy);
         glDisable(GL_BLEND);
@@ -4310,7 +4545,7 @@ static void draw_hud(void) {
     if (spectating) {
         draw_spec_hud(cx, cy);
         if (!captured && !shotMode && !botMode) {
-            if (settingsOpen) draw_settings(cx, cy); else draw_pause(cx, cy);
+            if (settingsOpen) draw_settings(cx, cy); else if (loadoutOpen) draw_loadout(cx, cy); else draw_pause(cx, cy);
         }
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
@@ -4443,7 +4678,13 @@ static void draw_hud(void) {
     int compact = winW < 1300;
     float by = compact ? winH - 90.0f : (float)winH;
     float sp3 = melee_preview(&aimed), mk = clampf(sp3 / 30, 0, 1), mx = compact ? 30 : cx - 330;
-    text(0, mx, by - 78.0f, aimed ? "EPEE (vs cible)" : "EPEE", 0.75f, 0.75f, 0.85f, 0.9f);
+    {
+        char mt[64];
+        int blink = dryHintT > 0 && fmodf(dryHintT, 0.4f) < 0.2f;   /* a sec : le panneau de melee clignote */
+        if (dryHintT > 0) snprintf(mt, sizeof mt, "A SEC : MELEE = MUNITIONS");
+        else snprintf(mt, sizeof mt, "%s%s  +%d pts", meleeNames[P.meleeKind], aimed ? " (vs cible)" : "", meleePts[P.meleeKind]);
+        text(0, mx, by - 78.0f, mt, blink ? 1.0f : 0.75f, blink ? 0.6f : 0.75f, blink ? 0.2f : 0.85f, 0.9f);
+    }
     float pvp = dmMode ? PVP_SCALE : 1.0f;
     snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(melee_dmg(sp3) * pvp), melee_range(sp3));
     text(1, mx, by - 48.0f, buf, 1, 1 - mk * 0.45f, 1 - mk * 0.85f, 1);
@@ -4476,14 +4717,26 @@ static void draw_hud(void) {
 
     /* arme */
     char wnBuf[32];
-    if (P.weapon == 0) snprintf(wnBuf, sizeof wnBuf, "RAILGUN %d/%d", P.railAmmo, RAIL_AMMO_MAX);
-    else snprintf(wnBuf, sizeof wnBuf, "ROQUETTES  (rail %d)", P.railAmmo);
+    const AmmoDef *ad = &ammoDef[P.weapon];
+    if (P.weapon == WP_TESLA) snprintf(wnBuf, sizeof wnBuf, "TESLA %d%%", P.ammo[WP_TESLA]);
+    else snprintf(wnBuf, sizeof wnBuf, "%s %d/%d", ad->name, P.ammo[P.weapon], ad->max);
     const char *wn = wnBuf;
-    float cdMax = P.weapon == 0 ? RAIL_CD : ROCKET_CD;
-    text(1, winW - 30.0f - fontW[1] * (float)strlen(wn), winH - 60.0f, wn, P.weapon == 0 ? 0.4f : 1.0f,
-         P.weapon == 0 ? 0.85f : 0.6f, P.weapon == 0 ? 1.0f : 0.2f, 1);
+    int dryW = !wp_has_ammo(P.weapon);
+    text(1, winW - 30.0f - fontW[1] * (float)strlen(wn), winH - 60.0f, wn, dryW ? 1.0f : ad->r, dryW ? 0.3f : ad->g,
+         dryW ? 0.3f : ad->b, 1);
     rect(winW - 230.0f, winH - 40.0f, 200, 8, 0.1f, 0.1f, 0.15f, 0.7f);
-    rect(winW - 230.0f, winH - 40.0f, 200 * clampf(1 - P.fireCd / cdMax, 0, 1), 8, 1, 1, 1, 0.8f);
+    rect(winW - 230.0f, winH - 40.0f, 200 * clampf(1 - P.fireCd / wpCd[P.weapon], 0, 1), 8, 1, 1, 1, 0.8f);
+    if (ad->gauge > 0) {                                  /* jauge : la melee et les cellules la remplissent */
+        float gf = P.weapon == WP_TESLA ? P.ammo[WP_TESLA] / 100.0f : gauge_frac(P.weapon);
+        int gain = ammoGainT > 0 && (ammoGainSlot == 2 || ammoGainSlot == cur_slot());
+        rect(winW - 230.0f, winH - 28.0f, 200, 5, 0.1f, 0.1f, 0.15f, 0.7f);
+        rect(winW - 230.0f, winH - 28.0f, 200 * gf, 5, gain ? 1 : ad->r, gain ? 1 : ad->g, gain ? 1 : ad->b,
+             wp_full(P.weapon) ? 0.45f : 0.95f);
+        if (gain) {
+            snprintf(buf, sizeof buf, "+%d", ammoGainPts);
+            text(0, winW - 236.0f - fontW[0] * (float)strlen(buf), winH - 20.0f, buf, 0.4f, 1, 0.4f, clampf(ammoGainT / 0.3f, 0, 1));
+        }
+    }
     for (int i = 0; i < COIN_MAX; i++) {                 /* pieces disponibles */
         float fill = clampf(P.coins - i, 0, 1), x = winW - 30.0f - (COIN_MAX - i) * 20.0f, y = winH - 96.0f;
         rect(x, y, 14, 14, 0.15f, 0.12f, 0.05f, 0.7f);
@@ -4507,10 +4760,26 @@ static void draw_hud(void) {
                 break;
             }
     }
-    char hintBuf[96];
-    snprintf(hintBuf, sizeof hintBuf, "[%s] rail  [%s] roquettes", bind_text(A_WEAP1), bind_text(A_WEAP2));
-    const char *hint = hintBuf;
-    text(0, winW - 30.0f - fontW[0] * (float)strlen(hint), winH - 14.0f, hint, 0.6f, 0.6f, 0.7f, 0.8f);
+    {                                                     /* emplacements : [touche] ARME munitions, l'actif en blanc */
+        char sb[2][48];
+        for (int s = 0; s < 2; s++)
+            snprintf(sb[s], sizeof sb[s], "[%s] %s %d", bind_text(s ? A_WEAP2 : A_WEAP1), ammoDef[P.loadout[s]].name,
+                     P.ammo[P.loadout[s]]);
+        float x = winW - 30.0f - fontW[0] * (float)(strlen(sb[0]) + strlen(sb[1]) + 3);
+        for (int s = 0; s < 2; s++) {
+            int w = P.loadout[s], act0 = w == P.weapon, emp = !wp_has_ammo(w);
+            float k = act0 ? 1.0f : 0.55f;
+            text(0, x, winH - 13.0f, sb[s], emp ? 1.0f : k, emp ? 0.35f : k, emp ? 0.35f : k * 1.05f, 0.9f);
+            float gw = fontW[0] * (float)strlen(sb[s]), gf = w == WP_TESLA ? P.ammo[w] / 100.0f : gauge_frac(w);
+            if (ammoDef[w].gauge > 0) {
+                rect(x, winH - 5.0f, gw, 3, 0.1f, 0.1f, 0.15f, 0.7f);
+                rect(x, winH - 5.0f, gw * gf, 3, ammoDef[w].r, ammoDef[w].g, ammoDef[w].b, 0.9f);
+            }
+            x += gw + fontW[0] * 3;
+        }
+        if (wantLoadout[0] != P.loadout[0] || wantLoadout[1] != P.loadout[1] || wantMelee != P.meleeKind)
+            text(0, winW - 30.0f - fontW[0] * 32, winH - 120.0f, "nouveau loadout au prochain respawn", 0.6f, 0.6f, 0.65f, 0.8f);
+    }
 
     /* infos de partie */
     if (dmMode) {
@@ -4560,6 +4829,7 @@ static void draw_hud(void) {
         text_c(2, cx, cy - 40, buf, 1, 0.35f, 0.3f, 1);
         snprintf(buf, sizeof buf, "respawn dans %.1f s", fmaxf(0, RESPAWN_TIME - P.deathT));
         if (killerOfMe >= 0) text_c(1, cx, cy + 10, buf, 0.9f, 0.9f, 0.9f, 1);
+        draw_death_loadout(cx, cy + 60);
     } else if (dmMode && bound_held(A_SCORES)) {
         draw_scoreboard(cx, cy);
     } else if (P.dead) {
@@ -4570,10 +4840,11 @@ static void draw_hud(void) {
         snprintf(buf, sizeof buf, "record %d", bestScore);
         text_c(0, cx, cy + 44, buf, 0.8f, 0.8f, 0.9f, 1);
         if (P.deathT > 1.0f) text_c(1, cx, cy + 100, "[R] ou clic pour recommencer", 0.9f, 0.9f, 0.9f, 1);
+        draw_death_loadout(cx, cy + 150);
     }
 
     if (!captured && !shotMode && !botMode) {
-        if (settingsOpen) draw_settings(cx, cy); else draw_pause(cx, cy);
+        if (settingsOpen) draw_settings(cx, cy); else if (loadoutOpen) draw_loadout(cx, cy); else draw_pause(cx, cy);
     }
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -4699,14 +4970,17 @@ static void render(float alpha, float frameDt) {
         box_faces(v3(-0.16f, -0.16f, -0.025f), v3(0.16f, 0.16f, 0.025f));
         glPopMatrix();
     }
-    for (int i = 0; i < npu; i++) {                      /* cellules de recharge du railgun */
+    for (int i = 0; i < npu; i++) {                      /* cellules de munitions : les grandes sont plus grosses et violettes */
         if (PU[i].t > 0) continue;
+        int big = PU[i].pts >= PICKUP_BIG;
+        float k = big ? 1.4f : 1.0f;
         glPushMatrix();
         glTranslatef(PU[i].pos.x, PU[i].pos.y + 0.15f * sinf(gameTime * 3 + i), PU[i].pos.z);
         glRotatef(gameTime * 90 + i * 40, 0, 1, 0);
-        glColor3f(0.75f, 0.95f, 1.0f);
+        glScalef(k, k, k);
+        glColor3f(big ? 0.9f : 0.75f, big ? 0.8f : 0.95f, 1.0f);
         box_faces(v3(-0.22f, -0.35f, -0.22f), v3(0.22f, 0.35f, 0.22f));
-        glColor3f(0.2f, 0.6f, 1.0f);
+        if (big) glColor3f(0.75f, 0.45f, 1.0f); else glColor3f(0.2f, 0.6f, 1.0f);
         box_edges(v3(-0.26f, -0.4f, -0.26f), v3(0.26f, 0.4f, 0.26f));
         glPopMatrix();
     }
@@ -4768,8 +5042,9 @@ static void render(float alpha, float frameDt) {
     }
     for (int i = 0; i < npu; i++) {
         if (PU[i].t > 0) continue;
-        glColor4f(0.3f, 0.8f, 1.0f, 0.55f + 0.2f * sinf(gameTime * 5 + i));
-        billboard(PU[i].pos, 1.3f);
+        int big = PU[i].pts >= PICKUP_BIG;
+        glColor4f(big ? 0.75f : 0.3f, big ? 0.45f : 0.8f, 1.0f, 0.55f + 0.2f * sinf(gameTime * 5 + i));
+        billboard(PU[i].pos, big ? 1.9f : 1.3f);
     }
     float pulse = 0.5f + 0.5f * sinf(gameTime * 4);
     for (int i = 0; i < nb; i++) {
@@ -4874,6 +5149,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             if (sc == SC_ESC) {
                 if (uiFocus) uiFocus = 0;
                 else if (settingsOpen) { settingsOpen = 0; cfg_save(); }
+                else if (loadoutOpen) { loadoutOpen = 0; cfg_save(); }
                 else if (appState == APP_JOIN) pendingAction = ACT_BACK;
                 else set_capture(0);
             }
@@ -5080,21 +5356,61 @@ static void run_tests(const char *path) {
     fprintf(f, "chaine : degats %.0f / %.0f / %.0f, chaine=%d puis apres un rate=%d (attendu degats croissants, 3 puis 0)\n",
             dmgSeen[0], dmgSeen[1], dmgSeen[2], before, shotStreak);
 
-    /* recharges du railgun : ramassage, plafond, reapparition */
+    /* loadout et munitions a jauge : spawn, conversion des points, surplus, maximum */
     reset_game();
     {
-        int cell = 6;                                      /* une cellule au sol, dans un coin */
-        P.railAmmo = 1;
+        int spawnOk = P.ammo[WP_RAIL] == 2 && P.ammo[WP_ROCKET] == 4 && P.ammoGauge[WP_RAIL] == 0 &&
+                      P.weapon == WP_RAIL && P.meleeKind == MK_SWORD;
+        P.weapon = WP_ROCKET; P.ammo[WP_ROCKET] = 0;
+        ammo_points(50, AP_HIT);
+        int conv1 = P.ammo[WP_ROCKET]; float g1 = P.ammoGauge[WP_ROCKET];
+        ammo_points(70, AP_HIT);
+        int conv2 = P.ammo[WP_ROCKET]; float g2 = P.ammoGauge[WP_ROCKET];
+        P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2; P.ammo[WP_ROCKET] = 4; P.ammoGauge[WP_ROCKET] = 0;
+        ammo_points(100, AP_HIT);                          /* rail plein : tout part aux roquettes */
+        int spill = P.ammo[WP_ROCKET];
+        P.weapon = WP_ROCKET; P.ammo[WP_ROCKET] = 7; P.ammoGauge[WP_ROCKET] = 30;
+        float lostBefore = apStat[AP_LOST];
+        ammo_points(100, AP_HIT);                          /* 30 + 100 : une roquette, puis le maximum */
+        int atMax = P.ammo[WP_ROCKET]; float gMax = P.ammoGauge[WP_ROCKET], fMax = gauge_frac(WP_ROCKET);
+        float lost = apStat[AP_LOST] - lostBefore;
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = PI; P.pitch = -0.5f;
+        fire_rocket();                                     /* un rocket jump coute une roquette */
+        fprintf(f, "jauges : spawn ok=%d, 50 pts -> %d (jauge %.0f), +70 -> %d (jauge %.0f), surplus -> roquettes %d, "
+                   "maximum %d jauge %.0f affichee %.0f perdus %.0f, apres un tir %d (attendu 1, 1 0, 2 20, 6, 8 0 1 80, 7)\n",
+                spawnOk, conv1, g1, conv2, g2, spill, atMax, gMax, fMax, lost, P.ammo[WP_ROCKET]);
+    }
+
+    /* l'epee remplit la jauge de l'arme en main : touche +50, kill +100 */
+    reset_game();
+    {
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
+        P.weapon = WP_ROCKET; P.ammo[WP_ROCKET] = 0;
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.6f, 38);
+        melee();
+        int afterHit = P.ammo[WP_ROCKET];
+        E[0].hp = 10;
+        melee();
+        fprintf(f, "epee -> munitions : touche %d roquette(s), touche + kill %d (attendu 1, 4)\n", afterHit, P.ammo[WP_ROCKET]);
+    }
+
+    /* cellules : deux tailles, points aux deux armes, refusee si tout est plein, reapparition */
+    reset_game();
+    {
+        int cell = 6;                                      /* une petite cellule au sol, dans un coin */
+        P.ammo[WP_RAIL] = 0; P.ammo[WP_ROCKET] = 2;
         P.pos = P.prevPos = v3(PU[cell].pos.x, 0, PU[cell].pos.z);
         pickup_tick(TICK);
-        int afterOne = P.railAmmo, gone = PU[cell].t > 0;
-        P.railAmmo = 9; PU[cell].t = 0;
+        float railG = P.ammoGauge[WP_RAIL]; int rockets = P.ammo[WP_ROCKET], gone = PU[cell].t > 0;
+        P.ammo[WP_RAIL] = 2; P.ammo[WP_ROCKET] = 8; PU[cell].t = 0;
         pickup_tick(TICK);
-        int capped = P.railAmmo;
+        int refused = PU[cell].t <= 0;
+        PU[cell].t = PICKUP_RESPAWN;
         P.pos = P.prevPos = v3(0, 0, 30);
         for (int i = 0; i < (int)(PICKUP_RESPAWN / TICK) + 2; i++) pickup_tick(TICK);
-        fprintf(f, "recharges : %d cellules, munitions 1 -> %d, cellule disparue=%d, plafond 9 -> %d, revenue apres 12 s=%d (attendu 4, 1, 10, 1)\n",
-                npu, afterOne, gone, capped, PU[cell].t <= 0);
+        fprintf(f, "cellules : %d cellules (grandes %d %d), rail jauge 0 -> %.0f, roquettes 2 -> %d, prise=%d, pleine refusee=%d, "
+                   "revenue apres 12 s=%d (attendu 13, 150 150, 100, 4, 1, 1, 1)\n",
+                npu, PU[0].pts, PU[5].pts, railG, rockets, gone, refused, PU[cell].t <= 0);
     }
 
     /* pieces : un drone hors de la ligne de mire, on tire dans la piece, le ricochet le trouve */
@@ -5464,10 +5780,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     if (!shotMode) audio_init();
     reset_game();
 
-    if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu"))) {   /* captures des menus */
+    if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu") || strstr(shotPath, "loadout"))) {   /* captures des menus */
         appState = APP_MENU;
         menu_backdrop();
         if (strstr(shotPath, "settings")) { settingsOpen = 1; waitAct = A_COIN; waitSlot = 1; }
+        if (strstr(shotPath, "loadout")) loadoutOpen = 1;
         render(1, TICK);
         save_bmp(shotPath);
         return 0;
@@ -5504,7 +5821,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         if (strstr(shotPath, "rail")) { P.weapon = 0; P.switchT = 0; P.fireCd = 0; }
         shotStreak = 4; P.meleeT = 0.12f; P.vel = v3(0, 0, -14);   /* pour voir le HUD des deux axes */
         if (strstr(shotPath, "impact") || strstr(shotPath, "fx")) {   /* un kill au rail a pleine vitesse */
-            P.weapon = 0; P.railAmmo = 5; P.fireCd = 0; P.meleeT = 0;
+            P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2; P.fireCd = 0; P.meleeT = 0;
             E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 60; E[0].pos = vadd(eye_pos(), vmul(view_dir(), 9));
             fire_rail();
             if (strstr(shotPath, "fx")) {
@@ -5589,9 +5906,15 @@ done:
         if (netMode == NET_HOST)
             netlog("equilibre : temps pour tuer moyen %.2f s sur %d kills, one-shots %d, parries reussis %d, epees parees %d, chocs %d",
                    ttkN ? ttkSum / ttkN : 0.0, ttkN, oneShots, parryCount, meleeParries, clashes);
-        if (netMode == NET_HOST)
-            netlog("touches arbitrees : rail %d, roquette %d, epee %d, grappin %d, parry %d, sur soi %d, ricochet %d ; parries %d",
-                   hitCount[0], hitCount[1], hitCount[2], hitCount[3], hitCount[4], hitCount[5], hitCount[6], parryCount);
+        if (netMode == NET_HOST) {
+            char hb[512]; int n = 0;
+            for (int w = 0; w < W_COUNT && n < (int)sizeof hb - 40; w++)
+                if (hitCount[w]) n += snprintf(hb + n, sizeof hb - n, "%s %d, ", weaponNames[w], hitCount[w]);
+            netlog("touches arbitrees : %s parries %d", n ? hb : "aucune, ", parryCount);
+        }
+        netlog("munitions : points touche %.0f, kill %.0f, parry %.0f, cellules %.0f (%d prises), perdus %.0f ; a sec %.0f%% du temps",
+               apStat[AP_HIT], apStat[AP_KILL], apStat[AP_PARRY], apStat[AP_CELL], cellsTaken, apStat[AP_LOST],
+               100 * dryT / fmaxf(botAliveT, 0.01f));
     }
     net_shutdown();
     if (botLog) fclose(botLog);
