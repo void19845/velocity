@@ -132,6 +132,29 @@ static V3 rand_dir(void) {
 #define KIN_DASH_WINDOW   0.10f   /* dash-tir : le tir doit partir dans les 12 ticks apres le dash */
 #define KIN_DASH_FORGET   0.6f    /* jusque-la, hors fenetre, la vitesse du dash ne compte pas */
 
+/* Fusil a pompe "Eventail" : 10 plombs, plein jusqu'a 10 m, x0.3 a 30 m */
+#define SG_PELLETS        10
+#define SG_HALF_ANGLE     0.0785f /* demi-angle du cone en radians (4.5 deg, cone total 9 deg) */
+#define SG_SLIDE_SPREAD   0.5f    /* en slide : dispersion divisee par 2 */
+#define SG_PELLET_DMG     8.0f    /* degats PvE par plomb */
+#define SG_NEAR           10.0f   /* degats pleins jusqu'ici */
+#define SG_FAR            30.0f   /* ... puis lineaire jusqu'a SG_FAR_MULT ici */
+#define SG_FAR_MULT       0.3f
+#define SG_RANGE          60.0f   /* portee max d'un plomb */
+#define SG_CD             0.95f   /* recharge (divisee par streak_rate) */
+#define SG_STREAK_MIN     3       /* plombs touches pour compter dans la chaine */
+#define SG_PELLET_KNOCK   0.6f    /* recul par plomb sur la cible */
+#define SG_RECOIL         7.0f    /* recul du tireur en l'air */
+#define SG_RECOIL_VMAX    9.0f    /* le recul ne pousse pas vy au-dela (sauf si deja plus) */
+#define SG_RECOIL_HCAP    16.0f   /* idem pour la vitesse horizontale */
+#define SG_COIN_RADIUS    0.55f   /* zone de touche d'une piece pour un plomb (rail : 0.9) */
+#define SG_BURST_RADIUS   3.0f    /* piece eclatee : souffle */
+#define SG_BURST_DMG      45.0f   /* au centre, PvE (x PVP_SCALE contre un joueur) */
+#define SG_BURST_KNOCK    8.0f
+#define SG_BURST_CHAIN    3       /* une piece eclatee fait eclater les pieces voisines (profondeur max) */
+#define SG_TRACER_SPEED   260.0f  /* vitesse visuelle d'un traceur */
+#define MAXTR             64      /* traceurs de plombs */
+
 /* Axe corps a corps : degats et portee montent avec la vitesse */
 #define MELEE_CD          0.45f
 #define MELEE_RANGE       2.4f
@@ -224,9 +247,9 @@ static const AmmoDef ammoDef[WP_COUNT] = {
     { "TESLA",     60, 100, 2.5f, 0.60f, 0.70f, 1.00f },  /* 1 point = 0,4 de batterie */
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
-static unsigned char wpReady[WP_COUNT] = { 1, 1, 0, 1, 0, 0, 0 };   /* chaque arme codee passe sa case a 1 */
+static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 0, 0, 0 };   /* chaque arme codee passe sa case a 1 */
 static unsigned char mkReady[MK_COUNT] = { 1, 1, 0, 0, 0, 0 };
-static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, KIN_CD, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
+static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
 /* Audio : mini mixeur waveOut + sons synthetises                      */
@@ -238,7 +261,9 @@ static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, KIN_CD, 0.4f, 0
 enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_ESHOT, S_PAD, S_WAVE, S_WALLJUMP, S_SLIDE, S_HOOK, S_HOOKHIT, S_PUNCH, S_PARRY,
        S_KIN,                                             /* Elan */
-       S_ANVIL_DIVE, S_ANVIL_SLAM, S_ANVIL_CLANG, S_COUNT };
+       S_ANVIL_DIVE, S_ANVIL_SLAM, S_ANVIL_CLANG,
+       S_SG_FIRE, S_SG_PUMP,                              /* Eventail */
+       S_COUNT };
 typedef struct { short *data; int len; } Sound;
 typedef struct { int snd, active; float pos, step, vol; } Voice;
 static Sound sounds[S_COUNT];
@@ -486,6 +511,30 @@ static void make_sounds(void) {
                sinf(t * 2 * PI * 2150) * 0.18f * expf(-t * 25) + (t < 0.005f ? noise() * 0.8f : 0);
     }
     sounds[S_ANVIL_CLANG] = mksound(b, n);
+
+    /* --- Eventail --- */
+    /* tir : bruit passe-bas dont la coupure descend de 6000 a 300 Hz, coup grave, claquement */
+    b = sbuf(0.5f, &n); lp = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        float fc = 300 + 5700 * expf(-t * 14);
+        a = 1 - expf(-2 * PI * fc / SR);
+        lp += a * (noise() - lp);
+        b[i] = lp * 1.8f * expf(-t * 9) + sinf(2 * PI * (70 - 40 * t) * t) * 0.9f * expf(-t * 10) + noise() * 0.6f * expf(-t * 60);
+    }
+    sounds[S_SG_FIRE] = mksound(b, n);
+    /* pompe : deux clics (t = 0 et 0,12 s) et un toc */
+    b = sbuf(0.25f, &n);
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        float s = sinf(2 * PI * 220 * t) * 0.2f * expf(-t * 30);
+        for (int c = 0; c < 2; c++) {
+            float dc = t - c * 0.12f;
+            if (dc >= 0) s += noise() * expf(-dc * 400) * 0.5f + sinf(2 * PI * 1800 * dc) * 0.3f * expf(-dc * 300);
+        }
+        b[i] = s;
+    }
+    sounds[S_SG_PUMP] = mksound(b, n);
 }
 
 static void audio_init(void) {
@@ -718,6 +767,8 @@ typedef struct {
     int anvilState;                                       /* Enclume : ANVIL_IDLE / DIVE / STUN */
     float anvilStartY, anvilStunT;                        /* y au debut du pique, immobilisation restante */
     float anvilLandT, anvilLastVy;                        /* temps depuis la derniere onde, |vy| de la derniere onde */
+    float sgPumpT, sgPumpMax;                             /* Eventail : animation de pompe (temps restant / duree totale) */
+    int sgLastPellets; float sgLastT;                     /* Eventail : HUD "7/10" apres un tir qui touche */
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -746,6 +797,10 @@ typedef struct { V3 a, b, col; float life, max; } Beam;
 #define MAXBM 32
 static Beam BM[MAXBM];
 static int bmNext;
+
+typedef struct { V3 a, b, col; float t, life; } Tracer;   /* Eventail : traceurs de plombs (pas add_beam : MAXBM 32) */
+static Tracer TR[MAXTR];
+static int trNext;
 
 static int wave, toSpawn, score, kills, combo, bestScore;
 static float waveDelay, spawnT, gameTime, hitMarker, comboT, msgT, popT, shake;
@@ -786,6 +841,7 @@ typedef struct {
     double recvT, lastHeard, lastParryT;
     float flashT;                                         /* flash blanc quand il est touche */                 /* lastParryT : derniere fois vu en fenetre de parry */
     unsigned char anvilPrevPad;                           /* Enclume : pad du tick precedent (debut d'un pique adverse) */
+    float sgFireT;                                        /* Eventail : recul visuel du fusil d'un joueur distant */
     struct sockaddr_in addr;      /* hote seulement */
 } NetPlayer;
 
@@ -821,6 +877,7 @@ static void net_fx_parry(unsigned int netId, V3 pos, V3 vel, float mult, int par
 static void net_fx_melee(V3 pos, V3 dir, float sp);
 static void net_fx_slam(V3 pos, float radius, float vy, int hits);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
+static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed);
 
 /* ------------------------------------------------------------------ */
 /* Entrees                                                             */
@@ -967,6 +1024,13 @@ static void burst(V3 p, V3 col, int n, float speed, float life, float size) {
 static void add_beam(V3 a, V3 b, V3 col, float life) {
     Beam *m = &BM[bmNext]; bmNext = (bmNext + 1) % MAXBM;
     m->a = a; m->b = b; m->col = col; m->life = m->max = life;
+}
+
+/* Eventail : traceur de plomb, la tete avance a SG_TRACER_SPEED puis la ligne s'eteint en 0,12 s */
+static void add_tracer(V3 a, V3 b, V3 col) {
+    Tracer *r = &TR[trNext]; trNext = (trNext + 1) % MAXTR;
+    r->a = a; r->b = b; r->col = col; r->t = 0;
+    r->life = vlen(vsub(b, a)) / SG_TRACER_SPEED + 0.12f;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1577,6 +1641,7 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     for (int w = 0; w < WP_COUNT; w++) { P.ammo[w] = ammoDef[w].start; P.ammoGauge[w] = 0; }
     P.weapon = P.loadout[0]; P.switchT = 0; P.undoPts[0] = P.undoPts[1] = 0;
     P.kinT = 0; P.kinDashT = 1; P.kinPreDash = 0;          /* Elan : ni fenetre de dash-tir ni malus */
+    P.sgPumpT = P.sgPumpMax = 0; P.sgLastT = 0;           /* Eventail : pompe au repos */
     melee_start_swing();
 }
 static void weapon_select(int w) { if (w != P.weapon) { P.weapon = w; P.switchT = SWITCH_TIME; } }
@@ -2167,6 +2232,179 @@ static float kin_preview(float *e) {
 }
 /* --- fin Elan ----------------------------------------------------------- */
 
+/* --- Eventail (fusil a pompe) ------------------------------------------- */
+/* 10 plombs a motif deterministe (generateur local : le rng global n'est jamais touche, chaque client
+ * recalcule les memes directions a partir de la graine d'EV_SHOT). Les degats sont agreges par cible :
+ * un seul net_hit par joueur et par tir. Recul en l'air plafonne, dispersion divisee par 2 en slide,
+ * un plomb qui touche une piece la fait eclater (souffle de 3 m, ni degats ni recul sur soi). */
+static unsigned int sgCounter;                            /* compteur de graines */
+static int sgBursts;                                      /* pieces eclatees au dernier tir (tests, journal) */
+static int sgShots, sgPelletSum, sgStreakShots, sgJumps, sgBurstSum;   /* journal du bot */
+
+static float sg_rand(unsigned int *s) { *s = *s * 1664525u + 1013904223u; return (*s >> 8) * (1.0f / 16777216.0f); }
+static unsigned int sg_new_seed(void) {                   /* unique, deterministe, sans toucher rng */
+    return (((unsigned int)myId + 1) << 24) ^ ((++sgCounter) * 2654435761u);
+}
+/* motif semi-fixe : 1 plomb au centre, 3 sur un anneau a 0.45, 6 sur un anneau a 0.9, tourne par la graine */
+static void sg_pellet_dirs(V3 d, float half, unsigned int seed, V3 *out) {
+    unsigned int s = seed;
+    V3 r = vnorm(vcross(d, v3(0, 1, 0.01f))), u = vcross(r, d);   /* meme astuce que fire_rail : jamais nul */
+    float rot = sg_rand(&s) * 2 * PI, th = tanf(half);
+    for (int k = 0; k < SG_PELLETS; k++) {
+        float rho, ang;
+        if (k == 0) { rho = 0; ang = 0; }
+        else if (k < 4) { rho = 0.45f; ang = rot + (k - 1) * (2 * PI / 3); }
+        else { rho = 0.9f; ang = rot + PI / 6 + (k - 4) * (PI / 3); }
+        rho += (sg_rand(&s) - 0.5f) * 0.2f;               /* +-0.1 */
+        ang += (sg_rand(&s) - 0.5f) * 0.35f;              /* +-10 deg */
+        if (rho > 1) rho = 1;
+        out[k] = vnorm(vadd(d, vadd(vmul(r, cosf(ang) * rho * th), vmul(u, sinf(ang) * rho * th))));
+    }
+}
+static float sg_falloff(float t) {                        /* plein jusqu'a 10 m, puis lineaire jusqu'a x0.3 a 30 m */
+    if (t <= SG_NEAR) return 1;
+    if (t >= SG_FAR) return SG_FAR_MULT;
+    return 1 - (1 - SG_FAR_MULT) * (t - SG_NEAR) / (SG_FAR - SG_NEAR);
+}
+static V3 sg_tint(float k) { return vlerp(v3(1, 0.6f, 0.25f), v3(1, 0.9f, 0.4f), clampf(k, 0, 1)); }   /* cuivre -> or */
+
+/* cumul d'un tir : degats, recul, plombs et dernier point touche par cible */
+typedef struct {
+    float e[MAXE], p[MAXP];
+    V3 ke[MAXE], kp[MAXP], he[MAXE], hp[MAXP];
+    int ne[MAXE], np[MAXP], burstHit;
+} SgAcc;
+
+/* eclat de piece : mine = 1 chez le tireur (impact frame, hitstop), 0 pour celui d'un autre joueur */
+static void sg_burst_fx(V3 o, int mine) {
+    burst(o, v3(1, 0.82f, 0.3f), 40, 10, 0.6f, 0.18f);
+    shards(o, v3(1, 0.82f, 0.3f), 6, 7);
+    play(S_EXPLO, 0.6f * (mine ? 1 : atten(o)), 1.7f);
+    if (mine) { impact_frame(o, 0.05f); hitstop = fmaxf(hitstop, 0.04f); }
+}
+
+static void sg_coin_burst(int ci, int depth, SgAcc *A) {
+    Coin *c = &CO[ci];
+    if (!c->alive) return;                                /* deja eclatee par un autre plomb */
+    V3 o = c->pos;
+    c->alive = 0; sgBursts++;
+    if (dmMode) net_fx_coin(1, c->netId, o, v3(1, 0, 0));   /* f[3] = 1 : detruite EN ECLAT */
+    for (int i = 0; i < MAXE; i++) {
+        if (!E[i].alive) continue;
+        V3 dv = vsub(E[i].pos, o);
+        float dd = vlen(dv), R = SG_BURST_RADIUS + enemy_radius(E[i].type);
+        if (dd < R) {
+            float f = 1 - dd / R;
+            A->e[i] += SG_BURST_DMG * (0.3f + 0.7f * f);
+            A->ke[i] = vadd(A->ke[i], vmul(vnorm(dv), SG_BURST_KNOCK * f)); A->burstHit = 1;
+        }
+    }
+    for (int i = 0; i < MAXP; i++) {
+        if (!np_target(i)) continue;
+        V3 dv = vsub(np_center(i), o);
+        float dd = vlen(dv), R = SG_BURST_RADIUS + 0.5f;
+        if (dd < R) {
+            float f = 1 - dd / R;
+            A->p[i] += SG_BURST_DMG * (0.3f + 0.7f * f);
+            A->kp[i] = vadd(A->kp[i], vmul(vnorm(dv), SG_BURST_KNOCK * f + 2)); A->burstHit = 1;
+        }
+    }
+    /* soi : ni degats ni recul (comme explode byPlayer == 2) */
+    sg_burst_fx(o, 1);
+    for (int j = 0; depth < SG_BURST_CHAIN && j < MAXCOIN; j++)   /* reaction en chaine */
+        if (CO[j].alive && vlen(vsub(CO[j].pos, o)) < SG_BURST_RADIUS && los(o, CO[j].pos))
+            sg_coin_burst(j, depth + 1, A);
+}
+
+/* shotgun jump : 7 m/s a l'oppose de la visee ; peut freiner, ou pousser jusqu'a un seuil, jamais au-dela
+ * de la vitesse qu'on avait deja (9 m/s vertical, 16 m/s horizontal) */
+static void sg_recoil(V3 d) {
+    V3 v0 = P.vel, v = vadd(P.vel, vmul(d, -SG_RECOIL));
+    if (v.y > v0.y && v.y > fmaxf(v0.y, SG_RECOIL_VMAX)) v.y = fmaxf(v0.y, SG_RECOIL_VMAX);
+    float h0 = hlen(v0), h = hlen(v), lim = fmaxf(h0, SG_RECOIL_HCAP);
+    if (h > lim) { v.x *= lim / h; v.z *= lim / h; }
+    if (d.y < -0.7f) sgJumps++;                           /* stat : shotgun jump */
+    P.vel = v;
+}
+
+static void fire_shotgun(void) {
+    if (P.ammo[WP_SHOTGUN] > 0) P.ammo[WP_SHOTGUN]--;
+    V3 eye = eye_pos(), d = view_dir(), dir[SG_PELLETS], end[SG_PELLETS], nrm[SG_PELLETS];
+    float half = SG_HALF_ANGLE * (P.sliding ? SG_SLIDE_SPREAD : 1), mult = streak_mult();
+    unsigned int seed = sg_new_seed();
+    static SgAcc A;
+    int pellets = 0, burstList[SG_PELLETS], nBurst = 0, onWall[SG_PELLETS];
+    memset(&A, 0, sizeof A);
+    sg_pellet_dirs(d, half, seed, dir);
+    for (int k = 0; k < SG_PELLETS; k++) {                /* le plomb s'arrete sur le plus proche : piece, drone ou joueur */
+        float tw = ray_world(eye, dir[k], SG_RANGE, &nrm[k]), t;
+        int ci = -1, te = -1, tp = -1;
+        onWall[k] = tw < SG_RANGE;
+        for (int i = 0; i < MAXCOIN; i++)                 /* toute piece, la mienne ou non */
+            if (CO[i].alive && ray_sphere(eye, dir[k], CO[i].pos, SG_COIN_RADIUS, tw, &t)) { tw = t; ci = i; }
+        for (int i = 0; i < MAXE; i++)
+            if (E[i].alive && ray_sphere(eye, dir[k], E[i].pos, enemy_radius(E[i].type), tw, &t)) { tw = t; te = i; ci = -1; }
+        for (int i = 0; i < MAXP; i++) {
+            V3 mn, mx;
+            if (!np_target(i)) continue;
+            np_aabb(i, 0.05f, &mn, &mx);
+            if (ray_box(eye, dir[k], mn, mx, tw, &t, NULL) && t < tw) { tw = t; tp = i; te = ci = -1; }
+        }
+        end[k] = vadd(eye, vmul(dir[k], tw));
+        float dmg = SG_PELLET_DMG * sg_falloff(tw) * mult;
+        if (te >= 0) {
+            A.e[te] += dmg; A.ke[te] = vadd(A.ke[te], vmul(dir[k], SG_PELLET_KNOCK)); A.ne[te]++; A.he[te] = end[k];
+            pellets++; onWall[k] = 0;
+        } else if (tp >= 0) {
+            A.p[tp] += dmg; A.kp[tp] = vadd(A.kp[tp], vmul(dir[k], SG_PELLET_KNOCK)); A.np[tp]++; A.hp[tp] = end[k];
+            pellets++; onWall[k] = 0;
+        } else if (ci >= 0) { burstList[nBurst++] = ci; onWall[k] = 0; }   /* eclate apres la boucle (une fois par piece) */
+    }
+    sgBursts = 0;
+    for (int b = 0; b < nBurst; b++) sg_coin_burst(burstList[b], 0, &A);
+    int juice = 0; V3 juiceAt = eye;
+    for (int i = 0; i < MAXE; i++) {                      /* un seul chiffre de degats par cible */
+        if (A.e[i] <= 0) continue;
+        V3 at = A.ne[i] ? A.he[i] : E[i].pos;
+        if (A.ne[i] >= 8 && vlen(vsub(E[i].pos, eye)) < 6) { juice = 1; juiceAt = at; }
+        burst(at, v3(1, 0.45f, 0.2f), 12, 7, 0.3f, 0.1f);
+        damage_enemy(i, A.e[i], A.ke[i]);
+    }
+    for (int i = 0; i < MAXP; i++) {                      /* AGREGATION : un seul net_hit par joueur et par tir */
+        if (A.p[i] <= 0) continue;
+        V3 at = A.np[i] ? A.hp[i] : np_center(i);
+        if (A.np[i] >= 8 && vlen(vsub(np_center(i), eye)) < 6) { juice = 1; juiceAt = at; }
+        burst(at, v3(1, 0.45f, 0.2f), 12, 7, 0.3f, 0.1f);
+        net_hit(i, A.p[i] * PVP_SCALE, vadd(A.kp[i], v3(0, 2, 0)), W_SHOTGUN);
+    }
+    int hit = pellets >= SG_STREAK_MIN || A.burstHit;
+    shot_result(hit);
+    sgShots++; sgPelletSum += pellets; sgStreakShots += hit; sgBurstSum += sgBursts;
+    if (botMode) netlog("tir pompe : %d plomb(s), %d eclat(s), %s", pellets, sgBursts, hit ? "touche" : "rate");
+    if (!P.grounded) sg_recoil(d);
+
+    V3 m = muzzle(), col = sg_tint(shotStreak / (float)STREAK_MAX);   /* effets locaux : traceurs, etincelles, son */
+    for (int k = 0; k < SG_PELLETS; k++) {
+        add_tracer(m, end[k], col);
+        if (onWall[k])
+            for (int j = 0; j < 3; j++)
+                add_part(end[k], vadd(vmul(nrm[k], 3), vmul(rand_dir(), 2)), v3(1, 0.75f, 0.4f), 0.35f, 0.07f, 12);
+    }
+    if (dmMode) net_fx_shot(eye, d, half, seed);
+    P.fireCd = P.sgPumpMax = P.sgPumpT = SG_CD / streak_rate();
+    P.recoil = 1.6f; shake += 0.1f + 0.012f * pellets; muzzleT = 0.09f;
+    P.sgLastPellets = pellets; P.sgLastT = pellets ? 0.5f : 0;
+    play(S_SG_FIRE, 0.85f, frange(0.96f, 1.04f));
+    if (pellets || A.burstHit) { hitMarker = 0.18f; play(S_HIT, 0.6f, 0.9f + 0.03f * pellets); }
+    if (juice) { hitstop = fmaxf(hitstop, 0.05f); impact_frame(juiceAt, 0.05f); }
+    if (sgBursts) {
+        if (sgBursts > 1) snprintf(popText, sizeof popText, "ECLAT x%d", sgBursts);
+        else snprintf(popText, sizeof popText, "ECLAT !");
+        popT = 1.0f;
+    }
+}
+/* --- fin Eventail ------------------------------------------------------- */
+
 static Proj *spawn_proj(int kind, V3 pos, V3 vel) {
     for (int i = 0; i < MAXPR; i++)
         if (!PR[i].alive) {
@@ -2372,6 +2610,7 @@ static void reset_game(void) {
     memset(CO, 0, sizeof CO);
     for (int i = 0; i < npu; i++) PU[i].t = PU[i].pending = 0;
     memset(E, 0, sizeof E); memset(PR, 0, sizeof PR); memset(PA, 0, sizeof PA); memset(BM, 0, sizeof BM);
+    memset(TR, 0, sizeof TR);
     wave = 0; toSpawn = 0; waveDelay = 1.5f; spawnT = 0;
     score = kills = combo = 0; gameTime = 0; hitMarker = comboT = msgT = popT = shake = 0;
     shotStreak = 0; hitstop = parryFlash = streakLostT = 0;
@@ -2387,11 +2626,12 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   6
+#define NET_VER   7
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
        EV_PICKUP_TAKEN, EV_COIN, EV_MELEE_PARRY,
+       EV_SHOT = 15,                                      /* Eventail : un tir = un evenement (graine des plombs) */
        EV_SLAM = 21 };                                    /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
 
 #pragma pack(push, 1)
@@ -2625,6 +2865,13 @@ static void net_fx_melee(V3 pos, V3 dir, float sp) {
     vf(e.f, pos); vf(e.f + 3, dir); e.f[6] = sp;
     net_emit(&e);
 }
+static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed) {   /* Eventail : chaque client recalcule les plombs */
+    NetEvent e = ev_new(EV_SHOT);
+    vf(e.f, eye); vf(e.f + 3, dir); e.f[6] = half;        /* demi-angle : encode le slide */
+    e.netId = seed; e.sub = SG_PELLETS;
+    e.actor = (unsigned char)(shotStreak < STREAK_MAX ? shotStreak : STREAK_MAX);   /* teinte des traceurs */
+    net_emit(&e);
+}
 static void net_fx_slam(V3 pos, float radius, float vy, int hits) {   /* onde de l'Enclume : purement visuelle */
     NetEvent e = ev_new(EV_SLAM);
     vf(e.f, pos); e.f[3] = radius; e.f[4] = vy; e.sub = (unsigned char)(hits < 255 ? hits : 255);
@@ -2723,6 +2970,24 @@ static void apply_event(const NetEvent *ev) {
         for (int k = 0; k < 10; k++) add_part(vadd(a, vmul(b, 1.5f + k * 0.15f)), vmul(b, 3), v3(0.9f, 0.9f, 1), 0.15f, 0.08f, 0);
         play(S_DASH, 0.4f * atten(a), 1.8f);
         break;
+    case EV_SHOT: {                                       /* Eventail d'un autre joueur : memes plombs, traceurs seulement */
+        V3 dir[SG_PELLETS], n;
+        sg_pellet_dirs(b, ev->f[6], ev->netId, dir);
+        for (int k = 0; k < SG_PELLETS && k < ev->sub; k++) {
+            float tw = ray_world(a, dir[k], SG_RANGE, &n), t;
+            V3 mn, mx;
+            for (int i = 0; i < MAXP; i++) {              /* arret visuel sur les corps affiches */
+                if (i == ev->from || !NP[i].active || !NP[i].alive) continue;
+                if (i == myId) { if (P.dead) continue; paabb(P.pos, pheight(), &mn, &mx); }
+                else np_aabb(i, 0.05f, &mn, &mx);
+                if (ray_box(a, dir[k], mn, mx, tw, &t, NULL) && t < tw) tw = t;
+            }
+            add_tracer(vadd(a, vmul(b, 0.7f)), vadd(a, vmul(dir[k], tw)), sg_tint(ev->actor / (float)STREAK_MAX));
+        }
+        if (ev->from < MAXP) NP[ev->from].sgFireT = 0.12f;
+        play(S_SG_FIRE, 0.75f * atten(a), 1.0f);
+        break;
+    }
     case EV_SLAM: {                                       /* onde de choc d'un autre joueur : effets seulement */
         float R = ev->f[3], vy = ev->f[4];
         for (int k = 0; k < 36; k++) {
@@ -2801,6 +3066,10 @@ static void apply_event(const NetEvent *ev) {
                     CO[i].pos = a; CO[i].vel = b; CO[i].life = 4; CO[i].spin = 0;
                     break;
                 }
+        } else if (ev->sub == 1 && ev->f[3] == 1) {       /* Eventail : piece eclatee par un plomb */
+            for (int i = 0; i < MAXCOIN; i++)
+                if (CO[i].alive && CO[i].netId == ev->netId) CO[i].alive = 0;
+            sg_burst_fx(a, 0);
         } else {
             for (int i = 0; i < MAXCOIN; i++)
                 if (CO[i].alive && CO[i].netId == ev->netId) {
@@ -4036,6 +4305,11 @@ static void bot_think(float dt) {
     int la = P.loadout[0], lb = P.loadout[1];
     int pref = (bd < 20 && ((int)(botT / 5 + botMode)) % 2) ? lb : la;
     if (!wp_has_ammo(pref)) pref = pref == la ? lb : la;
+    if (la == WP_SHOTGUN || lb == WP_SHOTGUN) {           /* Eventail : seulement de pres (3 touches jusqu'a ~11 m) */
+        int o = la == WP_SHOTGUN ? lb : la;
+        if (wp_has_ammo(WP_SHOTGUN) && (bd < 10 || !wp_has_ammo(o))) pref = WP_SHOTGUN;
+        else if (wp_has_ammo(o)) pref = o;
+    }
     if (P.meleeKind == MK_ANVIL && P.anvilLandT < 1.0f && P.swingHitPts && wp_has_ammo(WP_RAIL) && (la == WP_RAIL || lb == WP_RAIL))
         pref = WP_RAIL;                                   /* onde qui touche : la cible vole ~1 s, le rail l'acheve */
     P.weapon = pref;
@@ -4078,7 +4352,8 @@ static void bot_think(float dt) {
         }
     }
     if (!dry && !coinPlan && see && seeT > 0.3f && bd < 55 && P.fireCd <= 0 && P.switchT <= 0 &&
-        P.weapon != WP_KINETIC) {                         /* recale la visee pour tirer (l'Elan a sa regle plus bas) */
+        P.weapon != WP_KINETIC &&                         /* recale la visee pour tirer (l'Elan a sa regle plus bas) */
+        (P.weapon != WP_SHOTGUN || bd < (P.sliding ? 13.0f : 11.0f))) {   /* Eventail : au-dela, moins de 4 plombs */
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1;
     }
 
@@ -4119,6 +4394,19 @@ static void bot_think(float dt) {
                                  (P.hook == HOOK_ATTACHED && !see && hookHoldT < 1.5f &&
                                   !(seek >= 0 && P.pos.y > PU[seek].pos.y - 1)));
     if (P.hookPlayer) P.yaw = aimYaw;
+    /* Eventail : au sol et rapide pres d'une cible, il glisse pour tirer en slide (dispersion / 2) */
+    if (P.weapon == WP_SHOTGUN && best >= 0 && bd < 13 && (P.sliding || (P.grounded && hs > SLIDE_MIN))) {
+        botHeld[A_CROUCH] = 1; botHeld[A_JUMP] = 0;
+    }
+    /* Eventail : shotgun jump vers une recharge en hauteur (une fois par sejour en l'air, jamais les 2 dernieres cartouches) */
+    static int sgJumpDone;
+    if (P.grounded) sgJumpDone = 0;
+    if (seekHigh && !sgJumpDone && !P.grounded && P.hook == HOOK_NONE && P.vel.y < 1 && P.fireCd <= 0 &&
+        (la == WP_SHOTGUN || lb == WP_SHOTGUN) && P.ammo[WP_SHOTGUN] >= 3) {
+        P.weapon = WP_SHOTGUN; P.switchT = 0; P.pitch = -1.45f;
+        botHeld[A_FIRE] = 1; sgJumpDone = 1;
+        netlog("shotgun jump vers la cellule %d", seek);
+    }
     if (best >= 0 && bd < bot_melee_reach(rel_speed(np_vel(best))) + 0.5f && P.meleeCd <= 0) { P.yaw = aimYaw; botPress[A_MELEE] = 1; }
     static float logT;
     if ((logT += dt) > 1) {
@@ -4182,6 +4470,7 @@ static void fire_weapon(void) {
     case WP_RAIL:   fire_rail(); break;
     case WP_ROCKET: fire_rocket(); break;
     case WP_KINETIC: fire_kinetic(); break;
+    case WP_SHOTGUN: fire_shotgun(); break;
     }
 }
 /* chargeur vide : clic sec, puis l'autre arme si elle peut tirer, sinon on pousse au contact */
@@ -4253,6 +4542,12 @@ static void game_tick(float dt) {
 
     P.fireCd -= dt; P.switchT -= dt;
     P.kinT -= dt;                                         /* Elan : decharge du viewmodel */
+    {                                                     /* Eventail : clac de la pompe a 35 % de la recharge */
+        float pv = P.sgPumpT;
+        P.sgPumpT -= dt; P.sgLastT -= dt;
+        if (P.weapon == WP_SHOTGUN && !P.dead && pv > 0.65f * P.sgPumpMax && P.sgPumpT <= 0.65f * P.sgPumpMax)
+            play(S_SG_PUMP, 0.5f, 1);
+    }
     P.recoil *= expf(-dt * 9);
     if (!P.dead && (act[A_FIRE] || lmbp) && P.fireCd <= 0 && P.switchT <= 0) {
         if (wp_has_ammo(P.weapon)) fire_weapon(); else dry_fire();
@@ -4282,6 +4577,7 @@ static void fx_tick(float dt) {
         q->pos = vadd(q->pos, vmul(q->vel, dt));
     }
     for (int i = 0; i < MAXBM; i++) BM[i].life -= dt;
+    for (int i = 0; i < MAXTR; i++) TR[i].t += dt;       /* Eventail : traceurs */
     for (int i = 0; i < nb; i++)                         /* particules des jump pads */
         if (boxes[i].kind == B_PAD && frand() < 0.15f) {
             V3 c = vlerp(boxes[i].mn, boxes[i].mx, 0.5f);
@@ -4291,7 +4587,7 @@ static void fx_tick(float dt) {
 
     shard_tick(dt);
     for (int i = 0; i < MAXDN; i++) DN[i].t -= dt;
-    for (int i = 0; i < MAXP; i++) NP[i].flashT -= dt;
+    for (int i = 0; i < MAXP; i++) { NP[i].flashT -= dt; NP[i].sgFireT -= dt; }
     killMarkT -= dt; hurtDirT -= dt; muzzleT -= dt;
     hitMarker -= dt; P.hurtFlash -= dt; msgT -= dt; popT -= dt; parryFlash -= dt; streakLostT -= dt;
     shake *= expf(-dt * 6);
@@ -4582,13 +4878,15 @@ static void draw_viewmodel(float aspect) {
         glPopMatrix();
     }
     if (muzzleT > 0) {                                    /* flash du canon */
-        float tip = P.weapon == WP_RAIL ? -0.64f : P.weapon == WP_KINETIC ? -0.57f : -0.6f, ms2 = 0.12f + 0.25f * (muzzleT / 0.08f);
+        float tip = P.weapon == WP_RAIL || P.weapon == WP_SHOTGUN ? -0.64f : P.weapon == WP_KINETIC ? -0.57f : -0.6f;
+        float ms2 = (0.12f + 0.25f * (muzzleT / 0.08f)) * (P.weapon == WP_SHOTGUN ? 1.5f : 1.0f);
         glDisable(GL_LIGHTING);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE);
         glDepthMask(GL_FALSE);
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, texDot);
         if (P.weapon == WP_KINETIC) { V3 kc = kin_col(P.kinE); glColor4f(kc.x, kc.y, kc.z, 1); }   /* Elan : couleur du tir */
+        else if (P.weapon == WP_SHOTGUN) glColor4f(1, 0.75f, 0.35f, 1);
         else glColor4f(0.5f + 0.5f * ammoDef[P.weapon].r, 0.5f + 0.5f * ammoDef[P.weapon].g, 0.5f + 0.5f * ammoDef[P.weapon].b, 1);
         glBegin(GL_QUADS);
         glTexCoord2f(0, 0); glVertex3f(-ms2, -ms2, tip); glTexCoord2f(1, 0); glVertex3f(ms2, -ms2, tip);
@@ -4635,6 +4933,29 @@ static void draw_viewmodel(float aspect) {
         glColor3f(c.x * lit * 0.8f, c.y * lit * 0.8f, c.z * lit * 0.8f);
         box_faces(v3(-0.062f, 0.02f, -0.26f), v3(0.062f, 0.032f, 0.0f));
         glPopMatrix();
+    } else if (P.weapon == WP_SHOTGUN) {                  /* Eventail : carcasse brune, deux canons, pompe qui recule */
+        float k = P.sgPumpMax > 0 && P.sgPumpT > 0 ? 1 - P.sgPumpT / P.sgPumpMax : 1;
+        float pz = 0.12f * sinf(PI * clampf((k - 0.35f) / 0.5f, 0, 1));
+        glColor3f(0.30f, 0.24f, 0.20f);
+        box_faces(v3(-0.06f, -0.06f, -0.30f), v3(0.06f, 0.05f, 0.10f));
+        box_faces(v3(-0.03f, -0.17f, 0.0f), v3(0.03f, -0.06f, 0.07f));
+        glColor3f(0.42f, 0.44f, 0.48f);                   /* canons, acier */
+        box_faces(v3(-0.05f, -0.005f, -0.62f), v3(-0.005f, 0.04f, -0.30f));
+        box_faces(v3(0.005f, -0.005f, -0.62f), v3(0.05f, 0.04f, -0.30f));
+        glColor3f(0.22f, 0.17f, 0.14f);                   /* pompe */
+        box_faces(v3(-0.045f, -0.06f, -0.52f + pz), v3(0.045f, -0.015f, -0.36f + pz));
+        glDisable(GL_LIGHTING);
+        glColor3f(1.0f * ready, 0.6f * ready, 0.25f * ready);   /* bande cuivre */
+        box_faces(v3(-0.04f, 0.05f, -0.28f), v3(0.04f, 0.058f, 0.06f));
+        for (int i = 0; i < 6; i++) {                     /* 6 temoins de cartouches ; le suivant se remplit avec la jauge */
+            float z = -0.26f + i * 0.05f, fill = i < P.ammo[WP_SHOTGUN] ? 1 : i == P.ammo[WP_SHOTGUN] ? gauge_frac(WP_SHOTGUN) : 0;
+            glColor3f(0.15f, 0.12f, 0.1f);
+            box_faces(v3(-0.068f, -0.03f, z), v3(-0.06f, 0.006f, z + 0.036f));
+            if (fill > 0) {
+                glColor3f(1.0f, 0.55f + 0.3f * (fill >= 1), 0.2f);
+                box_faces(v3(-0.07f, -0.03f, z + 0.004f), v3(-0.061f, -0.03f + 0.036f * fill, z + 0.032f));
+            }
+        }
     } else {
         glColor3f(0.32f, 0.36f, 0.22f);
         box_faces(v3(-0.055f, -0.055f, -0.5f), v3(0.055f, 0.055f, 0.05f));
@@ -5111,7 +5432,11 @@ static void draw_remote_players(void) {
         glRotatef(n->st.pitch * 180 / PI, 1, 0, 0);
         { const AmmoDef *wd = &ammoDef[n->st.weapon < WP_COUNT ? n->st.weapon : WP_RAIL]; glColor3f(wd->r * 0.9f, wd->g * 0.9f, wd->b * 0.9f); }
         if (n->st.weapon == WP_KINETIC) glColor3f(0.95f, 0.3f, 0.85f);   /* Elan : magenta, comme son rayon */
-        box_faces(v3(-0.06f, -0.06f, -0.7f), v3(0.06f, 0.06f, 0.05f));
+        if (n->st.weapon == WP_SHOTGUN) {                 /* Eventail : court, large, cuivre, recul au tir */
+            glColor3f(0.85f, 0.5f, 0.22f);
+            glTranslatef(0, 0, 0.15f * clampf(n->sgFireT / 0.12f, 0, 1));
+            box_faces(v3(-0.08f, -0.07f, -0.55f), v3(0.08f, 0.07f, 0.05f));
+        } else box_faces(v3(-0.06f, -0.06f, -0.7f), v3(0.06f, 0.06f, 0.05f));
         glPopMatrix();
         if ((n->st.pad & 15) == MK_ANVIL) {               /* Enclume : leve pendant le pique, abattu par le coup */
             int slam = (n->st.pad & ST_SLAM) != 0;
@@ -5406,13 +5731,17 @@ static void draw_hud(void) {
     char wnBuf[32];
     const AmmoDef *ad = &ammoDef[P.weapon];
     if (P.weapon == WP_TESLA) snprintf(wnBuf, sizeof wnBuf, "TESLA %d%%", P.ammo[WP_TESLA]);
-    else snprintf(wnBuf, sizeof wnBuf, "%s %d/%d", ad->name, P.ammo[P.weapon], ad->max);
+    else snprintf(wnBuf, sizeof wnBuf, "%s %d/%d%s", ad->name, P.ammo[P.weapon], ad->max,
+                  P.weapon == WP_SHOTGUN && !P.ammo[WP_SHOTGUN] ? " - MELEE !" : "");   /* Eventail a sec */
     const char *wn = wnBuf;
     int dryW = !wp_has_ammo(P.weapon);
     text(1, winW - 30.0f - fontW[1] * (float)strlen(wn), winH - 60.0f, wn, dryW ? 1.0f : ad->r, dryW ? 0.3f : ad->g,
          dryW ? 0.3f : ad->b, 1);
     rect(winW - 230.0f, winH - 40.0f, 200, 8, 0.1f, 0.1f, 0.15f, 0.7f);
-    rect(winW - 230.0f, winH - 40.0f, 200 * clampf(1 - P.fireCd / wpCd[P.weapon], 0, 1), 8, 1, 1, 1, 0.8f);
+    {
+        float cdMax = P.weapon == WP_SHOTGUN && P.sgPumpMax > 0 ? P.sgPumpMax : wpCd[P.weapon];   /* Eventail : recharge reelle */
+        rect(winW - 230.0f, winH - 40.0f, 200 * clampf(1 - P.fireCd / cdMax, 0, 1), 8, 1, 1, 1, 0.8f);
+    }
     if (ad->gauge > 0) {                                  /* jauge : la melee et les cellules la remplissent */
         float gf = P.weapon == WP_TESLA ? P.ammo[WP_TESLA] / 100.0f : gauge_frac(P.weapon);
         int gain = ammoGainT > 0 && (ammoGainSlot == 2 || ammoGainSlot == cur_slot());
@@ -5449,6 +5778,19 @@ static void draw_hud(void) {
         } else if (late) {                                /* barre grise sous le viseur : le tir plein revient a 0,6 s */
             float k2 = 1 - clampf((P.kinDashT - KIN_DASH_WINDOW) / (KIN_DASH_FORGET - KIN_DASH_WINDOW), 0, 1);
             rect(cx - 30, cy + 20, 60 * k2, 3, 0.6f, 0.6f, 0.65f, 0.85f);
+        }
+    }
+    if (P.weapon == WP_SHOTGUN && !P.dead) {             /* Eventail : cercle de dispersion (moitie en slide), plombs touches */
+        float half = SG_HALF_ANGLE * (P.sliding ? SG_SLIDE_SPREAD : 1);
+        float r = tanf(half) / tanf(fminf(P.fovCur, 150.0f) * PI / 360.0f) * winW * 0.5f;
+        glLineWidth(P.sliding ? 2.0f : 1.5f);
+        glColor4f(1, 0.65f, 0.3f, P.fireCd <= 0 ? 0.75f : 0.3f);
+        glBegin(GL_LINE_LOOP);
+        for (int s = 0; s < 24; s++) glVertex2f(cx + r * cosf(s * PI / 12), cy + r * sinf(s * PI / 12));
+        glEnd();
+        if (P.sgLastT > 0) {
+            snprintf(buf, sizeof buf, "%d/%d", P.sgLastPellets, SG_PELLETS);
+            text_c(0, cx, cy + r + 10, buf, 1, 0.75f, 0.35f, clampf(P.sgLastT / 0.2f, 0, 1));
         }
     }
     for (int i = 0; i < COIN_MAX; i++) {                 /* pieces disponibles */
@@ -5754,6 +6096,26 @@ static void render(float alpha, float frameDt) {
         glBegin(GL_LINES); glVertex3f(m->a.x, m->a.y, m->a.z); glVertex3f(m->b.x, m->b.y, m->b.z); glEnd();
         glLineWidth(2); glColor4f(1, 1, 1, a);
         glBegin(GL_LINES); glVertex3f(m->a.x, m->a.y, m->a.z); glVertex3f(m->b.x, m->b.y, m->b.z); glEnd();
+    }
+    for (int i = 0; i < MAXTR; i++) {                    /* Eventail : traceurs (tete de 2,5 m, puis trace qui s'eteint) */
+        Tracer *r = &TR[i];
+        if (r->t >= r->life) continue;
+        V3 dv = vsub(r->b, r->a);
+        float len = vlen(dv), travel = len / SG_TRACER_SPEED;
+        if (len < 1e-3f) continue;
+        dv = vmul(dv, 1.0f / len);
+        if (r->t < travel) {
+            float hd = r->t * SG_TRACER_SPEED;
+            V3 h = vadd(r->a, vmul(dv, hd)), q = vadd(r->a, vmul(dv, fmaxf(0, hd - 2.5f)));
+            glLineWidth(4); glColor4f(r->col.x, r->col.y, r->col.z, 0.3f);
+            glBegin(GL_LINES); glVertex3f(q.x, q.y, q.z); glVertex3f(h.x, h.y, h.z); glEnd();
+            glLineWidth(1.5f); glColor4f(1, 1, 1, 0.9f);
+            glBegin(GL_LINES); glVertex3f(q.x, q.y, q.z); glVertex3f(h.x, h.y, h.z); glEnd();
+        } else {
+            float a = 0.15f * (1 - (r->t - travel) / 0.12f);
+            glLineWidth(2); glColor4f(r->col.x, r->col.y, r->col.z, a);
+            glBegin(GL_LINES); glVertex3f(r->a.x, r->a.y, r->a.z); glVertex3f(r->b.x, r->b.y, r->b.z); glEnd();
+        }
     }
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, texDot);
@@ -6396,6 +6758,104 @@ static void run_tests(const char *path) {
                 P.anvilLandT == 0, P.vel.x, P.vel.y, P.vel.z, P.anvilState, L.x, L.y, L.z);
     }
 
+    /* --- Eventail (solo) : motif, cone, degats selon la distance, recul, pieces, munitions --- */
+    {
+        V3 dA[SG_PELLETS], dB[SG_PELLETS], dC[SG_PELLETS], d0 = vnorm(v3(0.3f, -0.2f, -0.93f));
+        unsigned int rng0 = rng;                           /* 1-2. meme graine = memes plombs, rng global intact */
+        sg_pellet_dirs(d0, SG_HALF_ANGLE, 1234u, dA);
+        sg_pellet_dirs(d0, SG_HALF_ANGLE, 1234u, dB);
+        sg_pellet_dirs(d0, SG_HALF_ANGLE, 98765u, dC);
+        fprintf(f, "eventail motif : meme graine identique %d, autre graine differente %d, rng global intact %d (attendu 1, 1, 1)\n",
+                !memcmp(dA, dB, sizeof dA), memcmp(dA, dC, sizeof dA) != 0, rng == rng0);
+        float amax[2] = { 0, 0 };                          /* 3. angle max sur 200 graines, debout puis en slide */
+        for (int pass = 0; pass < 2; pass++)
+            for (unsigned int sd = 1; sd <= 200; sd++) {
+                sg_pellet_dirs(d0, SG_HALF_ANGLE * (pass ? SG_SLIDE_SPREAD : 1), sd * 7919u, dA);
+                for (int k = 0; k < SG_PELLETS; k++)
+                    amax[pass] = fmaxf(amax[pass], atan2f(vlen(vcross(d0, dA[k])), vdot(d0, dA[k])) * 180 / PI);
+            }
+        fprintf(f, "eventail cone : angle max %.2f deg debout, %.2f en slide (attendu <= 4.50, <= 2.25)\n", amax[0], amax[1]);
+
+        static const float dz[3] = { 5, 10, 20 };          /* 4, 5 b, 5. drone a 5 / 10 / 20 m */
+        int pel[3]; float hpD[3];
+        for (int s = 0; s < 3; s++) {
+            reset_game();
+            P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0; P.grounded = 1;
+            P.ammo[WP_SHOTGUN] = 6; shotStreak = 0;
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.6f, 40 - dz[s]);
+            fire_shotgun();
+            pel[s] = P.sgLastPellets; hpD[s] = E[0].hp; hitstop = 0;
+        }
+        fprintf(f, "eventail drone a 5 / 10 / 20 m : plombs %d / %d / %d, PV %.1f / %.1f / %.1f (attendu 10 / 10 / 4, 20 / 20 / ~78.5)\n",
+                pel[0], pel[1], pel[2], hpD[0], hpD[1], hpD[2]);
+
+        reset_game();                                      /* 9-10. recul en l'air, plafonds, au sol */
+        P.pos = P.prevPos = v3(-20, 8, 40); P.grounded = 0; P.yaw = 0; P.pitch = -PI / 2; P.ammo[WP_SHOTGUN] = 6;
+        float rv[4];
+        P.vel = v3(0, 0, 0); fire_shotgun(); rv[0] = P.vel.y;
+        P.vel = v3(0, 8.4f, 0); fire_shotgun(); rv[1] = P.vel.y;
+        P.vel = v3(0, -10, 0); fire_shotgun(); rv[2] = P.vel.y;
+        P.vel = v3(0, 0, -20); P.yaw = PI; P.pitch = 0; fire_shotgun(); rv[3] = hlen(P.vel);   /* tir arriere apres un dash */
+        P.grounded = 1; P.vel = v3(3, 0, -5); P.pitch = -PI / 2; fire_shotgun();
+        fprintf(f, "eventail recul : vy %.1f depuis 0, %.1f depuis 8.4, %.1f en chute a -10, vitesse %.1f (tir arriere a 20), "
+                   "au sol (%.1f %.1f %.1f) (attendu 7.0, 9.0, -3.0, 20.0, (3.0 0.0 -5.0))\n",
+                rv[0], rv[1], rv[2], rv[3], P.vel.x, P.vel.y, P.vel.z);
+        hitstop = 0;
+
+        reset_game();                                      /* 11. piece eclatee : drone a 2 m d'elle, tireur a 2 m */
+        P.pos = P.prevPos = v3(-20, 0, 38); P.yaw = 0; P.pitch = 0; P.grounded = 1; P.ammo[WP_SHOTGUN] = 6; shotStreak = 0;
+        CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 3; CO[0].pos = v3(-20, 1.6f, 36);
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-18, 1.6f, 36);
+        fire_shotgun();
+        fprintf(f, "eventail eclat : pieces eclatees %d, plombs %d, PV drone %.1f, PV joueur %.0f, chaine %d (attendu 1, 0, 71.2, 100, 1)\n",
+                sgBursts, P.sgLastPellets, E[0].hp, P.hp, shotStreak);
+        hitstop = 0;
+
+        reset_game();                                      /* 12. deux pieces a 2 m : reaction en chaine */
+        P.pos = P.prevPos = v3(-20, 0, 38); P.yaw = 0; P.pitch = 0; P.grounded = 1; P.ammo[WP_SHOTGUN] = 6;
+        CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 3; CO[0].pos = v3(-20, 1.6f, 36);
+        CO[1].alive = 1; CO[1].owner = myId; CO[1].life = 3; CO[1].pos = v3(-18, 1.6f, 36);
+        fire_shotgun();
+        fprintf(f, "eventail eclat en chaine : pieces eclatees %d, message \"%s\" (attendu 2, ECLAT x2)\n", sgBursts, popText);
+        hitstop = 0;
+
+        int wl0 = wantLoadout[0], wl1 = wantLoadout[1];    /* 14. loadout Eventail + rail : 3 au spawn, 3 tirs, bascule */
+        wantLoadout[0] = WP_SHOTGUN; wantLoadout[1] = WP_RAIL;
+        reset_game();
+        waveDelay = 1000;                                  /* aucun drone pendant le test */
+        int spawnAmmo = P.ammo[WP_SHOTGUN], spawnW = P.weapon, shots = 0;
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = PI; P.pitch = 0;
+        botHeld[A_FIRE] = 1;
+        for (int i = 0; i < 480 && P.weapon == WP_SHOTGUN; i++) {
+            int a0 = P.ammo[WP_SHOTGUN];
+            game_tick(TICK); hitstop = 0;
+            shots += P.ammo[WP_SHOTGUN] < a0;
+        }
+        botHeld[A_FIRE] = 0;
+        fprintf(f, "eventail munitions : au spawn %d (%s), %d tirs puis a sec : munitions %d, arme %s (attendu 3 (EVENTAIL), 3, 0, RAILGUN)\n",
+                spawnAmmo, ammoDef[spawnW].name, shots, P.ammo[WP_SHOTGUN], ammoDef[P.weapon].name);
+
+        P.weapon = WP_SHOTGUN; P.switchT = 0;              /* 15. a vide pendant 10 s : aucune recharge passive */
+        for (int i = 0; i < 1200; i++) game_tick(TICK);
+        fprintf(f, "eventail a vide 10 s : munitions %d, jauge %.0f (attendu 0, 0)\n", P.ammo[WP_SHOTGUN], P.ammoGauge[WP_SHOTGUN]);
+
+        reset_game();                                      /* 16. a vide, Eventail en main : 2 coups d'epee = 1 cartouche */
+        P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
+        P.weapon = WP_SHOTGUN; P.ammo[WP_SHOTGUN] = 0; P.ammoGauge[WP_SHOTGUN] = 0;
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.6f, 38);
+        melee();
+        P.meleeCd = 0; P.parryWin = 0; hitstop = 0;
+        melee();
+        hitstop = 0;
+        int afterSword = P.ammo[WP_SHOTGUN]; float gSword = P.ammoGauge[WP_SHOTGUN];
+        P.ammo[WP_SHOTGUN] = 5; P.ammoGauge[WP_SHOTGUN] = 0;   /* 17. a 5 : grande cellule (150) -> 6, jauge pleine */
+        pickup_taken(0, myId);
+        fprintf(f, "eventail jauge : 2 coups d'epee -> %d cartouche(s), jauge %.0f ; a 5 + grande cellule (%d) -> %d, jauge affichee %.0f "
+                   "(attendu 1, 0 ; 150, 6, 100)\n", afterSword, gSword, PU[0].pts, P.ammo[WP_SHOTGUN], 100 * gauge_frac(WP_SHOTGUN));
+        PU[0].t = 0;
+        wantLoadout[0] = wl0; wantLoadout[1] = wl1;
+    }
+
     /* LAN simule (hote sans socket) : un bot contre une cible immobile */
     netMode = NET_HOST; connected = 1; myId = 0; botMode = 2; appState = APP_GAME;
     botLog = f;
@@ -6572,6 +7032,55 @@ static void run_tests(const char *path) {
         }
         fprintf(f, "bot enclume : pique=%d, onde qui touche=%d, PV cible %.0f (attendu 1, 1, < 100)\n",
                 dived, slamWaveHits - wavesBefore, NP[1].hp);
+    }
+
+    /* Eventail en LAN simule : un seul EV_HIT par tir (agregation), x0,7, plafond 60, chaine a 3 plombs, traceurs recus */
+    {
+        static const float dist[5] = { 3, 10, 3, 30, 10 };
+        static const int streak0[5] = { 0, 0, 8, 2, 2 };
+        float hpLeft[5]; int evHits[5], streakAfter[5], pel[5];
+        for (int s = 0; s < 5; s++) {
+            reset_game();
+            dmMode = 1;
+            memset(NP, 0, sizeof NP);
+            NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi");
+            NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
+            P.pos = P.prevPos = v3(-20, 0, 60); P.grounded = 1;
+            NP[1].disp = v3(-20, 0, 60 - dist[s]); vf(NP[1].st.pos, NP[1].disp);
+            V3 d = vsub(np_center(1), eye_pos());
+            P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
+            P.ammo[WP_SHOTGUN] = 6; shotStreak = streak0[s]; hitstop = 0;
+            int h0 = hitCount[W_SHOTGUN];
+            fire_shotgun();
+            hpLeft[s] = NP[1].hp; evHits[s] = hitCount[W_SHOTGUN] - h0; streakAfter[s] = shotStreak; pel[s] = P.sgLastPellets;
+        }
+        hitstop = 0;
+        fprintf(f, "eventail PvP a 3 m : %d EV_HIT, %d plombs, PV %.1f (attendu 1, 10, 44)\n", evHits[0], pel[0], hpLeft[0]);
+        fprintf(f, "eventail PvP a 10 m : %d EV_HIT, %d plombs, PV %.1f (attendu 1, 6 a 8 selon la rotation, %.1f = 100 - plombs x 5.6)\n",
+                evHits[1], pel[1], hpLeft[1], 100 - pel[1] * SG_PELLET_DMG * PVP_SCALE);
+        fprintf(f, "eventail PvP a 3 m, chaine 8 : PV %.1f (attendu 40 : plafond de 60)\n", hpLeft[2]);
+        fprintf(f, "eventail PvP a 30 m, chaine 2 : %d plomb(s), chaine apres %d (attendu 1, 0 : moins de 3 plombs)\n", pel[3], streakAfter[3]);
+        fprintf(f, "eventail PvP a 10 m, chaine 2 : %d plombs, chaine apres %d, PV %.1f (attendu 6 a 8, 3, %.1f = 100 - plombs x 7.28)\n",
+                pel[4], streakAfter[4], hpLeft[4], 100 - pel[4] * SG_PELLET_DMG * 1.3f * PVP_SCALE);
+
+        memset(TR, 0, sizeof TR);                          /* 13. EV_SHOT recu d'un autre joueur : 10 traceurs recalcules */
+        NetEvent e = ev_new(EV_SHOT);
+        e.from = 1; e.sub = SG_PELLETS; e.netId = 4242u; e.f[6] = SG_HALF_ANGLE;
+        vf(e.f, v3(-20, 1.6f, 30)); vf(e.f + 3, v3(0, 0, 1));
+        apply_event(&e);
+        int live = 0;
+        for (int i = 0; i < MAXTR; i++) live += TR[i].t < TR[i].life;
+        fprintf(f, "eventail EV_SHOT recu : %d traceurs, recul visuel du tireur %.2f (attendu 10, 0.12)\n", live, NP[1].sgFireT);
+
+        reset_game();                                      /* bot au loadout Eventail + rail, cible immobile a 8 m */
+        dmMode = 1;
+        NP[1].active = NP[1].alive = 1; NP[1].hp = 100; NP[1].disp = v3(-20, 0, 52); vf(NP[1].st.pos, NP[1].disp);
+        P.pos = P.prevPos = v3(-20, 0, 60); P.yaw = 0; P.dashCharge = 0;   /* pas de cross-up : on veut le tir direct */
+        P.loadout[0] = WP_RAIL; P.loadout[1] = WP_SHOTGUN; P.weapon = WP_RAIL;
+        int hs0 = hitCount[W_SHOTGUN], hr0 = hitCount[W_RAIL];
+        for (int i = 0; i < 90 && NP[1].alive; i++) { nowT += TICK; bot_think(TICK); game_tick(TICK); hitstop = 0; }
+        fprintf(f, "bot eventail a 8 m : arme %s, touches eventail %d, rail %d (attendu EVENTAIL, >= 1, 0)\n",
+                ammoDef[P.weapon].name, hitCount[W_SHOTGUN] - hs0, hitCount[W_RAIL] - hr0);
     }
 
     /* reglages : sauvegarde puis rechargement de velocity.ini */
@@ -6832,6 +7341,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             NP[2].st.pad = MK_ANVIL | ST_SLAM; NP[2].disp = v3(-2, 5, 12); vf(NP[2].st.vel, v3(0, -34, 0));
         }
         P.pos = P.prevPos = v3(0, 0, 24); P.yaw = -0.1f; P.pitch = 0.08f; P.hp = 100;
+        if (strstr(shotPath, "eventail")) {               /* Rival a l'Eventail : son tir recu (traceurs recalcules) */
+            NP[1].st.weapon = WP_SHOTGUN; NP[1].st.flags = 0; NP[1].st.melee = 0;
+            NetEvent e = ev_new(EV_SHOT);
+            V3 o = v3(NP[1].disp.x, NP[1].disp.y + EYE_STAND, NP[1].disp.z), to = vnorm(vsub(v3(1.5f, 1.2f, 24), o));
+            e.from = 1; e.sub = SG_PELLETS; e.netId = 777u; e.f[6] = SG_HALF_ANGLE; e.actor = 3;
+            vf(e.f, o); vf(e.f + 3, to);
+            apply_event(&e);
+            for (int i = 0; i < 3; i++) fx_tick(TICK);
+        }
         matchT = 95;
         render(1, TICK);
         save_bmp(shotPath);
@@ -6860,6 +7378,17 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             fire_kinetic();
             P.fireCd = 0; P.kinT = 0; muzzleT = 0; P.vel = v3(0, 0, -16); P.kinDashT = 0.03f;
             impactT = 0; hitstop = 0;                     /* on veut voir le rayon, pas l'impact frame */
+        }
+        if (strstr(shotPath, "eventail")) {               /* Eventail : un tir sur un drone, traceurs en vol, pompe, cercle */
+            hook_release(0);
+            P.loadout[1] = WP_SHOTGUN; P.weapon = WP_SHOTGUN; P.switchT = 0; P.fireCd = 0; P.meleeT = 0;
+            P.ammo[WP_SHOTGUN] = 4; P.ammoGauge[WP_SHOTGUN] = 60;
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 300; E[0].pos = vadd(eye_pos(), vmul(view_dir(), 12));
+            P.vel = v3(0, 0, -8);
+            fire_shotgun();
+            hitstop = 0; impactT = 0; muzzleT = 0.06f;
+            for (int i = 0; i < 4; i++) fx_tick(TICK);
+            P.sgPumpT = P.sgPumpMax * 0.45f;              /* pompe en plein recul */
         }
         if (strstr(shotPath, "impact") || strstr(shotPath, "fx")) {   /* un kill au rail a pleine vitesse */
             P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2; P.fireCd = 0; P.meleeT = 0;
@@ -6970,6 +7499,11 @@ done:
                    "immobilisations %d ; arbitre : touches %d, ondes parees %d, combos onde + rail %d",
                    slamDives, slamWaveHits, slamWaves, slamVySum / (slamWaves ? slamWaves : 1),
                    slamDmgSum / (slamWaves ? slamWaves : 1), slamStuns, hitCount[W_SLAM], slamParried, slamRailCombos);
+        if (sgShots || hitCount[W_SHOTGUN])
+            netlog("eventail : %d tirs, plombs moyens %.1f, tirs qui comptent pour la chaine %.0f%%, shotgun jumps %d, "
+                   "pieces eclatees %d ; arbitre : touches %d",
+                   sgShots, sgPelletSum / (float)(sgShots ? sgShots : 1), 100.0f * sgStreakShots / (sgShots ? sgShots : 1),
+                   sgJumps, sgBurstSum, hitCount[W_SHOTGUN]);
     }
     net_shutdown();
     if (botLog) fclose(botLog);
