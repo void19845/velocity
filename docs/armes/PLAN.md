@@ -129,6 +129,19 @@ L'Égide impose que chaque arme teste le bouclier avant d'infliger des dégâts 
 
 **Ordre d'implémentation recommandé** : 4.1 (correction du bug) → 00 Infra → 07 Élan → 01 Enclume, puis les autres selon tes choix. L'Égide (05) vient en dernier, car elle touche toutes les autres armes.
 
+**État au 28/10/2026** (dépôt git, branche `master`) :
+
+| Étape | État | Commit |
+|---|---|---|
+| 4.1 Bug du coup paré | **Fait** | (avant le dépôt) |
+| 00 Infra : loadout, jauges, cellules | **Fait** | `3388cd6` |
+| 07 Élan | **Fait** | `6e88bbd` |
+| 01 Enclume | **Fait** | `fef969a`, fusion `b5169aa` |
+| 02 Lance, 03 Fléau, 04 Poings, 06 Éventail, 08 Scie, 09 Ventouse, 10 Tesla | À faire | — |
+| 05 Égide | À faire, en dernier | — |
+
+`NET_VER` vaut 6. Pour un match de bots avec les nouvelles armes : `--loadout 3,1,1` (Élan, roquettes, Enclume).
+
 ## 6. Décisions de l'utilisateur (27/10/2026)
 
 | # | Question | Décision |
