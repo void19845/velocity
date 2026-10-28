@@ -14,3 +14,5 @@ velocity.ini
 # worker (Node)
 node_modules/
 .wrangler/
+# copies de travail des agents
+.claude/worktrees/
