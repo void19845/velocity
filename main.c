@@ -141,6 +141,41 @@ static V3 rand_dir(void) {
 #define MELEE_PARRIED_CD  1.0f    /* attaquant dont l'epee est paree : epee bloquee */
 #define MELEE_PARRY_GRACE 0.15f   /* tolerance de latence pour l'hote */
 
+/* --- Enclume (marteau-pilon) : la melee verticale, elle recompense la hauteur --- */
+/* coup au sol (ou en l'air trop pres du sol) */
+#define ANVIL_CD           0.8f    /* recharge du coup au sol */
+#define ANVIL_WHIFF_CD     1.2f    /* coup au sol dans le vide */
+#define ANVIL_SWING_T      0.3f    /* duree de l'animation du coup */
+#define ANVIL_RANGE        2.6f    /* portee de base */
+#define ANVIL_RANGE_PER_MS 0.10f   /* portee en plus par m/s relatif */
+#define ANVIL_DMG          45.0f   /* degats de base */
+#define ANVIL_DMG_PER_MS   3.0f    /* degats en plus par m/s relatif */
+#define ANVIL_CONE         0.45f   /* cosinus du demi-angle (plus large que l'epee) */
+#define ANVIL_KNOCK        14.0f   /* recul vers l'avant */
+#define ANVIL_KNOCK_UP     6.0f    /* recul vers le haut */
+#define ANVIL_PARRY_WINDOW 0.10f   /* fenetre de parry, plus courte que l'epee */
+/* pique et onde de choc */
+#define SLAM_VY            30.0f   /* vitesse de chute minimale du pique */
+#define SLAM_VY_MAX        45.0f   /* plafond de |vy| */
+#define SLAM_MIN_H         1.2f    /* hauteur minimale sous les pieds pour piquer (sinon : coup au sol) */
+#define SLAM_FULL_H        4.0f    /* hauteur de chute pour 100% des degats (0 = desactive) */
+#define SLAM_RADIUS        2.5f    /* rayon de base de l'onde */
+#define SLAM_RADIUS_PER_MS 0.06f   /* rayon en plus par m/s de chute */
+#define SLAM_DMG           25.0f   /* degats de base de l'onde */
+#define SLAM_DMG_PER_MS    1.5f    /* degats en plus par m/s de chute */
+#define SLAM_REACH_UP      1.0f    /* l'onde ne touche que les pieds a moins de 1 m du sol : un saut simple l'esquive */
+#define SLAM_REACH_DOWN    1.0f    /* ni ce qui est plus bas que le sol d'impact */
+#define SLAM_KNOCK_UP      12.0f   /* recul vertical des cibles */
+#define SLAM_KNOCK_OUT     8.0f    /* recul horizontal au centre */
+#define SLAM_BOUNCE        9.0f    /* rebond si l'onde touche */
+#define SLAM_STUN          0.6f    /* immobilisation si l'onde rate */
+#define SLAM_CD            0.8f    /* recharge apres l'atterrissage */
+#define SLAM_BREAK_VY      -15.0f  /* poussee vers le haut qui casse le pique */
+#define SLAM_PARRY_GRACE   0.2f    /* tolerance de l'hote pour parer l'onde */
+#define SLAM_PARRIED_UP    12.0f   /* attaquant pare : renvoye en l'air */
+#define ST_SLAM            0x10    /* NetPState.pad : pique en cours */
+enum { ANVIL_IDLE, ANVIL_DIVE, ANVIL_STUN };
+
 /* Axe tir : chaque touche successive augmente degats et cadence, un tir rate remet a zero */
 #define STREAK_MAX        8
 #define STREAK_DMG        0.15f   /* +15% de degats par touche */
@@ -179,7 +214,7 @@ static const AmmoDef ammoDef[WP_COUNT] = {
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
 static unsigned char wpReady[WP_COUNT] = { 1, 1, 0, 0, 0, 0, 0 };   /* chaque arme codee passe sa case a 1 */
-static unsigned char mkReady[MK_COUNT] = { 1, 0, 0, 0, 0, 0 };
+static unsigned char mkReady[MK_COUNT] = { 1, 1, 0, 0, 0, 0 };
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, 0.5f, 0.4f, 0.5f, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
@@ -190,7 +225,8 @@ static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, 0.95f, 0.5f, 0.4f, 0.5
 #define BUFLEN  512
 #define MAXV    32
 enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
-       S_ESHOT, S_PAD, S_WAVE, S_WALLJUMP, S_SLIDE, S_HOOK, S_HOOKHIT, S_PUNCH, S_PARRY, S_COUNT };
+       S_ESHOT, S_PAD, S_WAVE, S_WALLJUMP, S_SLIDE, S_HOOK, S_HOOKHIT, S_PUNCH, S_PARRY,
+       S_ANVIL_DIVE, S_ANVIL_SLAM, S_ANVIL_CLANG, S_COUNT };
 typedef struct { short *data; int len; } Sound;
 typedef struct { int snd, active; float pos, step, vol; } Voice;
 static Sound sounds[S_COUNT];
@@ -396,6 +432,38 @@ static void make_sounds(void) {
                noise() * 0.5f * expf(-t * 60);
     }
     sounds[S_PARRY] = mksound(b, n);
+
+    /* --- Enclume --- */
+    /* pique : sifflement descendant qui enfle (la duree couvre un pique typique) */
+    b = sbuf(1.0f, &n); ph = 0; lp = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (500 + 1300 * expf(-t * 2.5f)) / SR;
+        lp += 0.15f * (noise() - lp);
+        float env = t / 1.0f * (t > 0.97f ? (1.0f - t) / 0.03f : 1.0f);
+        b[i] = (sinf(ph * 2 * PI) * 0.25f + lp * 0.9f) * env;
+    }
+    sounds[S_ANVIL_DIVE] = mksound(b, n);
+    /* onde de choc : grave qui tombe, souffle filtre, deux partiels metalliques */
+    b = sbuf(1.0f, &n); ph = 0; lp = 0;
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        ph += (55 - 25 * t) / SR;
+        float fc = 150 + 2500 * expf(-t * 7);
+        a = 1 - expf(-2 * PI * fc / SR);
+        lp += a * (noise() - lp);
+        b[i] = sinf(ph * 2 * PI) * 0.9f * expf(-t * 4) + lp * 1.3f * expf(-t * 4.5f) +
+               (sinf(t * 2 * PI * 220) + sinf(t * 2 * PI * 347)) * 0.15f * expf(-t * 6);
+    }
+    sounds[S_ANVIL_SLAM] = mksound(b, n);
+    /* coup au sol qui touche : partiels inharmoniques + clic */
+    b = sbuf(0.4f, &n);
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        b[i] = sinf(t * 2 * PI * 520) * 0.35f * expf(-t * 12) + sinf(t * 2 * PI * 1310) * 0.25f * expf(-t * 18) +
+               sinf(t * 2 * PI * 2150) * 0.18f * expf(-t * 25) + (t < 0.005f ? noise() * 0.8f : 0);
+    }
+    sounds[S_ANVIL_CLANG] = mksound(b, n);
 }
 
 static void audio_init(void) {
@@ -622,6 +690,9 @@ typedef struct {
     int swingHitPts, swingParryPts;                       /* ce coup a deja donne ses points de touche / de parry */
     float undoPts[2];                                     /* points de la derniere touche par emplacement (annulables) */
     double undoT;
+    int anvilState;                                       /* Enclume : ANVIL_IDLE / DIVE / STUN */
+    float anvilStartY, anvilStunT;                        /* y au debut du pique, immobilisation restante */
+    float anvilLandT, anvilLastVy;                        /* temps depuis la derniere onde, |vy| de la derniere onde */
 } Player;
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
@@ -689,6 +760,7 @@ typedef struct {
     V3 disp;                      /* position affichee, lissee entre deux paquets */
     double recvT, lastHeard, lastParryT;
     float flashT;                                         /* flash blanc quand il est touche */                 /* lastParryT : derniere fois vu en fenetre de parry */
+    unsigned char anvilPrevPad;                           /* Enclume : pad du tick precedent (debut d'un pique adverse) */
     struct sockaddr_in addr;      /* hote seulement */
 } NetPlayer;
 
@@ -721,6 +793,7 @@ static void net_fx_rocket(V3 pos, V3 vel, unsigned int netId);
 static void net_fx_rocket_end(unsigned int netId, V3 pos);
 static void net_fx_parry(unsigned int netId, V3 pos, V3 vel, float mult, int parries);
 static void net_fx_melee(V3 pos, V3 dir, float sp);
+static void net_fx_slam(V3 pos, float radius, float vy, int hits);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
 
 /* ------------------------------------------------------------------ */
@@ -966,6 +1039,8 @@ static void hook_release(int jumpBoost) {
 
 static float enemy_radius(int type);
 static void damage_enemy(int i, float dmg, V3 knock);
+static void slam_land(float vyImpact);                    /* Enclume : definies avec la melee */
+static void slam_contact(void);
 
 /* Apres l'impact sur la cible accrochee : rebond vers le haut avec le grappin recharge,
  * pour enchainer sur la suivante. */
@@ -1094,6 +1169,18 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     V3 wish = vnorm(vadd(vmul(f, fw), vmul(r, sd)));
     int hasWish = fw != 0 || sd != 0;
 
+    /* Enclume : pendant le pique et l'immobilisation, plus de controle (ni saut ni grappin) */
+    if (P.dead && P.anvilState != ANVIL_IDLE) { P.anvilState = ANVIL_IDLE; P.anvilStunT = 0; }
+    int diving = P.anvilState == ANVIL_DIVE, stun = P.anvilState == ANVIL_STUN;
+    V3 wishIn = wish;
+    int hasWishIn = hasWish;
+    if (diving || stun) { fw = sd = 0; wish = v3(0, 0, 0); hasWish = 0; jumpPress = 0; }
+    if (stun) dashPress = 0;
+    if (diving && dashPress && P.dashCharge >= 1) {       /* le dash annule le pique : l'echappatoire payante */
+        P.anvilState = ANVIL_IDLE; P.meleeCd = SLAM_CD; diving = 0;
+        wish = wishIn; hasWish = hasWishIn;
+    }
+
     P.slideCd -= dt; P.wallJumpCd -= dt;
     P.coyote = P.grounded ? 0 : P.coyote + dt;
     if (P.dashCharge < 2) P.dashCharge = fminf(2, P.dashCharge + dt / DASH_RECHARGE);
@@ -1119,7 +1206,7 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     if (alive && jumpPress && P.hook == HOOK_ATTACHED) { hook_release(1); jumpPress = 0; }
 
     /* saut : sol (bhop auto en maintenant), wall-jump, double saut */
-    if (alive && (jumpPress || (act[A_JUMP] && P.grounded))) {
+    if (alive && !diving && !stun && (jumpPress || (act[A_JUMP] && P.grounded))) {
         if (P.grounded || P.coyote < 0.1f) {
             P.vel.y = JUMP_V; P.grounded = 0; P.coyote = 1; P.sliding = 0;
             play(S_JUMP, 0.5f, frange(0.95f, 1.05f));
@@ -1158,7 +1245,7 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
         play(S_DASH, 0.7f, 1.0f);
     }
 
-    grapple_tick(dt, alive && hookPressIn, alive && hookHeldIn);
+    grapple_tick(dt, alive && hookPressIn && !diving && !stun, alive && hookHeldIn);
 
     /* friction (aucune quand le grappin tire) */
     if (P.grounded && P.hook != HOOK_ATTACHED) {
@@ -1192,6 +1279,22 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     P.vel.y -= (P.wallrun ? GRAVITY * 0.12f : P.hook == HOOK_ATTACHED ? GRAVITY * 0.5f : GRAVITY) * dt;
     if (P.wallrun && P.vel.y < -1.0f) P.vel.y = -1.0f;
 
+    /* Enclume : chute plafonnee ; une poussee vers le haut (roquette, recul) casse le pique */
+    if (diving) {
+        if (P.vel.y < -SLAM_VY_MAX) P.vel.y = -SLAM_VY_MAX;
+        if (P.vel.y > SLAM_BREAK_VY) { P.anvilState = ANVIL_IDLE; P.meleeCd = fmaxf(P.meleeCd, SLAM_CD); diving = 0; }
+        else for (int k = 0; k < 2; k++)                  /* trainee du meteore (au-dessus de la tete : hors de la vue) */
+            add_part(vadd(P.pos, v3(frange(-.3f, .3f), frange(1.9f, 2.4f), frange(-.3f, .3f))), v3(frange(-1, 1), 4, frange(-1, 1)),
+                     v3(1, 0.6f, 0.25f), 0.35f, 0.14f, 0);
+    }
+    if (stun) {                                           /* immobilise : seul un recul vers le haut libere */
+        if (P.vel.y > 2) { P.anvilState = ANVIL_IDLE; P.anvilStunT = 0; stun = 0; }
+        else {
+            P.vel.x = P.vel.z = 0;
+            if ((P.anvilStunT -= dt) <= 0) { P.anvilState = ANVIL_IDLE; P.anvilStunT = 0; }
+        }
+    }
+
     /* deplacement + collisions, sous-pas si on va vite */
     int wasG = P.grounded;
     float prevVy = P.vel.y;
@@ -1203,7 +1306,13 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
         move_axis(1, P.vel.y * dt / steps, 0);
     }
 
-    if (P.grounded && !wasG) {
+    /* Enclume : contact direct en l'air, puis onde de choc a l'atterrissage (avant le jump pad) */
+    int onPad = P.grounded && boxes[P.groundBox].kind == B_PAD;
+    int slammed = 0;
+    if (diving && alive) slam_contact();
+    if (P.grounded && !wasG && P.anvilState == ANVIL_DIVE && alive) { slam_land(-prevVy); slammed = 1; }
+
+    if (P.grounded && !wasG && !slammed) {
         P.airJumps = 1; P.wallTime = 0; P.wallrun = 0;
         if (prevVy < -10)
             for (int k = 0; k < 18; k++) {                /* anneau de poussiere */
@@ -1217,16 +1326,18 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
         }
     }
 
-    if (P.grounded && boxes[P.groundBox].kind == B_PAD && alive) {
+    if (onPad && alive) {
         V3 L = boxes[P.groundBox].launch;
         P.vel = L; P.grounded = 0; P.airJumps = 1; P.coyote = 1;
+        P.anvilState = ANVIL_IDLE; P.anvilStunT = 0;      /* le pad relance apres l'onde : pas d'immobilisation */
         P.fovKick += 6;
         burst(P.pos, v3(0.3f, 0.9f, 1.0f), 30, 6, 0.6f, 0.15f);
         play(S_PAD, 0.8f, 1.0f);
     }
 
     wall_check();
-    if (alive && !P.grounded && P.hook != HOOK_ATTACHED && P.wallTouch && act[A_FWD] && hlen(P.vel) > WALLRUN_MIN && P.wallTime < WALLRUN_MAX) {
+    if (alive && P.anvilState != ANVIL_DIVE && !P.grounded && P.hook != HOOK_ATTACHED && P.wallTouch && act[A_FWD] &&
+        hlen(P.vel) > WALLRUN_MIN && P.wallTime < WALLRUN_MAX) {
         if (!P.wallrun) { P.wallrun = 1; if (P.vel.y < 1) P.vel.y = 1; P.airJumps = 1; }
         P.wallTime += dt;
         if (frand() < 0.3f)
@@ -1482,7 +1593,241 @@ static int try_parry(void) {
     return parried;
 }
 
+/* ------------------------------------------------------------------ */
+/* Enclume (marteau-pilon) : coup au sol, pique, onde de choc          */
+/* Au sol : coup lourd frontal. En l'air (assez haut) : pique a 30 m/s */
+/* minimum, puis onde de choc a l'atterrissage dont rayon et degats    */
+/* montent avec la vitesse de chute. Touche : rebond + dash ; rate :   */
+/* immobilise 0,6 s. L'onde rampe au sol : sauter l'esquive.           */
+/* ------------------------------------------------------------------ */
+static int slamDives, slamWaves, slamWaveHits, slamStuns;   /* journal du bot */
+static float slamVySum, slamDmgSum;
+
+static float anvil_range(float rel) { return ANVIL_RANGE + rel * ANVIL_RANGE_PER_MS; }
+static float anvil_dmg(float rel) { return ANVIL_DMG + rel * ANVIL_DMG_PER_MS; }
+static float slam_radius(float vy) { return SLAM_RADIUS + SLAM_RADIUS_PER_MS * vy; }
+static float slam_kh(float fallH) { return SLAM_FULL_H > 0 ? clampf(fallH / SLAM_FULL_H, 0.5f, 1) : 1; }
+static float slam_dmg(float vy, float fallH) { return (SLAM_DMG + SLAM_DMG_PER_MS * vy) * slam_kh(fallH); }
+
+/* distance au sol sous un point (les pieds), 50 si rien */
+static float anvil_ground_dist(V3 feet) {
+    return ray_world(vadd(feet, v3(0, 0.05f, 0)), v3(0, -1, 0), 50, 0) - 0.05f;
+}
+
+static void anvil_reset(void) { P.anvilState = ANVIL_IDLE; P.anvilStunT = 0; P.anvilLandT = 10; }
+
+/* Prevision du pique (sans controle aerien, la trajectoire est deterministe) : point d'impact,
+ * |vy| a l'impact, rayon de l'onde et temps de chute. Sert au repere d'impact, au HUD et au bot. */
+static int slam_predict(V3 *at, float *vy, float *R, float *tFall) {
+    float h = anvil_ground_dist(P.pos);
+    if (h >= 50) return 0;
+    float v0 = P.anvilState == ANVIL_DIVE ? fmaxf(-P.vel.y, 0) : fmaxf(-P.vel.y, SLAM_VY);
+    float t = (-v0 + sqrtf(v0 * v0 + 2 * GRAVITY * h)) / GRAVITY;
+    V3 p = vadd(P.pos, v3(P.vel.x * t, 0, P.vel.z * t));
+    float drop = anvil_ground_dist(v3(p.x, P.pos.y, p.z));
+    if (drop >= 50) drop = h;
+    *at = v3(p.x, P.pos.y - drop, p.z);
+    *vy = fminf(sqrtf(v0 * v0 + 2 * GRAVITY * drop), SLAM_VY_MAX);
+    *R = slam_radius(*vy);
+    if (tFall) *tFall = t;
+    return 1;
+}
+
+/* coup au sol : copie de l'epee avec les reglages de l'Enclume */
+static void anvil_strike(void) {
+    float sp = vlen(P.vel);
+    V3 eye = eye_pos(), f = view_dir();
+    V3 r = v3(cosf(P.yaw), 0, sinf(P.yaw)), u = vcross(r, f);
+    int hits = 0, parried = 0;
+
+    melee_start_swing();
+    parried = try_parry();
+    for (int i = 0; i < MAXE; i++) {
+        Enemy *e = &E[i];
+        if (!e->alive) continue;
+        float rel = rel_speed(e->vel);
+        V3 d = vsub(e->pos, eye);
+        float dist = vlen(d), reach = dist - enemy_radius(e->type);
+        if (reach > anvil_range(rel)) continue;
+        if (reach > 0.8f && vdot(vmul(d, 1.0f / dist), f) < ANVIL_CONE) continue;
+        if (e->type == EN_RUSHER) {                       /* kamikaze pare : explose dans sa face */
+            V3 at = e->pos;
+            damage_enemy(i, 9999, vmul(f, 10));
+            parry_feedback(at);
+            melee_parry_points(PTS_PARRY);
+            parried++;
+        } else {
+            damage_enemy(i, anvil_dmg(rel), vadd(vmul(f, ANVIL_KNOCK), v3(0, ANVIL_KNOCK_UP, 0)));
+            if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
+        }
+        hits++;
+    }
+    for (int i = 0; i < MAXP; i++) {                     /* LAN : les autres joueurs */
+        if (!np_target(i)) continue;
+        float rel = rel_speed(np_vel(i));
+        V3 c = np_center(i), d = vsub(c, eye);
+        float dist = vlen(d), reach = dist - 0.5f;
+        if (reach > anvil_range(rel)) continue;
+        if (reach > 0.8f && vdot(vmul(d, 1.0f / dist), f) < ANVIL_CONE) continue;
+        net_hit(i, anvil_dmg(rel) * PVP_SCALE, vadd(vmul(f, ANVIL_KNOCK), v3(0, ANVIL_KNOCK_UP, 0)), W_SLAM);
+        burst(c, v3(1, 0.7f, 0.35f), 24, 9, 0.35f, 0.14f);
+        hits++;
+    }
+    float range = anvil_range(sp);
+    for (float a = -0.6f; a <= 0.6f; a += 0.1f) {        /* arc vertical : la tete tombe de haut en bas */
+        V3 p = vadd(eye, vadd(vmul(f, range * 0.6f + 0.5f), vadd(vmul(u, -a * range * 0.5f), vmul(r, a * 0.15f))));
+        add_part(p, vadd(vmul(f, 2), v3(0, -4, 0)), v3(1, 0.75f, 0.45f), 0.18f, 0.09f + sp * 0.002f, 0);
+    }
+    if (dmMode) net_fx_melee(eye, f, sp);                 /* EV_MELEE : le recepteur lit meleeKind dans pad */
+    P.meleeCd = ANVIL_CD;
+    P.meleeT = ANVIL_SWING_T;
+    P.parryWin = ANVIL_PARRY_WINDOW;
+    P.swingLanded = hits || parried;
+    play(S_DASH, 0.45f, 0.8f);                            /* souffle plus grave que l'epee */
+    if (hits) {
+        melee_hit_points(meleePts[P.meleeKind]);
+        P.dashCharge = fminf(2, P.dashCharge + 1);
+        hitMarker = 0.18f;
+        shake += 0.25f;
+        if (!parried) hitstop = fmaxf(hitstop, 0.06f + sp * 0.002f);
+        play(S_ANVIL_CLANG, 0.9f, frange(0.9f, 1.05f));
+    }
+}
+
+static void slam_start(void) {
+    if (P.hook != HOOK_NONE) hook_release(0);
+    P.wallrun = P.sliding = 0;
+    P.anvilState = ANVIL_DIVE; P.anvilStartY = P.pos.y;
+    P.vel.y = fminf(P.vel.y, -SLAM_VY);
+    P.fovKick += 6; shake += 0.1f;
+    slamDives++;
+    play(S_ANVIL_DIVE, 0.8f, 1.0f);
+    if (botMode) netlog("enclume : pique depuis %.1f m", anvil_ground_dist(P.pos));
+}
+
+/* appui sur la melee avec l'Enclume : au sol (ou trop pres du sol) coup lourd, sinon pique */
+static void anvil_press(void) {
+    if (P.anvilState != ANVIL_IDLE) return;
+    if (P.grounded || anvil_ground_dist(P.pos) < SLAM_MIN_H) anvil_strike();
+    else slam_start();
+}
+
+/* onde de choc (calquee sur explode, mais au sol et sans traverser les murs).
+ * directP / directE : cible d'un contact direct en l'air (-1 = onde au sol) : elle seule prend tout. */
+static void slam_resolve(float vyImpact, int directP, int directE) {
+    float vy = fminf(fabsf(vyImpact), SLAM_VY_MAX), H = P.anvilStartY - P.pos.y;
+    float R = slam_radius(vy), D = slam_dmg(vy, H);
+    V3 c = P.pos, eyeC = vadd(c, v3(0, 0.5f, 0));
+    int hits = 0, nt = 0, tgt[MAXP];
+    float tdmg[MAXP];
+    V3 tkn[MAXP];
+
+    melee_start_swing();                                  /* une onde = un coup (points de jauge) */
+    for (int i = 0; i < MAXE; i++) {
+        Enemy *e = &E[i];
+        float er = enemy_radius(e->type), f = 1;
+        if (!e->alive || (directE >= 0 && i != directE) || directP >= 0) continue;
+        if (directE < 0) {
+            if (e->pos.y - er - c.y > SLAM_REACH_UP || e->pos.y + er < c.y - SLAM_REACH_DOWN) continue;
+            float d = hlen(v3(e->pos.x - c.x, 0, e->pos.z - c.z)), Rc = R + er;
+            if (d >= Rc || !los(eyeC, e->pos)) continue;
+            f = 1 - d / Rc;
+        }
+        V3 out = vnorm(v3(e->pos.x - c.x, 0.001f, e->pos.z - c.z));
+        float dmg = D * (0.3f + 0.7f * f);
+        damage_enemy(i, dmg, v3(out.x * SLAM_KNOCK_OUT * f, SLAM_KNOCK_UP, out.z * SLAM_KNOCK_OUT * f));
+        if (!e->alive && e->type == EN_DRONE) ammo_points(PTS_MELEE_KILL, AP_KILL);
+        slamDmgSum += dmg;
+        hits++;
+    }
+    for (int i = 0; i < MAXP; i++) {                     /* LAN : les touches partent apres le rebond (voir plus bas) */
+        V3 d = NP[i].disp;
+        float f = 1;
+        if (!np_target(i) || (directP >= 0 && i != directP) || directE >= 0) continue;
+        if (directP < 0) {
+            if (d.y - c.y > SLAM_REACH_UP || d.y < c.y - SLAM_REACH_DOWN) continue;
+            float dh = hlen(v3(d.x - c.x, 0, d.z - c.z)), Rc = R + 0.5f;
+            if (dh >= Rc || !los(eyeC, np_center(i))) continue;
+            f = 1 - dh / Rc;
+        }
+        V3 out = vnorm(v3(d.x - c.x, 0.001f, d.z - c.z));
+        tgt[nt] = i; tdmg[nt] = D * (0.3f + 0.7f * f) * PVP_SCALE;
+        tkn[nt] = v3(out.x * SLAM_KNOCK_OUT * f, SLAM_KNOCK_UP, out.z * SLAM_KNOCK_OUT * f);
+        slamDmgSum += tdmg[nt];
+        nt++; hits++;
+    }
+
+    /* effets locaux */
+    for (int k = 0; k < 36; k++) {
+        float a = k * (2 * PI / 36);
+        add_part(vadd(c, v3(0, 0.15f, 0)), v3(cosf(a) * R * 2.2f, 0.6f, sinf(a) * R * 2.2f), v3(1, 0.7f, 0.35f), 0.4f, 0.22f, 0);
+    }
+    burst(c, v3(0.75f, 0.72f, 0.7f), 40, 6, 0.6f, 0.2f);
+    shards(c, v3(0.55f, 0.52f, 0.5f), 8 + (int)(vy / 4), 9);
+    shake += 0.3f + vy * 0.01f; P.landDip = 0.3f;
+    play(S_ANVIL_SLAM, clampf(vy / 40, 0.5f, 1), 1.1f - vy * 0.005f);
+    if (dmMode) net_fx_slam(c, R, vy, hits);
+    P.anvilLastVy = vy; P.anvilLandT = 0; P.meleeCd = fmaxf(P.meleeCd, SLAM_CD);
+    slamWaves++; slamVySum += vy;
+    if (hits) {
+        slamWaveHits++;
+        P.vel.y = SLAM_BOUNCE; P.grounded = 0; P.airJumps = 1;   /* vitesse horizontale conservee */
+        P.dashCharge = fminf(2, P.dashCharge + 1);
+        melee_hit_points(meleePts[P.meleeKind]);         /* une fois par onde */
+        hitMarker = 0.18f; play(S_HIT, 0.7f, 0.8f);
+        hitstop = fmaxf(hitstop, fminf(0.12f, 0.05f + vy * 0.0015f));
+        if (vy > 35) impact_frame(c, 0.07f);
+        P.anvilState = ANVIL_IDLE;
+    } else {
+        P.anvilState = ANVIL_STUN; P.anvilStunT = SLAM_STUN; P.vel.x = P.vel.z = 0;
+        slamStuns++;
+    }
+    if (botMode) netlog("enclume : onde |vy| %.1f, rayon %.1f, degats %.0f, %d touche(s)", vy, R, D, hits);
+    /* le rebond est decide chez le frappeur avant l'arbitrage : chez l'hote, une onde paree
+     * (EV_MELEE_PARRY, arbitre tout de suite) ecrase donc bien le rebond et rend les points */
+    for (int k = 0; k < nt; k++) net_hit(tgt[k], tdmg[k], tkn[k], W_SLAM);
+}
+static void slam_land(float vyImpact) { slam_resolve(vyImpact, -1, -1); }
+
+/* contact direct pendant le pique avec une cible hors d'atteinte de l'onde (en l'air) : elle prend tout */
+static void slam_contact(void) {
+    V3 mn, mx, omn, omx;
+    paabb(P.pos, pheight(), &mn, &mx);
+    for (int i = 0; i < MAXP; i++) {
+        if (!np_target(i)) continue;
+        np_aabb(i, 0, &omn, &omx);
+        if (mn.x < omx.x && mx.x > omn.x && mn.y < omx.y && mx.y > omn.y && mn.z < omx.z && mx.z > omn.z &&
+            anvil_ground_dist(NP[i].disp) > SLAM_REACH_UP) { slam_resolve(-P.vel.y, i, -1); return; }
+    }
+    for (int j = 0; j < MAXE; j++) {
+        if (!E[j].alive) continue;
+        float er = enemy_radius(E[j].type);
+        V3 q = v3(clampf(E[j].pos.x, mn.x, mx.x), clampf(E[j].pos.y, mn.y, mx.y), clampf(E[j].pos.z, mn.z, mx.z));
+        if (vlen(vsub(q, E[j].pos)) < er && anvil_ground_dist(v3(E[j].pos.x, E[j].pos.y - er, E[j].pos.z)) > SLAM_REACH_UP) {
+            slam_resolve(-P.vel.y, -1, j);
+            return;
+        }
+    }
+}
+
+/* piques des autres joueurs : trainee, et sifflement au debut */
+static void anvil_remote_tick(void) {
+    for (int i = 0; i < MAXP; i++) {
+        unsigned char pad = NP[i].st.pad;
+        if (!np_target(i)) { NP[i].anvilPrevPad = 0; continue; }
+        if (pad & ST_SLAM) {
+            V3 p = NP[i].disp;
+            for (int k = 0; k < 2; k++)
+                add_part(vadd(p, v3(frange(-.3f, .3f), frange(0.2f, 1.6f), frange(-.3f, .3f))), v3(frange(-1, 1), 6, frange(-1, 1)),
+                         v3(1, 0.6f, 0.25f), 0.35f, 0.14f, 0);
+            if (!(NP[i].anvilPrevPad & ST_SLAM)) play(S_ANVIL_DIVE, 0.8f * atten(p), 1.0f);
+        }
+        NP[i].anvilPrevPad = pad;
+    }
+}
+
 static void melee(void) {
+    if (P.meleeKind == MK_ANVIL) { anvil_press(); return; }
     float sp = vlen(P.vel);
     V3 eye = eye_pos(), f = view_dir();
     V3 r = v3(cosf(P.yaw), 0, sinf(P.yaw)), u = vcross(r, f);
@@ -1901,6 +2246,7 @@ static void reset_game(void) {
     P.pos = P.prevPos = v3(0, 0, 24);
     P.hp = 100; P.dashCharge = 2; P.airJumps = 1; P.eyeH = EYE_STAND; P.fovCur = fovBase;
     loadout_apply();
+    anvil_reset();
     P.coins = COIN_MAX;
     memset(CO, 0, sizeof CO);
     for (int i = 0; i < npu; i++) PU[i].t = PU[i].pending = 0;
@@ -1920,11 +2266,12 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   5
+#define NET_VER   6
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
-       EV_PICKUP_TAKEN, EV_COIN, EV_MELEE_PARRY };
+       EV_PICKUP_TAKEN, EV_COIN, EV_MELEE_PARRY,
+       EV_SLAM = 21 };                                    /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
 
 #pragma pack(push, 1)
 typedef struct { unsigned int magic; unsigned char type, from, ver, pad; } PkHead;
@@ -2055,8 +2402,9 @@ static void pack_state(NetPState *s) {
                                (P.hook != HOOK_NONE ? NF_HOOK : 0) | (P.dead ? NF_DEAD : 0) |
                                (P.parryWin > 0 ? NF_PARRY : 0));
     s->weapon = (unsigned char)P.weapon;
-    s->melee = (unsigned char)(clampf(P.meleeT / 0.25f, 0, 1) * 255);
+    s->melee = (unsigned char)(clampf(P.meleeT / (P.meleeKind == MK_ANVIL ? ANVIL_SWING_T : 0.25f), 0, 1) * 255);
     s->pad = (unsigned char)(P.meleeKind & 0x0F);      /* bits 4-7 : etats d'arme (ST_*), ajoutes par chaque arme */
+    if (P.anvilState == ANVIL_DIVE) s->pad |= ST_SLAM;
 }
 
 static void find_local_ip(void) {
@@ -2150,6 +2498,11 @@ static void net_fx_melee(V3 pos, V3 dir, float sp) {
     vf(e.f, pos); vf(e.f + 3, dir); e.f[6] = sp;
     net_emit(&e);
 }
+static void net_fx_slam(V3 pos, float radius, float vy, int hits) {   /* onde de l'Enclume : purement visuelle */
+    NetEvent e = ev_new(EV_SLAM);
+    vf(e.f, pos); e.f[3] = radius; e.f[4] = vy; e.sub = (unsigned char)(hits < 255 ? hits : 255);
+    net_emit(&e);
+}
 
 static void kfeed_add(int killer, int victim, int kind, int info) {
     memmove(&kfeed[1], &kfeed[0], sizeof kfeed - sizeof kfeed[0]);
@@ -2228,9 +2581,27 @@ static void apply_event(const NetEvent *ev) {
         break;
     }
     case EV_MELEE:
+        if (ev->from < MAXP && (NP[ev->from].st.pad & 15) == MK_ANVIL) {   /* coup au sol de l'Enclume : plus lourd */
+            for (int k = 0; k < 12; k++)
+                add_part(vadd(a, vmul(b, 1.5f + k * 0.15f)), v3(b.x * 2, -4, b.z * 2), v3(1, 0.75f, 0.45f), 0.18f, 0.1f, 0);
+            play(S_DASH, 0.45f * atten(a), 0.8f);
+            break;
+        }
         for (int k = 0; k < 10; k++) add_part(vadd(a, vmul(b, 1.5f + k * 0.15f)), vmul(b, 3), v3(0.9f, 0.9f, 1), 0.15f, 0.08f, 0);
         play(S_DASH, 0.4f * atten(a), 1.8f);
         break;
+    case EV_SLAM: {                                       /* onde de choc d'un autre joueur : effets seulement */
+        float R = ev->f[3], vy = ev->f[4];
+        for (int k = 0; k < 36; k++) {
+            float ang = k * (2 * PI / 36);
+            add_part(vadd(a, v3(0, 0.15f, 0)), v3(cosf(ang) * R * 2.2f, 0.6f, sinf(ang) * R * 2.2f), v3(1, 0.7f, 0.35f), 0.4f, 0.22f, 0);
+        }
+        burst(a, v3(0.75f, 0.72f, 0.7f), 30, 6, 0.6f, 0.2f);
+        shards(a, v3(0.55f, 0.52f, 0.5f), 6 + (int)(vy / 5), 9);
+        play(S_ANVIL_SLAM, clampf(vy / 40, 0.5f, 1) * atten(a), 1.1f - vy * 0.005f);
+        if (!spectating && vlen(vsub(P.pos, a)) < R + 3) shake += 0.15f;
+        break;
+    }
     case EV_KILL: {
         int k = ev->actor, v = ev->target;
         if (v >= MAXP) break;
@@ -2264,6 +2635,7 @@ static void apply_event(const NetEvent *ev) {
             P.dead = 0; P.hp = 100; P.hook = HOOK_NONE; P.hookEnemy = P.hookPlayer = 0;
             P.dashCharge = 2; P.airJumps = 1; P.crouch = P.sliding = P.wallrun = 0;
             loadout_apply();
+            anvil_reset();
             P.coins = COIN_MAX;
             P.yaw = atan2f(-a.x, a.z); P.pitch = 0; P.eyeH = EYE_STAND; P.roll = 0;
             shotStreak = 0;
@@ -2307,6 +2679,7 @@ static void apply_event(const NetEvent *ev) {
         break;
     case EV_MELEE_PARRY: {                                /* epee paree (ou choc de deux epees) */
         int def = ev->actor, att = ev->target, clash = ev->sub;
+        int wave = (int)ev->f[0] == W_SLAM && att == myId && P.anvilLandT < 0.5f;   /* c'est mon onde qui a ete paree */
         if (def >= MAXP || att >= MAXP) break;
         V3 pd = def == myId ? pcenter() : np_center(def), pa = att == myId ? pcenter() : np_center(att);
         V3 mid = vlerp(pd, pa, 0.5f);
@@ -2323,15 +2696,21 @@ static void apply_event(const NetEvent *ev) {
                 gauge_remove(P.loadout[0], P.undoPts[0]); gauge_remove(P.loadout[1], P.undoPts[1]);
                 P.undoPts[0] = P.undoPts[1] = 0;
             }
-            P.vel = vadd(P.vel, vadd(vmul(vnorm(vsub(pa, pd)), clash ? 8.0f : 11.0f), v3(0, 3, 0)));
+            if (wave) {                                   /* Enclume : onde paree, renvoye en l'air, marteau bloque */
+                P.anvilState = ANVIL_IDLE; P.anvilStunT = 0;
+                P.vel = vadd(v3(P.vel.x, 0, P.vel.z), vadd(vmul(vnorm(vsub(pa, pd)), 6), v3(0, SLAM_PARRIED_UP, 0)));
+                P.meleeCd = fmaxf(P.meleeCd, MELEE_PARRIED_CD);
+            } else {
+                P.vel = vadd(P.vel, vadd(vmul(vnorm(vsub(pa, pd)), clash ? 8.0f : 11.0f), v3(0, 3, 0)));
+                P.meleeCd = fmaxf(P.meleeCd, clash ? MELEE_CD : MELEE_PARRIED_CD);
+            }
             P.grounded = 0;
-            P.meleeCd = fmaxf(P.meleeCd, clash ? MELEE_CD : MELEE_PARRIED_CD);
             hitstop = fmaxf(hitstop, 0.1f);
             shake += 0.3f;
-            snprintf(popText, sizeof popText, clash ? "CHOC D'EPEES !" : "PARE PAR %s", pname(def));
+            snprintf(popText, sizeof popText, clash ? "CHOC D'EPEES !" : wave ? "ONDE PAREE PAR %s" : "PARE PAR %s", pname(def));
             popT = 1.2f;
         }
-        netlog("%s : %s -> %s", clash ? "choc d'epees" : "epee paree", pname(att), pname(def));
+        netlog("%s : %s -> %s", clash ? "choc d'epees" : (int)ev->f[0] == W_SLAM ? "enclume paree" : "epee paree", pname(att), pname(def));
         break;
     }
     case EV_PICKUP_TAKEN:
@@ -2372,6 +2751,16 @@ static void host_kill(int killer, int victim, int kind) {
 static int hitCount[W_COUNT], parryCount;                       /* statistiques pour le journal du bot */
 static double lifeFirstHitT[MAXP], ttkSum;                /* temps pour tuer : du premier degat (a pleine vie) au kill */
 static int ttkN, oneShots, meleeParries, clashes;
+static int slamParried, slamRailCombos;                   /* Enclume : ondes parees, onde puis rail sur la meme cible */
+static double slamLastHitT[MAXP];
+static int slamLastBy[MAXP];
+
+/* tolerance de latence de l'hote pour un parry, selon l'arme qui frappe (et la melee de la victime) */
+static double parry_grace(int w, int victimMK) {
+    (void)victimMK;                                       /* les Poings (0,05 s) s'ajouteront ici */
+    if (w == W_SLAM) return SLAM_PARRY_GRACE;             /* l'onde de l'Enclume : 0,20 s */
+    return MELEE_PARRY_GRACE;
+}
 
 static void host_take_pickup(int i, int who) {
     if (i >= npu || PU[i].t > 0 || who >= MAXP || !NP[who].alive) return;   /* premier arrive, premier servi */
@@ -2392,8 +2781,9 @@ static int host_handle(const NetEvent *ev) {
         netlog("degats : %s -> %s, %.0f (arme %d), PV avant %.0f", pname(ev->from), pname(v), ev->f[0], ev->sub, NP[v < MAXP ? v : 0].hp);
         if (v >= MAXP || !NP[v].active || !NP[v].alive || matchOver) return 1;
         /* coup de melee ou impact de grappin pendant la fenetre de parry de la victime : c'est pare */
-        if (is_parryable_w(ev->sub) && nowT - NP[v].lastParryT < MELEE_PARRY_GRACE) {
+        if (is_parryable_w(ev->sub) && nowT - NP[v].lastParryT < parry_grace(ev->sub, NP[v].st.pad & 15)) {
             int clash = is_melee_w(ev->sub) && ev->from < MAXP && nowT - NP[ev->from].lastParryT < MELEE_PARRY_GRACE;
+            if (ev->sub == W_SLAM) slamParried++;
             NetEvent e = ev_new(EV_MELEE_PARRY);
             e.actor = (unsigned char)v; e.target = ev->from; e.sub = (unsigned char)clash;
             e.f[0] = (float)ev->sub;                      /* arme paree : l'attaquant rend ses points de melee */
@@ -2406,6 +2796,10 @@ static int host_handle(const NetEvent *ev) {
         float before = NP[v].hp;
         float dmg = ev->sub == W_SELF ? ev->f[0] : fminf(ev->f[0], PVP_HIT_CAP);   /* plafond par touche */
         if (before >= 99.9f) lifeFirstHitT[v] = nowT;
+        if (ev->sub == W_SLAM) { slamLastHitT[v] = nowT; slamLastBy[v] = ev->from; }   /* onde puis rail : le combo vise */
+        else if (ev->sub == W_RAIL && slamLastHitT[v] > 0 && slamLastBy[v] == ev->from && nowT - slamLastHitT[v] < 1.5) {
+            slamRailCombos++; slamLastHitT[v] = 0;
+        }
         NP[v].hp -= dmg;
         if (NP[v].hp <= 0) {
             if (ev->sub != W_SELF) {
@@ -3287,6 +3681,7 @@ static int join_busy(void) { return joining || reqKind || nowT - reqSentT < 4; }
 static float botTime = 20, botT, botNextHook, botNextDash, botSpeedSum, botAliveT, botMaxSpeed;
 static char botShot[260];
 static int botSpec;                                       /* --spec : le bot client regarde la partie au lieu d'y jouer */
+static float bot_melee_reach(float rel) { return P.meleeKind == MK_ANVIL ? anvil_range(rel) : melee_range(rel); }
 
 /* Le bot joue comme un joueur de movement shooter : bhop permanent, air-strafe en balancant
  * la vue autour de la cible (en tenant le strafe du cote ou il tourne), dash et grappin pour
@@ -3312,6 +3707,34 @@ static void bot_think(float dt) {
             P.yaw = atan2f(d.x, -d.z);
             botPress[A_MELEE] = 1;
             netlog("parry d'epee tente contre %s", pname(i));
+            return;
+        }
+    }
+
+    /* Enclume adverse : un pique tombe pres de nous. Juste avant l'impact, une fois sur deux on pare l'onde ;
+     * sinon on saute (un saut simple passe au-dessus de l'onde) ou, deja en l'air, on sort du rayon par un dash */
+    static double slamSeenT[MAXP];
+    static int slamPlan[MAXP];                            /* 1 = parer, 2 = esquiver, 3 = esquive en cours */
+    for (int i = 0; i < MAXP; i++) {
+        if (!np_target(i) || !(NP[i].st.pad & ST_SLAM)) continue;
+        V3 d = NP[i].disp, away = v3(P.pos.x - d.x, 0, P.pos.z - d.z);
+        if (hlen(away) > 6) continue;
+        float t = (d.y - P.pos.y) / fmaxf(-NP[i].st.vel[1], SLAM_VY);
+        if (nowT - slamSeenT[i] > 1.5) { slamSeenT[i] = nowT; slamPlan[i] = frand() < 0.5f ? 1 : 2; }
+        if (slamPlan[i] == 1 && t < 0.12f && P.meleeCd <= 0 &&
+            (P.meleeKind != MK_ANVIL || P.grounded || anvil_ground_dist(P.pos) < SLAM_MIN_H)) {
+            botPress[A_MELEE] = 1; slamPlan[i] = 0;
+            netlog("parry de l'onde tente contre %s", pname(i));
+            return;
+        }
+        if (slamPlan[i] >= 2 && t < 0.35f) {
+            if (slamPlan[i] == 2) { slamPlan[i] = 3; netlog("esquive de l'onde de %s (%.2f s avant l'impact)", pname(i), t); }
+            botHeld[A_JUMP] = 1;
+            if (P.grounded || (P.airJumps > 0 && P.vel.y < 1)) botPress[A_JUMP] = 1;   /* saut, puis double saut au sommet */
+            else if (P.vel.y < 0 && P.dashCharge >= 1) {
+                P.yaw = atan2f(away.x, -away.z); P.pitch = 0;
+                botHeld[A_FWD] = 1; botPress[A_DASH] = 1;
+            }
             return;
         }
     }
@@ -3388,6 +3811,23 @@ static void bot_think(float dt) {
     static float crossT, crossCd;
     static V3 crossDir;
     crossCd -= dt;
+
+    /* Enclume : assez haut au-dessus d'une cible proche du sol, on pique si l'impact prevu tombe sur elle */
+    if (best >= 0 && P.meleeKind == MK_ANVIL && P.anvilState == ANVIL_IDLE && P.meleeCd <= 0 && !P.grounded &&
+        anvil_ground_dist(P.pos) >= 2.5f && anvil_ground_dist(NP[best].disp) < SLAM_REACH_UP) {
+        V3 at; float vy, R, t;
+        if (slam_predict(&at, &vy, &R, &t)) {
+            V3 tp = vadd(NP[best].disp, v3(NP[best].st.vel[0] * t, 0, NP[best].st.vel[2] * t));
+            float miss = hlen(vsub(at, tp));
+            if (miss < 0.5f * R) {
+                botPress[A_MELEE] = 1;
+                crossPhase = 0; crossCd = 2;
+                netlog("pique sur %s, %.1f m", pname(best), miss);
+                return;
+            }
+        }
+    }
+
     if (best >= 0) {
         V3 tp = NP[best].disp, hd = v3(tp.x - P.pos.x, 0, tp.z - P.pos.z);
         float dy = P.pos.y - tp.y, hdist = hlen(hd);
@@ -3417,7 +3857,7 @@ static void bot_think(float dt) {
             botHeld[A_JUMP] = 1;
             P.yaw = aimYaw; P.pitch = aimPitch;
             if (see && P.fireCd <= 0 && P.switchT <= 0) { P.yaw += aimErrYaw; botHeld[A_FIRE] = 1; }
-            if (bd < melee_range(rel_speed(np_vel(best))) + 0.5f && P.meleeCd <= 0) botPress[A_MELEE] = 1;
+            if (bd < bot_melee_reach(rel_speed(np_vel(best))) + 0.5f && P.meleeCd <= 0) botPress[A_MELEE] = 1;
             if (crossT > 0.5f) {
                 crossPhase = 0; crossCd = 3;
                 netlog("cross-up : retourne, tir sur %s", pname(best));
@@ -3463,6 +3903,8 @@ static void bot_think(float dt) {
     int la = P.loadout[0], lb = P.loadout[1];
     int pref = (bd < 20 && ((int)(botT / 5 + botMode)) % 2) ? lb : la;
     if (!wp_has_ammo(pref)) pref = pref == la ? lb : la;
+    if (P.meleeKind == MK_ANVIL && P.anvilLandT < 1.0f && P.swingHitPts && wp_has_ammo(WP_RAIL) && (la == WP_RAIL || lb == WP_RAIL))
+        pref = WP_RAIL;                                   /* onde qui touche : la cible vole ~1 s, le rail l'acheve */
     P.weapon = pref;
     int dry = !wp_has_ammo(la) && !wp_has_ammo(lb);    /* a sec : il ne tire plus et va au contact (la melee recharge) */
     /* contre-jeu : une piece adverse a portee ? on tire dedans pour la retourner contre son lanceur
@@ -3525,7 +3967,7 @@ static void bot_think(float dt) {
                                  (P.hook == HOOK_ATTACHED && !see && hookHoldT < 1.5f &&
                                   !(seek >= 0 && P.pos.y > PU[seek].pos.y - 1)));
     if (P.hookPlayer) P.yaw = aimYaw;
-    if (best >= 0 && bd < melee_range(rel_speed(np_vel(best))) + 0.5f && P.meleeCd <= 0) { P.yaw = aimYaw; botPress[A_MELEE] = 1; }
+    if (best >= 0 && bd < bot_melee_reach(rel_speed(np_vel(best))) + 0.5f && P.meleeCd <= 0) { P.yaw = aimYaw; botPress[A_MELEE] = 1; }
     static float logT;
     if ((logT += dt) > 1) {
         logT = 0;
@@ -3577,6 +4019,7 @@ static void spec_tick(float dt) {
     }
     proj_tick(dt);                                        /* roquettes et pieces des autres, sans degats pour nous (P.dead) */
     coin_tick(dt);
+    anvil_remote_tick();                                  /* trainee des piques */
     if (matchOver) matchEndT -= dt;
     fx_tick(dt);
 }
@@ -3647,9 +4090,13 @@ static void game_tick(float dt) {
     if (P.parryWin > 0) {
         if (!P.dead) try_parry();
         P.parryWin -= dt;
-        if (P.parryWin <= 0 && !P.swingLanded)            /* coup dans le vide : on paie le risque */
-            P.meleeCd = fmaxf(P.meleeCd, MELEE_WHIFF_CD - PARRY_WINDOW);
+        if (P.parryWin <= 0 && !P.swingLanded) {          /* coup dans le vide : on paie le risque */
+            int anvil = P.meleeKind == MK_ANVIL;
+            P.meleeCd = fmaxf(P.meleeCd, anvil ? ANVIL_WHIFF_CD - ANVIL_PARRY_WINDOW : MELEE_WHIFF_CD - PARRY_WINDOW);
+        }
     }
+    if (P.anvilLandT < 10) P.anvilLandT += dt;            /* Enclume : sert a reconnaitre un parry de l'onde */
+    anvil_remote_tick();
 
     P.fireCd -= dt; P.switchT -= dt;
     P.recoil *= expf(-dt * 9);
@@ -3908,6 +4355,40 @@ static void draw_enemy(Enemy *e) {
     glPopMatrix();
 }
 
+/* Enclume : manche le long de -Z, tete au bout ; la bande chauffe du bleu a l'orange (heat 0..1) */
+static void hammer_model(float heat) {
+    glColor3f(0.22f, 0.2f, 0.19f);
+    box_faces(v3(-0.03f, -0.03f, -0.9f), v3(0.03f, 0.03f, 0.1f));
+    glColor3f(0.5f, 0.52f, 0.56f);
+    box_faces(v3(-0.17f, -0.11f, -1.12f), v3(0.17f, 0.11f, -0.88f));
+    glDisable(GL_LIGHTING);
+    glColor3f(0.35f + 0.65f * heat, 0.6f - 0.05f * heat, 1.0f - 0.85f * heat);
+    box_faces(v3(-0.176f, -0.116f, -1.03f), v3(0.176f, 0.116f, -0.97f));
+    glEnable(GL_LIGHTING);
+}
+
+/* viewmodel de l'Enclume : bas a gauche au repos, leve pendant le pique, abattu par le coup au sol */
+static void draw_anvil_vm(void) {
+    float ang = 20, drop = 0, shk = 0, heat = 0;
+    if (P.anvilState == ANVIL_DIVE) {
+        ang = 65; shk = sinf(gameTime * 60) * 0.02f;
+        heat = clampf((-P.vel.y - 25) / 20, 0.2f, 1);
+    } else if (P.anvilState == ANVIL_STUN) {
+        ang = -35; drop = 0.3f * clampf(P.anvilStunT / 0.15f, 0, 1);
+    } else if (P.meleeT > 0) {
+        float k = clampf(1 - P.meleeT / ANVIL_SWING_T, 0, 1);
+        ang = 100 - 135 * k * k;
+        heat = clampf(vlen(P.vel) / 30, 0, 1) * 0.6f;
+    }
+    glPushMatrix();
+    glTranslatef(-0.7f + shk, -0.25f - drop, -0.2f);
+    glRotatef(ang, 1, 0, 0);
+    glRotatef(12, 0, 0, 1);
+    glScalef(0.6f, 0.6f, 0.6f);
+    hammer_model(heat);
+    glPopMatrix();
+}
+
 static void draw_viewmodel(float aspect) {
     glClear(GL_DEPTH_BUFFER_BIT);
     set_frustum(60, aspect, 0.01f, 10);
@@ -3927,7 +4408,8 @@ static void draw_viewmodel(float aspect) {
     GLfloat lp[4] = { -0.3f, 1, 0.6f, 0 };
     glLightfv(GL_LIGHT0, GL_POSITION, lp);
     glEnable(GL_LIGHTING);
-    if (P.meleeT > 0) {                                   /* coup d'epee : balayage de droite a gauche */
+    if (P.meleeKind == MK_ANVIL) draw_anvil_vm();
+    else if (P.meleeT > 0) {                              /* coup d'epee : balayage de droite a gauche */
         float k = clampf(1 - P.meleeT / 0.25f, 0, 1), heat = clampf(vlen(P.vel) / 30, 0, 1);
         glPushMatrix();
         glTranslatef(-0.5f, 0.08f, 0.14f);
@@ -4435,6 +4917,7 @@ static void draw_remote_players(void) {
         glTranslatef(n->disp.x, n->disp.y, n->disp.z);
         glRotatef(-n->st.yaw * 180 / PI, 0, 1, 0);
         if (n->st.flags & NF_SLIDE) glRotatef(-25, 1, 0, 0);
+        if (n->st.pad & ST_SLAM) glRotatef(-15, 1, 0, 0);  /* pique de l'Enclume : penche vers l'avant */
         if (n->flashT > 0) glColor3f(1, 1, 1); else glColor3f(c[0] * 0.75f, c[1] * 0.75f, c[2] * 0.75f);
         box_faces(v3(-0.36f, 0, -0.24f), v3(0.36f, h - 0.48f, 0.24f));
         if (n->flashT > 0) glColor3f(1, 1, 1); else glColor3f(c[0], c[1], c[2]);
@@ -4449,7 +4932,17 @@ static void draw_remote_players(void) {
         { const AmmoDef *wd = &ammoDef[n->st.weapon < WP_COUNT ? n->st.weapon : WP_RAIL]; glColor3f(wd->r * 0.9f, wd->g * 0.9f, wd->b * 0.9f); }
         box_faces(v3(-0.06f, -0.06f, -0.7f), v3(0.06f, 0.06f, 0.05f));
         glPopMatrix();
-        if (n->st.melee) {                                /* epee en plein balayage */
+        if ((n->st.pad & 15) == MK_ANVIL) {               /* Enclume : leve pendant le pique, abattu par le coup */
+            int slam = (n->st.pad & ST_SLAM) != 0;
+            float ang = 20;
+            if (slam) ang = 150;
+            else if (n->st.melee) { float k = 1 - n->st.melee / 255.0f; ang = 100 - 135 * k * k; }
+            glPushMatrix();
+            glTranslatef(-0.4f, h - 0.6f, -0.1f);
+            glRotatef(ang, 1, 0, 0);
+            hammer_model(slam ? 1.0f : 0.0f);
+            glPopMatrix();
+        } else if (n->st.melee) {                         /* epee en plein balayage */
             float k = 1 - n->st.melee / 255.0f;
             glPushMatrix();
             glTranslatef(-0.4f, h - 0.6f, -0.1f);
@@ -4685,11 +5178,19 @@ static void draw_hud(void) {
         else snprintf(mt, sizeof mt, "%s%s  +%d pts", meleeNames[P.meleeKind], aimed ? " (vs cible)" : "", meleePts[P.meleeKind]);
         text(0, mx, by - 78.0f, mt, blink ? 1.0f : 0.75f, blink ? 0.6f : 0.75f, blink ? 0.2f : 0.85f, 0.9f);
     }
-    float pvp = dmMode ? PVP_SCALE : 1.0f;
-    snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(melee_dmg(sp3) * pvp), melee_range(sp3));
+    float pvp = dmMode ? PVP_SCALE : 1.0f, mcd = MELEE_CD;
+    if (P.meleeKind == MK_ANVIL) {                        /* Enclume : coup au sol, ou pique prevu en l'air */
+        V3 at; float vy, R;
+        int air = !P.grounded && (P.anvilState == ANVIL_DIVE || anvil_ground_dist(P.pos) >= SLAM_MIN_H);
+        mcd = ANVIL_CD;
+        if (air && slam_predict(&at, &vy, &R, NULL)) {
+            float fall = (P.anvilState == ANVIL_DIVE ? P.anvilStartY : P.pos.y) - at.y;
+            snprintf(buf, sizeof buf, "PIQUE %d dmg R %.1fm", (int)(slam_dmg(vy, fall) * pvp), R);
+        } else snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(anvil_dmg(sp3) * pvp), anvil_range(sp3));
+    } else snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(melee_dmg(sp3) * pvp), melee_range(sp3));
     text(1, mx, by - 48.0f, buf, 1, 1 - mk * 0.45f, 1 - mk * 0.85f, 1);
     rect(mx, by - 36.0f, 180, 6, 0.1f, 0.1f, 0.15f, 0.7f);
-    rect(mx, by - 36.0f, 180 * clampf(1 - P.meleeCd / MELEE_CD, 0, 1), 6, 1, 0.55f + 0.45f * (1 - mk), 0.3f, 0.95f);
+    rect(mx, by - 36.0f, 180 * clampf(1 - P.meleeCd / mcd, 0, 1), 6, 1, 0.55f + 0.45f * (1 - mk), 0.3f, 0.95f);
 
     /* axe tir : chaine de touches successives */
     float sx = compact ? winW - 214.0f : cx + 130;
@@ -4702,7 +5203,12 @@ static void draw_hud(void) {
              i < shotStreak ? 0.3f : 0.15f, i < shotStreak ? 0.95f : 0.7f);
     if (streakLostT > 0) text(0, sx, by - 100.0f, "CHAINE PERDUE", 1, 0.3f, 0.3f, clampf(streakLostT, 0, 1));
 
-    if (P.hook == HOOK_ATTACHED)
+    if (P.anvilState == ANVIL_DIVE) text_c(0, cx, winH - 110.0f, "PIQUE !", 1, 0.6f, 0.25f, 0.95f);
+    else if (P.anvilState == ANVIL_STUN) {                /* Enclume : onde ratee, barre d'immobilisation */
+        text_c(0, cx, winH - 110.0f, "IMMOBILISE", 1, 0.35f, 0.3f, 0.95f);
+        rect(cx - 60, winH - 102.0f, 120, 5, 0.1f, 0.1f, 0.15f, 0.7f);
+        rect(cx - 60, winH - 102.0f, 120 * clampf(P.anvilStunT / SLAM_STUN, 0, 1), 5, 1, 0.35f, 0.3f, 0.95f);
+    } else if (P.hook == HOOK_ATTACHED)
         text_c(0, cx, winH - 110.0f, (P.hookEnemy || P.hookPlayer) ? "GRAPPIN -> CIBLE" : "GRAPPIN", 1,
                (P.hookEnemy || P.hookPlayer) ? 0.35f : 0.8f, 0.35f, 0.9f);
     else if (P.wallrun) text_c(0, cx, winH - 110.0f, "WALL-RUN", 1, 0.6f, 0.9f, 0.9f);
@@ -4848,6 +5354,38 @@ static void draw_hud(void) {
     }
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
+}
+
+/* Enclume : cercle de l'onde prevue au sol (passe additive). Orange si une cible est dedans. */
+static void draw_slam_marker(void) {
+    if (appState != APP_GAME || spectating || P.dead || P.meleeKind != MK_ANVIL || P.grounded) return;
+    int diving = P.anvilState == ANVIL_DIVE;
+    if (!diving && (P.anvilState != ANVIL_IDLE || anvil_ground_dist(P.pos) < SLAM_MIN_H)) return;
+    V3 at; float vy, R;
+    if (!slam_predict(&at, &vy, &R, NULL)) return;
+    int hot = 0;
+    for (int i = 0; i < MAXE && !hot; i++) {
+        if (!E[i].alive) continue;
+        float er = enemy_radius(E[i].type), feet = E[i].pos.y - er - at.y;
+        hot = feet <= SLAM_REACH_UP && feet >= -SLAM_REACH_DOWN - 2 * er && hlen(vsub(E[i].pos, at)) < R + er;
+    }
+    for (int i = 0; i < MAXP && !hot; i++) {
+        if (!np_target(i)) continue;
+        float feet = NP[i].disp.y - at.y;
+        hot = feet <= SLAM_REACH_UP && feet >= -SLAM_REACH_DOWN && hlen(vsub(NP[i].disp, at)) < R + 0.5f;
+    }
+    float a = diving ? 0.9f : 0.35f, pulse = 0.75f + 0.25f * sinf(gameTime * 14);
+    glLineWidth(diving ? 4.0f : 2.0f);
+    if (hot) glColor4f(1, 0.5f, 0.15f, a * pulse); else glColor4f(0.55f, 0.75f, 1, a * pulse);
+    for (int ring = 0; ring < 2; ring++) {
+        float rr = ring ? R * 0.25f : R;
+        glBegin(GL_LINE_LOOP);
+        for (int k = 0; k < 32; k++) {
+            float ang = k * (2 * PI / 32);
+            glVertex3f(at.x + cosf(ang) * rr, at.y + 0.06f, at.z + sinf(ang) * rr);
+        }
+        glEnd();
+    }
 }
 
 static void render(float alpha, float frameDt) {
@@ -5059,6 +5597,7 @@ static void render(float alpha, float frameDt) {
     }
     glEnd();
     glDisable(GL_TEXTURE_2D);
+    draw_slam_marker();
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
     glDisable(GL_FOG);
@@ -5223,6 +5762,14 @@ static void save_bmp(const char *path) {
         fclose(f);
     }
     free(px);
+}
+
+/* tests de l'Enclume : pique depuis `from` (vitesse `vel`), ticks jusqu'a la fin du pique */
+static void test_slam_drop(V3 from, V3 vel) {
+    P.meleeKind = MK_ANVIL; P.anvilState = ANVIL_IDLE; P.meleeCd = 0;
+    P.pos = P.prevPos = from; P.vel = vel; P.grounded = 0;
+    anvil_press();
+    for (int i = 0; i < 600 && P.anvilState == ANVIL_DIVE; i++) player_tick(TICK, 0, 0);
 }
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
@@ -5445,6 +5992,82 @@ static void run_tests(const char *path) {
     hookHeldIn = 0;
     fprintf(f, "grappin : vitesse 0,5 s apres l'accroche = %.1f m/s (attendu > 25)\n", sp05);
 
+    /* --- Enclume (solo) --- */
+    {   /* 1. pique depuis 13 m, drone a 2 m du point d'impact : onde, rebond, dash, points de jauge */
+        reset_game();
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.6f, 38);
+        P.dashCharge = 0.5f;
+        P.meleeKind = MK_ANVIL; P.pos = P.prevPos = v3(-20, 13, 40); P.grounded = 0; P.meleeCd = 0;
+        anvil_press();
+        float dashBefore = P.dashCharge;
+        for (int i = 0; i < 600 && P.anvilState == ANVIL_DIVE; i++) { dashBefore = P.dashCharge; player_tick(TICK, 0, 0); }
+        fprintf(f, "enclume pique 13 m : |vy| %.1f, PV drone %.1f, vy apres %.1f, dash %+.2f, roquettes %d jauge %.0f "
+                   "(attendu ~39.0, ~36.8, 9.0, +1.00, 5 25)\n",
+                P.anvilLastVy, E[0].hp, P.vel.y, P.dashCharge - dashBefore - TICK / DASH_RECHARGE,
+                P.ammo[WP_ROCKET], P.ammoGauge[WP_ROCKET]);
+    }
+    {   /* 2. pique rate : immobilise 0,6 s (ni deplacement, ni saut, ni dash), puis libre */
+        reset_game();
+        test_slam_drop(v3(-20, 13, 40), v3(0, 0, -5));
+        int st0 = P.anvilState; float hv = hlen(P.vel);
+        V3 p0 = P.pos;
+        act[A_FWD] = 1;
+        for (int i = 0; i < 36; i++) player_tick(TICK, 1, 1);
+        float moved = vlen(vsub(P.pos, p0)); int st1 = P.anvilState;
+        for (int i = 0; i < 48; i++) player_tick(TICK, 0, 0);
+        act[A_FWD] = 0;
+        fprintf(f, "enclume rate : etat %d, vitesse horizontale %.1f, deplacement en 0,3 s (saut et dash appuyes) %.2f m etat %d, "
+                   "etat apres 0,7 s %d (attendu 2, 0.0, 0.00 2, 0)\n", st0, hv, moved, st1, P.anvilState);
+    }
+    {   /* 3. trop pres du sol : c'est le coup au sol, meme en l'air */
+        reset_game();
+        P.meleeKind = MK_ANVIL; P.pos = P.prevPos = v3(-20, 0.8f, 40); P.grounded = 0;
+        anvil_press();
+        fprintf(f, "enclume a 0,8 m du sol : coup au sol=%d, etat %d, recharge %.2f (attendu 1, 0, 0.80)\n",
+                P.meleeT > 0, P.anvilState, P.meleeCd);
+    }
+    {   /* 4. pique bas (2 m) : facteur de hauteur kh = 0,5 */
+        reset_game();
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-18.6f, 1.0f, 40);
+        test_slam_drop(v3(-20, 2, 40), v3(0, 0, 0));
+        fprintf(f, "enclume pique bas (2 m) : |vy| %.1f, kh %.2f, degats %.1f (attendu 31.6, 0.50, 29.5)\n",
+                P.anvilLastVy, slam_kh(2), 100 - E[0].hp);
+    }
+    {   /* 5. plafond de la vitesse de chute */
+        reset_game();
+        test_slam_drop(v3(-20, 40, 40), v3(0, 0, 0));
+        fprintf(f, "enclume pique de 40 m : |vy| %.1f (attendu 45.0)\n", P.anvilLastVy);
+    }
+    for (int pass = 0; pass < 2; pass++) {   /* 6. coup au sol : a l'arret, puis a 10 m/s */
+        reset_game();
+        P.meleeKind = MK_ANVIL; P.pos = P.prevPos = v3(-20, 0, 40); P.grounded = 1; P.yaw = 0; P.pitch = 0;
+        P.vel = pass ? v3(0, 0, -10) : v3(0, 0, 0);
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.6f, 38);
+        melee();
+        fprintf(f, "enclume coup au sol a %.0f m/s : PV drone %.0f, recharge %.2f, fenetre de parry %.2f (attendu %s, 0.80, 0.10)\n",
+                vlen(P.vel), E[0].hp, P.meleeCd, P.parryWin, pass ? "25" : "55");
+    }
+    {   /* 7. le dash annule le pique ; pack_state annonce le pique (ST_SLAM) */
+        reset_game();
+        P.meleeKind = MK_ANVIL; P.pos = P.prevPos = v3(-20, 13, 40); P.grounded = 0; P.pitch = 0;
+        anvil_press();
+        for (int i = 0; i < 5; i++) player_tick(TICK, 0, 0);
+        NetPState s;
+        pack_state(&s);
+        float dc = P.dashCharge;
+        player_tick(TICK, 0, 1);
+        fprintf(f, "enclume dash pendant le pique : pad %d, etat %d, vy %.1f, charges %.2f -> %.2f, recharge %.2f "
+                   "(attendu %d, 0, 1.8 (2 moins un tick de gravite), 2.00 -> 1.00, 0.80)\n",
+                s.pad, P.anvilState, P.vel.y, dc, P.dashCharge, P.meleeCd, MK_ANVIL | ST_SLAM);
+    }
+    {   /* 8. pique sur le jump pad est : onde, puis le pad relance (pas d'immobilisation) */
+        reset_game();
+        test_slam_drop(v3(ms(16), 5, 0), v3(0, 0, 0));
+        V3 L = v3(ms(13), 20, 0);
+        fprintf(f, "enclume sur un jump pad : onde=%d, vitesse (%.1f, %.1f, %.1f), etat %d (attendu 1, (%.1f, %.1f, %.1f), 0)\n",
+                P.anvilLandT == 0, P.vel.x, P.vel.y, P.vel.z, P.anvilState, L.x, L.y, L.z);
+    }
+
     /* LAN simule (hote sans socket) : un bot contre une cible immobile */
     netMode = NET_HOST; connected = 1; myId = 0; botMode = 2; appState = APP_GAME;
     botLog = f;
@@ -5549,6 +6172,51 @@ static void run_tests(const char *path) {
                 hpParried, dash, NP[0].hp);
         fprintf(f, "recul d'un coup pare : %.1f m/s ; sans parry %.1f m/s (attendu 0 et 10 : le coup pare n'est pas rejoue)" "\n",
                 velParried.z, P.vel.z);
+    }
+
+    /* Enclume en LAN : l'onde sur un joueur au sol, pas sur un joueur en l'air ; puis l'onde paree par la victime */
+    {
+        reset_game();
+        dmMode = 1;
+        memset(NP, 0, sizeof NP);
+        NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi");
+        NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
+        NP[1].disp = v3(-20, 0, 38); vf(NP[1].st.pos, NP[1].disp);
+        nowT += 1;
+        test_slam_drop(v3(-20, 13, 40), v3(0, 0, 0));      /* 9. cible au sol a 2 m : f = 0,626, x 0,7 */
+        float hpGround = NP[1].hp;
+        NP[1].hp = 100; NP[1].disp.y = 1.6f; vf(NP[1].st.pos, NP[1].disp);
+        test_slam_drop(v3(-20, 13, 40), v3(0, 0, 0));      /* pieds a 1,6 m : au-dessus de l'onde */
+        fprintf(f, "enclume LAN : PV apres l'onde %.1f, cible en l'air (pieds a 1,6 m) %.0f, etat %d (attendu ~56.8, 100, 2)\n",
+                hpGround, NP[1].hp, P.anvilState);
+
+        reset_game();                                      /* 10. la victime pare l'onde (0,18 s plus tot : tolerance 0,20 s) */
+        dmMode = 1;
+        NP[1].hp = 100; NP[1].disp.y = 0; vf(NP[1].st.pos, NP[1].disp);
+        nowT += 1;
+        NP[1].lastParryT = nowT - 0.18;
+        int parriesBefore = meleeParries;
+        test_slam_drop(v3(-20, 13, 40), v3(0, 0, 0));
+        float hpParried = NP[1].hp, vyAtt = P.vel.y, cdAtt = P.meleeCd;
+        int rockets = P.ammo[WP_ROCKET];
+        net_hit(1, 10, v3(0, 0, 0), W_MELEE);              /* une epee a la meme distance n'est plus paree (0,15 s) */
+        fprintf(f, "enclume onde paree : PV cible %.0f, vy attaquant %.1f, recharge %.2f, parries +%d, roquettes %d (points rendus) ; "
+                   "epee a 0,18 s : PV %.0f (attendu 100, 12.0, 1.00, +1, 4 ; 90)\n",
+                hpParried, vyAtt, cdAtt, meleeParries - parriesBefore, rockets, NP[1].hp);
+
+        reset_game();                                      /* 11. bot a l'Enclume, 4 m au-dessus d'une cible au sol : il pique */
+        dmMode = 1;
+        NP[1].hp = 100; NP[1].lastParryT = 0; NP[1].disp = v3(-20, 0, 38); vf(NP[1].st.pos, NP[1].disp);
+        P.meleeKind = MK_ANVIL; P.pos = P.prevPos = v3(-20, 4, 40); P.grounded = 0;
+        int wavesBefore = slamWaveHits, dived = 0;
+        for (int i = 0; i < 120 && slamWaveHits == wavesBefore; i++) {
+            nowT += TICK;
+            bot_think(TICK);
+            game_tick(TICK);
+            dived |= P.anvilState == ANVIL_DIVE;
+        }
+        fprintf(f, "bot enclume : pique=%d, onde qui touche=%d, PV cible %.0f (attendu 1, 1, < 100)\n",
+                dived, slamWaveHits - wavesBefore, NP[1].hp);
     }
 
     /* reglages : sauvegarde puis rechargement de velocity.ini */
@@ -5720,6 +6388,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             else if (!strcmp(t, "--lanep")) lanEp = 1;
             else if (!strcmp(t, "--nolan")) lanOff = 1;
             else if (!strcmp(t, "--spec")) botSpec = 1;
+            else if (!strcmp(t, "--loadout") && (t = strtok(NULL, " "))) {   /* --loadout arme1,arme2,melee (WP_*, WP_*, MK_*) */
+                int l0, l1, mk;
+                if (sscanf(t, "%d,%d,%d", &l0, &l1, &mk) == 3) { wantLoadout[0] = l0; wantLoadout[1] = l1; wantMelee = mk; }
+            }
         }
     }
 
@@ -5799,6 +6471,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         snprintf(NP[2].name, 16, "Ninja"); NP[2].active = NP[2].alive = 1; NP[2].kills = 1; NP[2].deaths = 4;
         NP[2].disp = v3(5, 4, 6); NP[2].st.yaw = PI + 0.6f; NP[2].st.pitch = -0.2f;
         kfeed_add(1, 2, W_MELEE, 0); kfeed_add(0, 2, W_RAIL, 0); kfeed_add(-1, 1, 0, 1);
+        if (strstr(shotPath, "enclume")) {                /* adversaires a l'Enclume : coup au sol et pique */
+            NP[1].st.pad = MK_ANVIL;
+            NP[2].st.pad = MK_ANVIL | ST_SLAM; NP[2].disp = v3(-2, 5, 12); vf(NP[2].st.vel, v3(0, -34, 0));
+        }
         P.pos = P.prevPos = v3(0, 0, 24); P.yaw = -0.1f; P.pitch = 0.08f; P.hp = 100;
         matchT = 95;
         render(1, TICK);
@@ -5829,6 +6505,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
                 impactT = 0;
             }
             P.vel = v3(0, 0, -32);
+        }
+        if (strstr(shotPath, "enclume")) {                /* pique de l'Enclume au-dessus d'un drone : repere d'impact */
+            hook_release(0);
+            P.meleeKind = MK_ANVIL; P.meleeT = 0; P.meleeCd = 0; P.weapon = WP_RAIL; P.switchT = 0; shotStreak = 0;
+            P.pos = P.prevPos = v3(-20, 9, 40); P.yaw = 0; P.pitch = -0.7f; P.vel = v3(0, 0, -6); P.grounded = 0;
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.2f, 35);
+            memset(PA, 0, sizeof PA); memset(PR, 0, sizeof PR); memset(BM, 0, sizeof BM);
+            anvil_press();
+            for (int i = 0; i < 6; i++) player_tick(TICK, 0, 0);
         }
         render(1, TICK);
         save_bmp(shotPath);
@@ -5915,6 +6600,11 @@ done:
         netlog("munitions : points touche %.0f, kill %.0f, parry %.0f, cellules %.0f (%d prises), perdus %.0f ; a sec %.0f%% du temps",
                apStat[AP_HIT], apStat[AP_KILL], apStat[AP_PARRY], apStat[AP_CELL], cellsTaken, apStat[AP_LOST],
                100 * dryT / fmaxf(botAliveT, 0.01f));
+        if (slamDives || slamWaves || slamParried || hitCount[W_SLAM])
+            netlog("enclume : %d piques, ondes qui touchent %d / %d, |vy| moyen %.1f, degats moyens par onde %.1f, "
+                   "immobilisations %d ; arbitre : touches %d, ondes parees %d, combos onde + rail %d",
+                   slamDives, slamWaveHits, slamWaves, slamVySum / (slamWaves ? slamWaves : 1),
+                   slamDmgSum / (slamWaves ? slamWaves : 1), slamStuns, hitCount[W_SLAM], slamParried, slamRailCombos);
     }
     net_shutdown();
     if (botLog) fclose(botLog);
