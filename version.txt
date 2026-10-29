@@ -1,0 +1,6 @@
+build=2
+sha=91cd50f
+win_size=955392
+win_sha256=7048c6cf899691a634cee1ee955b3d9448cbf5589dfe641f8063a1d4bb6e9249
+mac_size=655983
+mac_sha256=4d9c7be491d6c5d5ec7ddb8a325db53a91fc8bcc205e6366ea55ad071f75ee0e
