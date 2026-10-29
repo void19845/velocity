@@ -72,20 +72,41 @@ contre-jeu). Le jeu actuel reste jouable a l'identique tant qu'on ne choisit pas
   plafond `ALLIN_SPREAD_MAX` = 6 deg). Les projectiles sont repartis en eventail regulier (pas aleatoire),
   avec un decalage aleatoire commun d'au plus la moitie de l'ecart, pour que le tir reste previsible
   et lisible.
-- **Equilibrage** : chaque projectile garde ses degats, mais le plafond `PVP_HIT_CAP` s'applique **a la somme**
-  par cible et par tir (sinon un tir a 6 munitions tuerait en un coup en PvP). En solo, pas de plafond.
-  Le cout reel : toute la munition disparait et le delai de recharge de la competence est long ; le bon
-  usage est de l'enchainer apres le rechargement par cellules.
+- **Equilibrage (decision du proprietaire)** : **le tir peut one-shot en PvP**. Chaque projectile garde ses
+  degats et le plafond `PVP_HIT_CAP` s'applique par projectile, pas a la somme. Le contrepoids est le
+  drawback : toute la munition de l'arme disparait, la recharge de la competence est longue (20 s), l'eventail
+  s'ouvre avec le nombre de projectiles (donc le one-shot n'arrive qu'a courte portee ou avec peu de munition),
+  et l'arme est vide ensuite. A mesurer au match bot : « one-shots » du journal d'equilibre.
 - **Interactions** : fonctionne avec RICOCHET (chaque projectile rebondit : un seul armement pour tout
   l'eventail, ce qui donne le tir « disco » en espace clos, a surveiller pour l'auto-degats) et avec les
   ancrages (chaque projectile peut en toucher un). Pas d'effet sur le yoyo, la scie ni l'epee.
 - **Reseau** : tir valide chez le tireur, un seul `EV_SKILL` (`sub = SK_ALLIN`, nombre de projectiles et
   graine du decalage) pour que les autres joueurs dessinent le meme eventail. **Incrementer `NET_VER`.**
 - **Tests a ajouter** : n projectiles pour n munitions, munition a zero apres le tir, demi-angle conforme
-  a la formule (n = 2, 4, 6), refus a 1 munition, plafond PvP applique a la somme, recharge.
+  a la formule (n = 2, 4, 6), refus a 1 munition, plafond PvP applique par projectile (un tir a courte portee peut one-shot), recharge.
 
 Les autres competences n'ont pas besoin de projectile physique propre : MARQUE et CHARGE sont des etats,
 MIRAGE reutilise l'entite `Coin` (immobile, sans gravite). C'est ce qui rend l'etape 1 peu risquee.
+
+## 3 quater. Regle de synergie : chaque competence marche avec (presque) toutes les armes
+
+Armes de tir : rail, roquettes, shotgun, kinetic, scie, mines, tesla. Melee : epee, enclume, lance, yoyo,
+poings, egide. Une competence **ne doit pas etre pensee pour une seule arme** : elle agit sur « le prochain
+tir » ou sur « le prochain coup », avec une regle par famille. Une case vide = pas de synergie voulue
+(une competence peut ignorer au plus 2 armes, a justifier).
+
+| Competence | Armes de tir | Melee | Ignore |
+|---|---|---|---|
+| **PIECE** | rail ricoche (x1,5) ; roquette, shotgun, kinetic, tesla la touchent et partent vers une cible | yoyo frappe la piece ; epee et lance la renvoient (parry de projectile) | poings, egide |
+| **MARQUE** | tout tir qui touche une cible marquee : +25 % (rail, shotgun, kinetic) ou souffle +20 % (roquette, mine) ; tesla propage la marque | tout coup de melee sur une marquee : +25 % ; yoyo la tire ; egide : le coup de bouclier la marque | scie (traverse, voir §4) |
+| **CHARGE** | le prochain tir : x1,5 et perce ; scie : traverse sans s'arreter ; mine : rayon x1,3 | le prochain coup : x1,5, portee +20 % | — |
+| **RICOCHET** | rail, shotgun, kinetic : reflechis ; roquette : rebondit ; mine : roule et rebondit ; scie : +1 renvoi ; tesla : l'arc rebondit | — (rien a faire rebondir) | les 6 armes de melee |
+| **ALL IN ONE** | vide la munition de l'arme de tir en main en eventail (rail, roquette, shotgun, kinetic ; mines posees en ligne ; tesla : arcs en eventail) | — | scie (1 seule), melee |
+| **MIRAGE** | tout tir qui traverse le leurre est redirige vers la cible la plus proche | tout coup de melee qui touche le leurre le detruit et rend la moitie de la recharge | — |
+
+Verification : les competences de la ligne « Ignore » doivent rester a 2 armes ou moins ; RICOCHET et
+ALL IN ONE sont volontairement des competences de tir (elles n'ont pas de sens au corps a corps) : si on
+choisit un loadout de melee seul, on propose a la place MARQUE, CHARGE ou MIRAGE.
 
 ## 4. Interactions avec les autres armes
 
@@ -109,7 +130,9 @@ Contre-jeu : un parry parfait retire la marque de l'attaquant ; une piece ou un 
 
 ## 6. Questions ouvertes
 
-- Une seule competence a la fois (propose), ou deux emplacements (piece + autre) ?
-- Les competences sont-elles toutes dans le meme budget de charges, ou chacune a sa jauge ?
+Tranche par le proprietaire : **une seule competence par loadout** ; ALL IN ONE peut one-shot (drawback
+fort) ; toute competence doit synergiser avec (presque) toutes les armes (§3 quater).
+
+- Chaque competence a sa propre jauge de charges (par `skillDef`) : OK ?
 - Mode solo : toutes les competences disponibles des le debut, ou deblocage par vague ?
-- Equilibrage PvP : les competences non-piece doivent-elles etre plafonnees par `PVP_HIT_CAP` (60 PV) ?
+- Le tableau de synergies (§3 quater) : les valeurs (+25 %, x1,3, ...) sont des points de depart a mesurer.
