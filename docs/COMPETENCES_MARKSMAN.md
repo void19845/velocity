@@ -38,6 +38,7 @@ contre-jeu). Le jeu actuel reste jouable a l'identique tant qu'on ne choisit pas
 | **MARQUE** (`SK_MARK`) | appui | tir sans degats : marque 4 s une cible, visible a travers les murs ; le rail qui touche une cible marquee ricoche vers la marque suivante (x1,25) | 2 / 6 s |
 | **CHARGE** (`SK_CHARGE`) | maintenir 0,6 s | ouvre 2 s pendant lesquelles le prochain rail fait x1,5 et perce une cible ; perdue si on est touche | 1 / 8 s |
 | **RICOCHET** (`SK_RICOCHET`) | appui | arme le prochain projectile tire (rail ou roquette) : il rebondit sur les surfaces au lieu de s'arreter. Voir §3 bis | 1 / 15 s |
+| **ALL IN ONE** (`SK_ALLIN`) | appui | tire **toute** la munition de l'arme en main d'un coup, en eventail ; plus il y en a, plus l'eventail est large. Voir §3 ter | 1 / 20 s (a regler) |
 | **MIRAGE** (`SK_DECOY`) | appui | leurre immobile 3 s ; un rail qui le traverse ricoche vers la cible la plus proche (piece qui ne tombe pas) | 2 / 7 s |
 
 ### 3 bis. RICOCHET (choix du proprietaire : « le prochain projectile rebondit sur les surfaces », 15 s)
@@ -60,6 +61,28 @@ contre-jeu). Le jeu actuel reste jouable a l'identique tant qu'on ne choisit pas
   touche (`PVP_HIT_CAP`) reste inchange. **Incrementer `NET_VER`.**
 - **Tests a ajouter** : reflexion sur un mur (angle d'incidence = angle de sortie, a 0,5 deg pres), 3 rebonds
   maximum, recharge 15 s apres le tir, projectile non arme = comportement actuel, auto-degats au 2e rebond.
+
+### 3 ter. ALL IN ONE (choix du proprietaire : « toutes les munitions d'un coup, spread croissant »)
+
+- **Effet** : appui = l'arme en main (rail ou roquettes) vide sa munition `n` (`P.ammo[...]`) en `n`
+  projectiles tires au meme tick, repartis dans un cone autour de la visee. Au moins 2 munitions requises
+  (avec 1, ce serait un tir normal sans le cout de la recharge : refuse avec un son d'erreur).
+- **Spread** : demi-angle du cone `a = ALLIN_SPREAD_BASE + ALLIN_SPREAD_PER_AMMO * (n - 1)`, valeurs de depart
+  `ALLIN_SPREAD_BASE` = 0,8 deg et `ALLIN_SPREAD_PER_AMMO` = 0,7 deg (n = 2 : ~1,5 deg ; n = 6 : ~4,3 deg ;
+  plafond `ALLIN_SPREAD_MAX` = 6 deg). Les projectiles sont repartis en eventail regulier (pas aleatoire),
+  avec un decalage aleatoire commun d'au plus la moitie de l'ecart, pour que le tir reste previsible
+  et lisible.
+- **Equilibrage** : chaque projectile garde ses degats, mais le plafond `PVP_HIT_CAP` s'applique **a la somme**
+  par cible et par tir (sinon un tir a 6 munitions tuerait en un coup en PvP). En solo, pas de plafond.
+  Le cout reel : toute la munition disparait et le delai de recharge de la competence est long ; le bon
+  usage est de l'enchainer apres le rechargement par cellules.
+- **Interactions** : fonctionne avec RICOCHET (chaque projectile rebondit : un seul armement pour tout
+  l'eventail, ce qui donne le tir « disco » en espace clos, a surveiller pour l'auto-degats) et avec les
+  ancrages (chaque projectile peut en toucher un). Pas d'effet sur le yoyo, la scie ni l'epee.
+- **Reseau** : tir valide chez le tireur, un seul `EV_SKILL` (`sub = SK_ALLIN`, nombre de projectiles et
+  graine du decalage) pour que les autres joueurs dessinent le meme eventail. **Incrementer `NET_VER`.**
+- **Tests a ajouter** : n projectiles pour n munitions, munition a zero apres le tir, demi-angle conforme
+  a la formule (n = 2, 4, 6), refus a 1 munition, plafond PvP applique a la somme, recharge.
 
 Les autres competences n'ont pas besoin de projectile physique propre : MARQUE et CHARGE sont des etats,
 MIRAGE reutilise l'entite `Coin` (immobile, sans gravite). C'est ce qui rend l'etape 1 peu risquee.
