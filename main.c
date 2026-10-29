@@ -1504,7 +1504,6 @@ static void net_fx_fist(V3 pos, V3 dir, float x, int sub);   /* Poings : EV_MELE
 static void net_fx_slam(V3 pos, float radius, float vy, int hits);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
 static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed);
-static void net_hit_lance(int target, float dmg, V3 knock, float spd, float vc, int couched);   /* Lance : net_hit + f[4..6] */
 /* Scie : definies apres les roquettes */
 static void net_fx_saw(int sub, Proj *p, int target, int actor);
 static int saw_hook_test(float *t);                       /* grappin : le crochet touche ma scie plantee ? */
@@ -5364,16 +5363,6 @@ static void net_fx_tesla(int sub, unsigned int netId, V3 pos, int actor, int tar
     net_emit(&e);
 }
 /* --- fin Tesla --- */
-/* --- Lance : evenements --- */
-/* comme net_hit, avec f[4] = |P.vel| avant le transfert, f[5] = v_c (ou v_rel de l'estoc), f[6] = 1 lance couchee, 0 estoc */
-static void net_hit_lance(int target, float dmg, V3 knock, float spd, float vc, int couched) {
-    if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
-    NetEvent e = ev_new(EV_HIT);
-    e.target = (unsigned char)target; e.sub = W_LANCE;
-    e.f[0] = dmg; vf(&e.f[1], knock); e.f[4] = spd; e.f[5] = vc; e.f[6] = couched ? 1.0f : 0.0f;
-    net_emit(&e);
-}
-/* --- fin Lance : evenements --- */
 /* --- Ventouse : evenements --- */
 /* EV_MINE : sub = MINE_EV_*, netId de la mine, f[0..2] = a, f[3..5] = b, f[6] = x, target = joueur porteur ou pareur */
 static void net_fx_mine(int sub, unsigned int netId, V3 a, V3 b, int target, float x) {
