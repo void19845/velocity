@@ -5,6 +5,8 @@ Win32 + OpenGL 1.1 (pipeline fixe) + waveOut (son synthétisé) + Winsock UDP (L
 Le propriétaire est francophone : réponses, commentaires et docs **en français**.
 
 - Architecture, systèmes, réseau, réglages, recettes : **`docs/CODE.md`**
+- Port macOS (`mac_platform.m`, `mac_compat.h`, `build_mac.sh`, CI GitHub Actions) : **§7 de `docs/CODE.md`**. Toute nouvelle
+  API Win32 dans `main.c` doit avoir son équivalent macOS (`#ifdef _WIN32` / `mac_*`).
 - Idées d'armes et de cartes à implémenter : **`docs/IDEES_ARMES_CARTES.md`**
 - Parties en ligne (lobby Cloudflare gratuit, STUN, perçage de NAT, spectateurs) : **`docs/PLAN_EN_LIGNE.md`**
   et §4 de `docs/CODE.md`. Le lobby est dans **`worker/`** (`node test.js` pour ses tests, `node dev-server.js`

@@ -1,5 +1,7 @@
 # binaires et fichiers produits par build.bat / les tests
 velocity.exe
+musique.exe
+*.wav
 *.obj
 *.pdb
 *.ilk
@@ -16,3 +18,8 @@ node_modules/
 .wrangler/
 # copies de travail des agents
 .claude/worktrees/
+# macOS
+Velocity.app/
+Velocity-macOS.zip
+build/
+velocity

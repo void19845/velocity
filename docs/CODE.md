@@ -335,6 +335,24 @@ vitesse **relative** : foncer sur quelqu'un qui fonce sur vous frappe très fort
 - Les sons `S_*` sont fabriqués **une fois** dans `make_sounds` (sinus, bruit filtré, enveloppes
   exponentielles) puis convertis par `mksound`. `sbuf(secondes, &n)` alloue un tampon de travail.
 - Pas d'audio en mode `--shot` ni `--test` (`audio_ok == 0`, `play` ne fait rien).
+- **Musique** (hard techno, un morceau par carte) : tout le design est dans **`music.h`** (morceaux `tracks[]`
+  + moteur), inclus par `main.c`. Séquenceur synthétisé mixé dans `audio_fill` via `music_sample()`, volume
+  `musicVol` (`music=` dans `velocity.ini`, curseur « Musique »). Un morceau : BPM de départ, `bpmStep` (BPM
+  gagnés par niveau), tonique (Hz), jusqu'à 8 mesures de 16 pas (`MusBar` : masques `kick/clap/hat/ohat`, notes
+  `bass/lead` en demi-tons, `RS` = silence). Instruments : kick saturé à chute de hauteur, basse rumble en
+  sidechain, hats/clap en bruit, lead de deux scies saturées.
+  - `music_set(piste, niveau)` lance un morceau (`-1` = silence), fondu de 1,5 s.
+  - **Intensité** : `music_level(n)` (0 à `MUS_LVMAX` = 8), appelé chaque image par `music_follow_game()`.
+    Appliqué au début de la mesure suivante : tempo, couches (clap dès 1, lead clairsemé dès 2, lead complet
+    dès 4, kicks syncopés dès 6), saturation du kick, clarté du lead.
+    - **PvP** : un round = un kill. `music_pvp_level(leader, second, limite)` : 3 phases selon les frags du
+      leader (tiers de `FRAG_LIMIT` : 0-4 / 5-9 / 10-14), niveaux `musPhaseLvl` = 0, 3, 6, puis le **final**
+      (niveau 8) quand les deux premiers sont à limite − 1 (14-14, soit le 30e round). Pour la partie rapide à
+      7 frags, l'hôte annonce `fragLimit` (`FRAG_LIMIT_QUICK` = 7) dans `PkSnap.fragLimit`.
+    - **Solo** : niveau = numéro de vague − 1. Hors partie : niveau 0.
+  - **Écouter sans le jeu** : `build_music.bat` puis `musique.exe [piste] [niveau]` (touches 0-8, +/-, P, Q) ou
+    `musique.exe --wav sortie.wav piste niveau secondes`.
+  - Tests : lignes « musique » de `run_tests`.
 
 ### 3.8 Entrées
 
@@ -435,7 +453,7 @@ F2/F3 (sensibilité), F11 (plein écran), R (recommencer en solo, `latch[SC_R]`)
 | `PK_PUNCH` | `PkHead` | hôte → client annoncé par le lobby | toutes les 0,1 s pendant 4 s | ouvre le NAT de l'hôte vers le client ; ignoré à l'arrivée |
 | `PK_KEEP` | `PkHead` | spectateur → hôte | 2/s | « je suis là » (sinon l'hôte retire le spectateur après 5 s) |
 | `PK_STATE` | `PkState` (`NetPState`) | client → hôte | 60/s | position, vitesse, `hookPos`, yaw/pitch, drapeaux `NF_*`, arme, avancement du coup d'épée |
-| `PK_SNAP` | `PkSnap` | hôte → tous les clients | 60/s | `matchT`, `matchOver`, gagnant, `pickMask` (bit i = cellule i disponible), et pour chaque joueur : actif, vivant, PV, kills, morts, `NetPState` ; `apply_snap` côté client |
+| `PK_SNAP` | `PkSnap` | hôte → tous les clients | 60/s | `matchT`, `matchOver`, gagnant, `pickMask` (bit i = cellule i disponible), `fragLimit`, et pour chaque joueur : actif, vivant, PV, kills, morts, `NetPState` ; `apply_snap` côté client |
 | `PK_ROSTER` | `PkRoster` | hôte → clients | toutes les 0,5 s et à chaque arrivée | les pseudos |
 | `PK_EVENT` | `PkEvent` (`NetEvent`) | dans les deux sens (le client n'envoie qu'à l'hôte) | joint à chaque envoi d'état | un événement (voir plus bas) |
 | `PK_LEAVE` | `PkHead` | dans les deux sens | 3 fois à la fermeture (`net_shutdown`) | départ ; `host_drop` côté hôte, retour au menu côté client |
@@ -723,13 +741,13 @@ Une version différente rend simplement les parties invisibles l'une à l'autre.
 |---|---|---|
 | `MAXP` | 8 | joueurs maximum |
 | `NET_PORT` | 27960 | port UDP de l'hôte |
-| `FRAG_LIMIT` | 15 | frags pour gagner |
+| `FRAG_LIMIT` | 15 | frags pour gagner (partie hébergée à la main) ; `FRAG_LIMIT_QUICK` = 7 pour une partie rapide (l'hôte l'envoie dans `PkSnap.fragLimit`) |
 | `MATCH_TIME` | 600 s | durée maximale d'un match |
 | `RESPAWN_TIME` | 2,5 s | délai de réapparition |
 | `PVP_SCALE` | 0,7 | dégâts contre les joueurs = 70 % des dégâts contre les monstres |
 | `KILL_HEAL` | 30 PV | soin du tueur |
 | `NET_MAGIC` | `0x564C4F43` | signature des paquets (« VLOC ») |
-| `NET_VER` | 9 | version du protocole (voir §4) |
+| `NET_VER` | 11 | version du protocole (voir §4) |
 | `MAXSPEC` | 4 | spectateurs en direct sur l'hôte |
 | `MAXFOUND` | 12 | parties mémorisées (LAN + en ligne ; 7 affichées) |
 | `LOBBY_DEFAULT` | `velocity-lobby.velocity-void.workers.dev` | adresse du lobby déployé (`lobby=` dans `velocity.ini` la remplace) |
@@ -1016,3 +1034,36 @@ Exemple : une troisième arme principale (`P.weapon == 2`).
 5. Restez dans le couloir dégagé (x = −20) pour ne pas dépendre des blocs aléatoires.
 6. Écrivez toujours la valeur attendue entre parenthèses `(attendu ...)` pour pouvoir relire le fichier
    d'un coup d'œil, puis lancez `velocity.exe --test resultats.txt`.
+
+---
+
+## 7. Port macOS
+
+Même `main.c`, compilé avec `clang` (pas de MSVC). Tout ce qui est propre à la plateforme est isolé :
+
+| Fichier | Rôle |
+|---|---|
+| `mac_platform.h` | API C de la couche plateforme (`mac_*`) et rappels fournis par `main.c` (`plat_*`) |
+| `mac_platform.m` | Objective-C (ARC) : fenêtre Cocoa + `NSOpenGLContext` legacy, clavier/souris, `AudioQueue`, police `CoreText`, WebSocket `NSURLSession` |
+| `mac_compat.h` | Shims Win32 pour le code partagé : sockets BSD (`SOCKET`, `closesocket`…), `CRITICAL_SECTION`/événements/fils en pthread, `QueryPerformanceCounter`, en-têtes BMP |
+
+- **Build** : `./build_mac.sh` sur un Mac (Command Line Tools) → `Velocity.app` universel (arm64 + x86_64, ad hoc)
+  et `Velocity-macOS.zip`. Sans Mac : le workflow `.github/workflows/macos.yml` fait la même chose sur un runner
+  macOS, lance `--test` et publie le zip en artefact. Au premier lancement d'un `.app` téléchargé : clic droit →
+  Ouvrir (ou `xattr -dr com.apple.quarantine Velocity.app`).
+- **`main.c`** : les blocs Windows sont sous `#ifdef _WIN32`. Les entrées passent par des gestionnaires communs
+  (`in_key_down`, `in_char`, `in_button_down`, `in_wheel`, `in_resize`…) appelés par `wndproc` (Windows) ou par
+  les `plat_*` (macOS). `WinMain` devient `velocity_main(cmd)` ; `main(argc, argv)` recolle les arguments.
+  Le fil principal reste le seul à lire/écrire l'état du jeu, y compris l'audio : `AudioQueue` ne fait que
+  signaler « tampon libre », `audio_update()` le remplit.
+- **Touches** : le jeu stocke des **scancodes Windows** (set 1) dans `velocity.ini`. `mac_platform.m` convertit les
+  touches virtuelles macOS (`keyMap`) ; les noms affichés viennent de la disposition clavier courante (`UCKeyTranslate`).
+- **Souris** : `CGAssociateMouseAndMouseCursorPosition(false)` + `[NSCursor hide]`, deltas bruts via `deltaX/deltaY`.
+- **Fenêtre** : surface OpenGL non Retina (1 point = 1 pixel, comme `winW`/`winH`) ; plein écran = fenêtre sans bordure
+  (F11 comme sous Windows) ; `Cmd+Q` quitte.
+- **Réglages** : `~/Library/Application Support/Velocity/velocity.ini` (le `.app` peut être en lecture seule).
+- **Lobby en ligne** : `mac_ws_open/send/recv/close/free` (bloquants, appelés depuis les fils `lb_reader`/`lb_writer`).
+  `mac_ws_close` coupe la connexion ; `mac_ws_free` n'est appelé qu'après l'arrêt des fils (`lb_stop`).
+- **Bot adverse** (`ACT_VSBOT`) : `posix_spawn` du même exécutable (`_NSGetExecutablePath`).
+- **Statut** : écrit sans pouvoir compiler ni lancer sur un Mac (développé sous Windows). À valider sur machine réelle :
+  clavier/souris, son, texte, plein écran, lobby, partie contre bot.

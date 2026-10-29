@@ -1,11 +1,13 @@
 /*
  * VELOCITY - movement shooter 3D en C
  * Win32 + OpenGL 1.1 + waveOut, aucune dependance externe.
+ * macOS : meme code, couche plateforme dans mac_platform.m / mac_compat.h (Cocoa, AudioQueue, NSURLSession).
  *
  * Mouvement : bhop (maintenir saut), air-strafe facon Quake, slide, dash,
  *             double saut, wall-run, wall-jump, jump pads, rocket-jump.
  * Armes     : 1 = Railgun (hitscan perforant), 2 = Lance-roquettes (splash + knockback).
  */
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
@@ -15,6 +17,10 @@
 #include <winhttp.h>
 #include <mmsystem.h>
 #include <GL/gl.h>
+typedef int sock_len_t;
+#else
+#include "mac_compat.h"
+#endif
 #include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
@@ -22,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
 #pragma comment(lib, "opengl32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "user32.lib")
@@ -29,6 +36,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "advapi32.lib")
+#endif
 
 #define PI   3.14159265f
 #define TICK (1.0f / 120.0f)
@@ -482,11 +490,14 @@ typedef struct { short *data; int len; } Sound;
 typedef struct { int snd, active, loop; float pos, step, vol, fade; } Voice;
 static Sound sounds[S_COUNT];
 static Voice voices[MAXV];
+#ifdef _WIN32
 static HWAVEOUT wout;
 static WAVEHDR whdr[NBUF];
+#endif
 static short wbuf[NBUF][BUFLEN];
 static int audio_ok;
 static float masterVol = 1.0f;
+#include "music.h"                                    /* design de la musique : morceaux, sequenceur, niveau d'intensite */
 
 static int play_voice(int s, float vol, float pitch);
 static void play(int s, float vol, float pitch) { play_voice(s, vol, pitch); }
@@ -521,9 +532,10 @@ static void loop_stop(int v) {                            /* fin en 30 ms, sans 
 }
 /* --- fin Tesla --- */
 
+
 static void audio_fill(short *out, int n) {
     for (int i = 0; i < n; i++) {
-        float acc = 0;
+        float acc = music_sample() * MUS_GAIN * musicVol;
         for (int v = 0; v < MAXV; v++) {
             Voice *vo = &voices[v];
             if (!vo->active) continue;
@@ -545,11 +557,19 @@ static void audio_fill(short *out, int n) {
 
 static void audio_update(void) {
     if (!audio_ok) return;
-    for (int i = 0; i < NBUF; i++)
+    for (int i = 0; i < NBUF; i++) {
+#ifdef _WIN32
         if (whdr[i].dwFlags & WHDR_DONE) {
             audio_fill(wbuf[i], BUFLEN);
             waveOutWrite(wout, &whdr[i], sizeof(WAVEHDR));
         }
+#else
+        if (mac_audio_done(i)) {
+            audio_fill(wbuf[i], BUFLEN);
+            mac_audio_write(i, wbuf[i]);
+        }
+#endif
+    }
 }
 
 static float noise(void) { return frand() * 2 - 1; }
@@ -560,6 +580,7 @@ static Sound mksound(float *f, int n) {
     free(f);
     return s;
 }
+
 
 static void make_sounds(void) {
     int n; float *b, ph, lp, t, a;
@@ -1039,6 +1060,15 @@ static void make_sounds(void) {
 }
 
 static void audio_init(void) {
+#ifndef _WIN32
+    if (!mac_audio_open(SR, NBUF, BUFLEN)) return;
+    audio_ok = 1;
+    for (int i = 0; i < NBUF; i++) {
+        audio_fill(wbuf[i], BUFLEN);
+        mac_audio_write(i, wbuf[i]);
+    }
+    return;
+#else
     WAVEFORMATEX fmt = { 0 };
     fmt.wFormatTag = WAVE_FORMAT_PCM; fmt.nChannels = 1; fmt.nSamplesPerSec = SR;
     fmt.wBitsPerSample = 16; fmt.nBlockAlign = 2; fmt.nAvgBytesPerSec = SR * 2;
@@ -1052,6 +1082,7 @@ static void audio_init(void) {
         audio_fill(wbuf[i], BUFLEN);
         waveOutWrite(wout, &whdr[i], sizeof(WAVEHDR));
     }
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -1366,7 +1397,8 @@ static char msg[64], popText[32];
 #define MAXP          8
 #define MAXSPEC       4       /* spectateurs en direct sur l'hote (28 Ko/s chacun) */
 #define NET_PORT      27960
-#define FRAG_LIMIT    15
+#define FRAG_LIMIT    15      /* frags pour gagner : partie hebergee a la main ou en LAN */
+#define FRAG_LIMIT_QUICK 7    /* partie rapide : l'hote l'annonce a tous dans PkSnap.fragLimit */
 #define MATCH_TIME    600.0f
 #define RESPAWN_TIME  2.5f
 #define PVP_SCALE     0.7f    /* degats contre les joueurs : 70% de ceux contre les monstres */
@@ -1409,6 +1441,8 @@ typedef struct {
 
 static NetPlayer NP[MAXP + 1];                            /* NP[MAXP] : place vide du spectateur (myId = MAXP) */
 static int netMode, appState, myId, dmMode, matchOver, matchWinner;
+static int fragLimit = FRAG_LIMIT;                        /* limite de la partie en cours (l'hote decide, les clients la recoivent) */
+static int hostQuick;                                     /* 1 : la prochaine partie hebergee vient d'une PARTIE RAPIDE */
 static int spectating, specFollow = -1;                   /* spectateur : suit le joueur specFollow, -1 = camera libre */
 static float matchT, matchEndT;
 static char myName[16] = "joueur";
@@ -1443,7 +1477,11 @@ static int botMode;                                       /* 1 = bot hote, 2 = b
 static int botLevel = 1;                                  /* difficulte du bot : 0 facile, 1 normal, 2 difficile */
 static int botLocal, botHidden;                           /* --local : le bot rejoint 127.0.0.1 ; --hidden : fenetre reduite et muette */
 static int vsBot;                                         /* partie joueur contre bot : jamais annoncee en ligne */
+#ifdef _WIN32
 static HANDLE botProc;                                    /* processus du bot adverse (partie joueur contre bot) */
+#else
+static pid_t botProc;
+#endif
 static const char *botLevelNames[3] = { "FACILE", "NORMAL", "DIFFICILE" };
 static const float botAimMul[3]  = { 2.8f, 1.0f, 0.45f };   /* imprecision de visee */
 static const float botReactT[3]  = { 0.7f, 0.3f, 0.14f };   /* delai avant de tirer apres avoir vu la cible */
@@ -1597,13 +1635,19 @@ static int hookPressIn, hookHeldIn;                       /* entrees du grappin 
 static float mdx, mdy, sens = 0.0022f;
 static int captured, shotMode;
 
+#ifdef _WIN32
 static HWND hwnd;
 static HDC hdc;
+#endif
 static int winW = 1600, winH = 900;
 
 static void set_capture(int on) {
     if (on == captured) return;
     captured = on;
+#ifndef _WIN32
+    mac_set_capture(on);
+    if (!on) memset(keys, 0, sizeof keys);
+#else
     if (on) {
         RECT r; GetClientRect(hwnd, &r);
         POINT a = { r.left, r.top }, b = { r.right, r.bottom };
@@ -1618,6 +1662,7 @@ static void set_capture(int on) {
         ReleaseCapture();
         memset(keys, 0, sizeof keys);
     }
+#endif
     mdx = mdy = 0;
 }
 
@@ -4998,7 +5043,7 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   10
+#define NET_VER   11
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
@@ -5023,7 +5068,7 @@ typedef struct { PkHead h; char name[16]; unsigned char spec, pad[3]; } PkJoin;
 typedef struct { PkHead h; unsigned char id, refused, pad[2]; } PkWelcome;
 typedef struct { PkHead h; NetPState st; } PkState;
 typedef struct { unsigned char active, alive; short hp, kills, deaths; NetPState st; } SnapP;
-typedef struct { PkHead h; float matchT; unsigned char matchOver, winner; unsigned short pickMask; SnapP p[MAXP]; } PkSnap;
+typedef struct { PkHead h; float matchT; unsigned char matchOver, winner; unsigned short pickMask; unsigned char fragLimit; SnapP p[MAXP]; } PkSnap;
 typedef struct { PkHead h; char names[MAXP][16]; } PkRoster;
 typedef struct { PkHead h; NetEvent ev; } PkEvent;
 #pragma pack(pop)
@@ -5085,21 +5130,30 @@ static void set_status(const char *s) {
 static const char *pname(int i) { return (i >= 0 && i < MAXP && NP[i].name[0]) ? NP[i].name : "?"; }
 
 static int wsa_init(void) {
+#ifndef _WIN32
+    wsaReady = 1;
+    return 1;
+#else
     if (!wsaReady) {
         WSADATA w;
         if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return 0;
         wsaReady = 1;
     }
     return 1;
+#endif
 }
 
 static int net_open(unsigned short port) {
     if (!wsa_init()) return 0;
     sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) return 0;
+#ifdef _WIN32
     u_long nonBlocking = 1;
     ioctlsocket(sock, FIONBIO, &nonBlocking);
-    BOOL yes = TRUE;
+#else
+    fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
+#endif
+    int yes = 1;
     setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const char *)&yes, sizeof yes);
     struct sockaddr_in a;
     memset(&a, 0, sizeof a);
@@ -6063,7 +6117,7 @@ static void host_kill(int killer, int victim, int kind) {
     e.actor = (unsigned char)killer; e.target = (unsigned char)victim; e.sub = (unsigned char)kind;
     net_emit(&e);
     apply_event(&e);
-    if (killer != victim && killer < MAXP && NP[killer].kills >= FRAG_LIMIT) host_end_match(killer);
+    if (killer != victim && killer < MAXP && NP[killer].kills >= fragLimit) host_end_match(killer);
 }
 
 static int hitCount[W_COUNT], parryCount;                       /* statistiques pour le journal du bot */
@@ -6567,7 +6621,11 @@ static void dm_local_start(void) {
 }
 
 static void stop_bot_proc(void) {
+#ifdef _WIN32
     if (botProc) { TerminateProcess(botProc, 0); CloseHandle(botProc); botProc = NULL; }
+#else
+    if (botProc > 0) { kill(botProc, SIGTERM); waitpid(botProc, NULL, 0); botProc = 0; }
+#endif
     vsBot = 0;
 }
 
@@ -6615,7 +6673,11 @@ static void on_welcome(int id) {
     dm_local_start();
     if (spectating) { P.pos = P.prevPos = v3(0, 12, ms(36)); P.pitch = -0.2f; P.yaw = 0; }   /* vue d'ensemble de la carte */
     appState = APP_GAME;
+#ifdef _WIN32
     if (!botMode && GetForegroundWindow() == hwnd) set_capture(1);
+#else
+    if (!botMode && mac_has_focus()) set_capture(1);
+#endif
     netlog("connecte a la partie, id %d", id);
 }
 
@@ -6624,6 +6686,7 @@ static void apply_snap(const PkSnap *s) {
     matchT = s->matchT;
     matchOver = s->matchOver;
     matchWinner = s->winner;
+    fragLimit = s->fragLimit > 0 ? s->fragLimit : FRAG_LIMIT;
     for (int i = 0; i < npu; i++) {                       /* l'hote dit quelles recharges sont la */
         if (s->pickMask & (1 << i)) PU[i].t = 0;
         else if (PU[i].t <= 0) PU[i].t = PICKUP_RESPAWN;
@@ -6694,7 +6757,7 @@ static void net_poll(void) {
     for (;;) {
         if (sock == INVALID_SOCKET) return;
         struct sockaddr_in from;
-        int fl = sizeof from;
+        sock_len_t fl = sizeof from;
         int n = recvfrom(sock, buf, sizeof buf, 0, (struct sockaddr *)&from, &fl);
         if (n == SOCKET_ERROR) {
             int err = WSAGetLastError();
@@ -6741,6 +6804,7 @@ static void net_update(float dt) {
             memset(&s, 0, sizeof s);
             head(&s.h, PK_SNAP);
             s.matchT = matchT; s.matchOver = (unsigned char)matchOver; s.winner = (unsigned char)matchWinner;
+            s.fragLimit = (unsigned char)fragLimit;
             for (int i = 0; i < npu; i++) if (PU[i].t <= 0) s.pickMask |= (unsigned short)(1 << i);
             for (int i = 0; i < MAXP; i++) {
                 s.p[i].active = (unsigned char)NP[i].active; s.p[i].alive = (unsigned char)NP[i].alive;
@@ -6820,8 +6884,9 @@ static int net_host_start(void) {
     find_local_ip();
     dm_local_start();
     matchOver = 0; matchT = 0;
+    fragLimit = hostQuick ? FRAG_LIMIT_QUICK : FRAG_LIMIT; hostQuick = 0;
     host_respawn(0);
-    netlog("partie hebergee, ip %s", hostIpText);
+    netlog("partie hebergee, ip %s, %d frags", hostIpText, fragLimit);
     return 1;
 }
 
@@ -6872,7 +6937,13 @@ static int lbCsReady;
 static char lbIn[LB_Q][LB_LINE], lbOut[LB_Q][LB_LINE];
 static int lbInN, lbOutN;
 static HANDLE lbEvt, lbReaderTh, lbWriterTh;
+#ifdef _WIN32
 static HINTERNET lbSes, lbCon, lbWs;
+#define LB_WS_SEND(s, n) (WinHttpWebSocketSend(lbWs, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE, (PVOID)(s), (DWORD)(n)) != NO_ERROR)
+#else
+static MacWs *lbWs;
+#define LB_WS_SEND(s, n) (mac_ws_send(lbWs, (s), (int)(n)) != 0)
+#endif
 static struct sockaddr_in stunAddr, myPub;
 static volatile LONG stunReady;
 static int myPubOk, lbGreeted, lbLastPlayers = -1, lbLastSpec = -1;
@@ -6943,7 +7014,7 @@ static void lan_ep_text(char *out, int n, int port) {
     SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) return;
     struct sockaddr_in to, me;
-    int ml = sizeof me;
+    sock_len_t ml = sizeof me;
     memset(&to, 0, sizeof to);
     to.sin_family = AF_INET; to.sin_port = htons(53); to.sin_addr.s_addr = inet_addr("8.8.8.8");
     if (connect(s, (struct sockaddr *)&to, sizeof to) == 0 && getsockname(s, (struct sockaddr *)&me, &ml) == 0 &&
@@ -6969,12 +7040,12 @@ static DWORD WINAPI lb_writer(LPVOID arg) {
             }
             LeaveCriticalSection(&lbCs);
             if (!have) break;
-            if (WinHttpWebSocketSend(lbWs, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE, line, (DWORD)strlen(line)) != NO_ERROR) {
+            if (LB_WS_SEND(line, strlen(line))) {
                 lbState = LB_FAILED;
                 return 0;
             }
         }
-        if (w == WAIT_TIMEOUT && WinHttpWebSocketSend(lbWs, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE, "ping", 4) != NO_ERROR) {
+        if (w == WAIT_TIMEOUT && LB_WS_SEND("ping", 4)) {
             lbState = LB_FAILED;
             return 0;
         }
@@ -6985,12 +7056,14 @@ static DWORD WINAPI lb_writer(LPVOID arg) {
 static DWORD WINAPI lb_reader(LPVOID arg) {
     (void)arg;
     char addr[96];
-    wchar_t whost[96];
     snprintf(addr, sizeof addr, "%s", lobbyAddr);
     int port = 443;
     char *colon = strchr(addr, ':');
     if (colon) { *colon = 0; port = atoi(colon + 1); }
+#ifdef _WIN32
+    wchar_t whost[96];
     MultiByteToWideChar(CP_UTF8, 0, addr, -1, whost, 96);
+#endif
 
     if (!lanEp && !stunReady) {                           /* resolu ici pour ne jamais bloquer le jeu sur le DNS */
         struct addrinfo hints, *res;
@@ -7004,6 +7077,32 @@ static DWORD WINAPI lb_reader(LPVOID arg) {
         }
     }
 
+#ifndef _WIN32
+    MacWs *ws = mac_ws_open(addr, port, port == 443);
+    EnterCriticalSection(&lbCs);
+    int stopped = lbStop;
+    if (!stopped && ws) lbWs = ws;
+    LeaveCriticalSection(&lbCs);
+    if (stopped || !ws) {
+        if (ws) { mac_ws_close(ws); mac_ws_free(ws); }
+        if (!stopped) lbState = LB_FAILED;
+        return 0;
+    }
+    lbState = LB_ON;
+    lbWriterTh = CreateThread(NULL, 0, lb_writer, NULL, 0, NULL);
+    for (;;) {
+        char buf[LB_LINE];
+        int got = mac_ws_recv(ws, buf, sizeof buf);
+        if (got < 0) break;
+        if (got == 0) continue;                           /* ligne trop longue : jetee */
+        EnterCriticalSection(&lbCs);
+        if (lbInN < LB_Q) memcpy(lbIn[lbInN++], buf, (size_t)got + 1);
+        LeaveCriticalSection(&lbCs);
+    }
+    if (!lbStop) lbState = LB_FAILED;
+    SetEvent(lbEvt);                                      /* reveille le fil d'ecriture pour qu'il se termine */
+    return 0;
+#else
     HINTERNET ses = WinHttpOpen(L"VELOCITY", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     HINTERNET con = NULL, req = NULL, ws = NULL;
     if (ses) {
@@ -7051,12 +7150,14 @@ static DWORD WINAPI lb_reader(LPVOID arg) {
     if (!lbStop) lbState = LB_FAILED;
     SetEvent(lbEvt);                                      /* reveille le fil d'ecriture pour qu'il se termine */
     return 0;
+#endif
 }
 
 static void lb_stop(void) {
     if (!lbCsReady) return;
     lbStop = 1;
     SetEvent(lbEvt);
+#ifdef _WIN32
     EnterCriticalSection(&lbCs);
     HINTERNET ws = lbWs, con = lbCon, ses = lbSes;
     lbWs = lbCon = lbSes = NULL;
@@ -7064,8 +7165,17 @@ static void lb_stop(void) {
     if (ws) WinHttpCloseHandle(ws);                       /* fait echouer le WinHttpWebSocketReceive en cours */
     if (con) WinHttpCloseHandle(con);
     if (ses) WinHttpCloseHandle(ses);
+#else
+    EnterCriticalSection(&lbCs);
+    MacWs *ws = lbWs;
+    LeaveCriticalSection(&lbCs);
+    if (ws) mac_ws_close(ws);                             /* fait echouer le mac_ws_recv en cours */
+#endif
     if (lbReaderTh) { WaitForSingleObject(lbReaderTh, 1500); CloseHandle(lbReaderTh); lbReaderTh = NULL; }
     if (lbWriterTh) { WaitForSingleObject(lbWriterTh, 1500); CloseHandle(lbWriterTh); lbWriterTh = NULL; }
+#ifndef _WIN32
+    if (ws) { mac_ws_free(ws); lbWs = NULL; }             /* les fils n'y touchent plus */
+#endif
     lbState = LB_OFF; lbStop = 0; lbInN = lbOutN = 0; lbGreeted = 0;
 }
 
@@ -7194,7 +7304,7 @@ static void lb_update(float dt) {
     if (!myPubOk) {                                       /* notre adresse vue d'Internet */
         if (lanEp) {
             struct sockaddr_in me;
-            int ml = sizeof me;
+            sock_len_t ml = sizeof me;
             if (getsockname(sock, (struct sockaddr *)&me, &ml) == 0) {
                 me.sin_addr.s_addr = inet_addr("127.0.0.1");
                 stun_got(&me);
@@ -8310,6 +8420,10 @@ static void build_world_list(void) {
 }
 
 static void make_font(int i, int px) {
+#ifndef _WIN32
+    fontBase[i] = glGenLists(224);
+    mac_make_font(fontBase[i], px, &fontW[i], &fontH[i]);
+#else
     HFONT f = CreateFontA(-px, 0, 0, 0, FW_BOLD, 0, 0, 0, ANSI_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
                           ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
     HGDIOBJ old = SelectObject(hdc, f);
@@ -8319,6 +8433,7 @@ static void make_font(int i, int px) {
     fontW[i] = tm.tmAveCharWidth; fontH[i] = tm.tmHeight;
     SelectObject(hdc, old);
     DeleteObject(f);
+#endif
 }
 
 static void text(int f, float x, float y, const char *s, float r, float g, float b, float a) {
@@ -9041,8 +9156,13 @@ static void key_name(int code, char *out, int n) {
     char buf[64];
     if (code <= 0) { snprintf(out, n, "-"); return; }
     if (code >= K_LMB) { snprintf(out, n, "%s", mouseNames[code - K_LMB]); return; }
+#ifdef _WIN32
     if (GetKeyNameTextA((LONG)code << 16, buf, sizeof buf) > 0) snprintf(out, n, "%s", buf);   /* nom selon le clavier */
     else snprintf(out, n, "touche %d", code);
+#else
+    mac_key_name(code, buf, sizeof buf);
+    snprintf(out, n, "%s", buf);
+#endif
 }
 
 static const char *bind_text(int a) {                    /* "Z / Fleche haut" : pour l'aide et le HUD */
@@ -9062,8 +9182,8 @@ static void cfg_save(void) {
     FILE *f = fopen(cfgPath, "w");
     if (!f) return;
     fprintf(f, "# VELOCITY - reglages (modifiable a la main)" "\n");
-    fprintf(f, "name=%s" "\n" "sens=%.5f" "\n" "fov=%.0f" "\n" "volume=%.2f" "\n" "invert_y=%d" "\n" "show_fps=%d" "\n" "fullscreen=%d" "\n",
-            myName, sens, fovBase, masterVol, invertY, showFps, fullscreen);
+    fprintf(f, "name=%s" "\n" "sens=%.5f" "\n" "fov=%.0f" "\n" "volume=%.2f" "\n" "music=%.2f" "\n" "invert_y=%d" "\n" "show_fps=%d" "\n" "fullscreen=%d" "\n",
+            myName, sens, fovBase, masterVol, musicVol, invertY, showFps, fullscreen);
     fprintf(f, "impact_frames=%d" "\n" "screen_fx=%d" "\n", impactFrames, screenFx);
     fprintf(f, "online=%d" "\n", onlineOn);
     fprintf(f, "loadout=%d,%d" "\n" "melee=%d" "\n", wantLoadout[0], wantLoadout[1], wantMelee);
@@ -9086,6 +9206,7 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
         else if (!strcmp(line, "sens")) sens = clampf((float)atof(v), 0.0003f, 0.01f);
         else if (!strcmp(line, "fov")) fovBase = clampf((float)atof(v), 80, 130);
         else if (!strcmp(line, "volume")) masterVol = clampf((float)atof(v), 0, 1);
+        else if (!strcmp(line, "music")) musicVol = clampf((float)atof(v), 0, 1);
         else if (!strcmp(line, "invert_y")) invertY = atoi(v) != 0;
         else if (!strcmp(line, "show_fps")) showFps = atoi(v) != 0;
         else if (!strcmp(line, "impact_frames")) impactFrames = atoi(v) != 0;
@@ -9204,6 +9325,9 @@ static void draw_settings(float cx, float cy) {
     y += 62;
     snprintf(buf, sizeof buf, "%.0f %%", masterVol * 100);
     masterVol = slider(3, lx, y, lw, "Volume", buf, masterVol, 0, 1);
+    y += 62;
+    snprintf(buf, sizeof buf, "%.0f %%", musicVol * 100);
+    musicVol = slider(4, lx, y, lw, "Musique", buf, musicVol, 0, 1);
     y += 50;
     snprintf(buf, sizeof buf, "Inverser l'axe Y : %s", invertY ? "OUI" : "NON");
     if (button(lx, y, lw, 46, buf)) invertY = !invertY;
@@ -9719,7 +9843,7 @@ static void draw_spec_hud(float cx, float cy) {
     if (specFollow >= 0) snprintf(buf, sizeof buf, "tu suis %s   -   [%s] joueur suivant", pname(specFollow), bind_text(A_FIRE));
     else snprintf(buf, sizeof buf, "camera libre   -   [%s] suivre un joueur   [%s] vite", bind_text(A_FIRE), bind_text(A_DASH));
     text_c(0, cx, 70, buf, 0.8f, 0.85f, 0.95f, 1);
-    snprintf(buf, sizeof buf, "%d:%02d   frags %d", left / 60, left % 60, FRAG_LIMIT);
+    snprintf(buf, sizeof buf, "%d:%02d   frags %d", left / 60, left % 60, fragLimit);
     text(0, 30, 40, buf, 0.85f, 0.85f, 0.95f, 1);
     for (int k = 0; k < n; k++) {
         int i = order[k];
@@ -10306,7 +10430,7 @@ static void draw_hud(void) {
         int left = (int)fmaxf(0, MATCH_TIME - matchT);
         snprintf(buf, sizeof buf, "DEATHMATCH LAN   %d joueur%s   %d:%02d", count, count > 1 ? "s" : "", left / 60, left % 60);
         text(0, 30, 40, buf, 0.85f, 0.85f, 0.95f, 1);
-        snprintf(buf, sizeof buf, "FRAGS %d / %d", NP[myId].kills, FRAG_LIMIT);
+        snprintf(buf, sizeof buf, "FRAGS %d / %d", NP[myId].kills, fragLimit);
         text(1, 30, 78, buf, 1, 1, 1, 1);
         snprintf(buf, sizeof buf, "rang %d / %d   morts %d   [%s] scores", rank, count, NP[myId].deaths, bind_text(A_SCORES));
         text(0, 30, 104, buf, 0.7f, 0.7f, 0.8f, 0.9f);
@@ -10681,9 +10805,12 @@ static void render(float alpha, float frameDt) {
 /* ------------------------------------------------------------------ */
 /* Fenetre                                                             */
 /* ------------------------------------------------------------------ */
+#ifdef _WIN32
 static WINDOWPLACEMENT prevPlacement = { sizeof(WINDOWPLACEMENT) };
+#endif
 
 static void toggle_fullscreen(void) {
+#ifdef _WIN32
     DWORD style = GetWindowLong(hwnd, GWL_STYLE);
     if (!fullscreen) {
         MONITORINFO mi = { sizeof mi };
@@ -10697,15 +10824,86 @@ static void toggle_fullscreen(void) {
         SetWindowPlacement(hwnd, &prevPlacement);
         SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     }
+#else
+    mac_set_fullscreen(!fullscreen);
+#endif
     fullscreen = !fullscreen;
     if (captured) { set_capture(0); set_capture(1); }
 }
 
+/* --- gestionnaires d'entrees communs a Windows (wndproc) et macOS (mac_platform.m) --- */
+static void in_resize(int w, int h) {
+    winW = w; winH = h;
+    if (captured) { set_capture(0); set_capture(1); }
+}
+
+/* renvoie 1 si la touche est consommee par l'attente d'une affectation (Alt+F4 ne passe alors pas) */
+static int in_key_down(int sc, int repeat) {
+    if (waitAct >= 0) {                                   /* on attend une touche pour une commande */
+        if (!repeat) {
+            if (sc == SC_ESC) waitAct = -1;
+            else if (sc == 0x0E || sc == 0x53) assign_bind(0);   /* retour arriere / suppr : effacer */
+            else assign_bind(sc);
+        }
+        return 1;
+    }
+    if (!repeat) {
+        latch[sc] = 1;
+        if (sc == SC_ESC) {
+            if (uiFocus) uiFocus = 0;
+            else if (settingsOpen) { settingsOpen = 0; cfg_save(); }
+            else if (loadoutOpen) { loadoutOpen = 0; cfg_save(); }
+            else if (appState == APP_JOIN) pendingAction = ACT_BACK;
+            else set_capture(0);
+        }
+        if (sc == SC_F11) toggle_fullscreen();
+        if (sc == SC_F2) sens = fmaxf(0.0003f, sens - 0.0002f);
+        if (sc == SC_F3) sens = fminf(0.01f, sens + 0.0002f);
+        if (sc == SC_R && !captured && !uiFocus && appState == APP_GAME && !dmMode) reset_game();
+    }
+    keys[sc] = 1;
+    return 0;
+}
+
+static void in_key_up(int sc) { keys[sc] = 0; }
+
+static void in_char(int c) {                              /* saisie du pseudo et de l'IP */
+    if (!uiFocus) return;
+    char *f = uiFocus == 1 ? myName : ipField;
+    int cap = uiFocus == 1 ? 15 : 31, len = (int)strlen(f);
+    if (c == 8) { if (len) f[len - 1] = 0; }
+    else if (c == 13) { if (uiFocus == 2) pendingAction = ACT_JOIN_IP; uiFocus = 0; }
+    else if (c >= 32 && c < 127 && len < cap && (uiFocus == 1 || (c >= '0' && c <= '9') || c == '.')) {
+        f[len] = (char)c; f[len + 1] = 0;
+    }
+}
+
+static void in_mouse_move(int x, int y) { uiMX = x; uiMY = y; }
+
+static void in_button_down(int code) {                    /* code = K_LMB .. K_X2 */
+    if (waitAct >= 0) { assign_bind(code); return; }
+    if (!captured) {                                      /* les menus traitent le clic gauche */
+        if (code == K_LMB) { uiClick = 1; uiDown = 1; }
+        return;
+    }
+    keys[code] = 1; latch[code] = 1;
+}
+
+static void in_button_up(int code) {
+    keys[code] = 0;
+    if (code == K_LMB) { uiDown = 0; uiDrag = 0; }
+}
+
+static void in_wheel(void) {
+    if (waitAct >= 0) assign_bind(K_WHEEL);
+    else if (captured) latch[K_WHEEL] = 1;
+}
+
+#ifdef _WIN32
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_SIZE:
-        winW = LOWORD(lp); winH = HIWORD(lp);
-        if (captured) { set_capture(0); set_capture(1); }
+        in_resize(LOWORD(lp), HIWORD(lp));
         return 0;
     case WM_INPUT: {
         BYTE data[sizeof(RAWINPUT) + 16];
@@ -10719,72 +10917,33 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         break;
     }
-    case WM_KEYDOWN: case WM_SYSKEYDOWN: {
-        int sc = (lp >> 16) & 0xFF;
-        if (waitAct >= 0) {                               /* on attend une touche pour une commande */
-            if (!(lp & (1 << 30))) {
-                if (sc == SC_ESC) waitAct = -1;
-                else if (sc == 0x0E || sc == 0x53) assign_bind(0);   /* retour arriere / suppr : effacer */
-                else assign_bind(sc);
-            }
-            return 0;
-        }
-        if (!(lp & (1 << 30))) {
-            latch[sc] = 1;
-            if (sc == SC_ESC) {
-                if (uiFocus) uiFocus = 0;
-                else if (settingsOpen) { settingsOpen = 0; cfg_save(); }
-                else if (loadoutOpen) { loadoutOpen = 0; cfg_save(); }
-                else if (appState == APP_JOIN) pendingAction = ACT_BACK;
-                else set_capture(0);
-            }
-            if (sc == SC_F11) toggle_fullscreen();
-            if (sc == SC_F2) sens = fmaxf(0.0003f, sens - 0.0002f);
-            if (sc == SC_F3) sens = fminf(0.01f, sens + 0.0002f);
-            if (sc == SC_R && !captured && !uiFocus && appState == APP_GAME && !dmMode) reset_game();
-        }
-        keys[sc] = 1;
+    case WM_KEYDOWN: case WM_SYSKEYDOWN:
+        if (in_key_down((lp >> 16) & 0xFF, (lp & (1 << 30)) != 0)) return 0;
         if (m == WM_SYSKEYDOWN && wp == VK_F4) break;      /* Alt+F4 */
         return 0;
-    }
     case WM_KEYUP: case WM_SYSKEYUP:
-        keys[(lp >> 16) & 0xFF] = 0;
+        in_key_up((lp >> 16) & 0xFF);
         return 0;
-    case WM_CHAR:                                         /* saisie du pseudo et de l'IP */
-        if (uiFocus) {
-            char *f = uiFocus == 1 ? myName : ipField;
-            int cap = uiFocus == 1 ? 15 : 31, len = (int)strlen(f);
-            if (wp == 8) { if (len) f[len - 1] = 0; }
-            else if (wp == 13) { if (uiFocus == 2) pendingAction = ACT_JOIN_IP; uiFocus = 0; }
-            else if (wp >= 32 && wp < 127 && len < cap && (uiFocus == 1 || (wp >= '0' && wp <= '9') || wp == '.')) {
-                f[len] = (char)wp; f[len + 1] = 0;
-            }
-        }
+    case WM_CHAR:
+        in_char((int)wp);
         return 0;
     case WM_MOUSEMOVE:
-        uiMX = (short)LOWORD(lp); uiMY = (short)HIWORD(lp);
+        in_mouse_move((short)LOWORD(lp), (short)HIWORD(lp));
         return 0;
     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: case WM_XBUTTONDOWN: {
         int code = m == WM_LBUTTONDOWN ? K_LMB : m == WM_RBUTTONDOWN ? K_RMB : m == WM_MBUTTONDOWN ? K_MMB :
                    (HIWORD(wp) == XBUTTON1 ? K_X1 : K_X2);
-        if (waitAct >= 0) { assign_bind(code); return m == WM_XBUTTONDOWN; }
-        if (!captured) {                                  /* les menus traitent le clic gauche */
-            if (code == K_LMB) { uiClick = 1; uiDown = 1; }
-            return m == WM_XBUTTONDOWN;
-        }
-        keys[code] = 1; latch[code] = 1;
+        in_button_down(code);
         return m == WM_XBUTTONDOWN;
     }
     case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: case WM_XBUTTONUP: {
         int code = m == WM_LBUTTONUP ? K_LMB : m == WM_RBUTTONUP ? K_RMB : m == WM_MBUTTONUP ? K_MMB :
                    (HIWORD(wp) == XBUTTON1 ? K_X1 : K_X2);
-        keys[code] = 0;
-        if (code == K_LMB) { uiDown = 0; uiDrag = 0; }
+        in_button_up(code);
         return m == WM_XBUTTONUP;
     }
     case WM_MOUSEWHEEL:
-        if (waitAct >= 0) assign_bind(K_WHEEL);
-        else if (captured) latch[K_WHEEL] = 1;
+        in_wheel();
         return 0;
     case WM_ACTIVATE: if (LOWORD(wp) == WA_INACTIVE) set_capture(0); return 0;
     case WM_KILLFOCUS: set_capture(0); return 0;
@@ -10792,6 +10951,17 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     }
     return DefWindowProcA(h, m, wp, lp);
 }
+#else
+/* rappels appeles par mac_platform.m */
+void plat_key(int sc, int down, int repeat) { if (down) in_key_down(sc, repeat); else in_key_up(sc); }
+void plat_char(int ch) { in_char(ch); }
+void plat_mouse_move(int x, int y) { in_mouse_move(x, y); }
+void plat_button(int id, int down) { if (down) in_button_down(K_LMB + id); else in_button_up(K_LMB + id); }
+void plat_wheel(void) { in_wheel(); }
+void plat_focus_lost(void) { set_capture(0); }
+void plat_resize(int w, int h) { in_resize(w, h); }
+void plat_raw_motion(float dx, float dy) { mdx += dx; mdy += dy; }
+#endif
 
 static void save_bmp(const char *path) {
     int rowSize = (winW * 3 + 3) & ~3;
@@ -13311,9 +13481,66 @@ static void run_tests(const char *path) {
         memset(NP, 0, sizeof NP);
     }
 
+    for (int lv = 0; lv <= 4; lv += 4) {                  /* musique : 4 s de kicks (niveau 0 = 172 BPM, niveau 4 = 188 BPM), signal borne */
+        int kicks = 0, bad = 0; float peak = 0, prevK = 0;
+        music_set(0, lv);
+        for (int i = 0; i < 4 * SR - 100; i++) {
+            float s = music_sample();
+            if (!(fabsf(s) < 8)) bad = 1;
+            peak = fmaxf(peak, fabsf(s));
+            if (mus.kEnv >= 0.9996f && prevK < 0.9996f) kicks++;
+            prevK = mus.kEnv;
+        }
+        music_set(-1, 0);
+        fprintf(f, "musique niveau %d : kicks en 4 s=%d pic=%.2f valeurs invalides=%d (attendu %d, pic entre 0.5 et 3, 0)\n",
+                lv, kicks, peak, bad, lv ? 13 : 12);
+    }
+    {                                                     /* le niveau demande ne s'applique qu'a la mesure suivante (1,4 s a 172 BPM) */
+        music_set(0, 0);
+        for (int i = 0; i < SR / 2; i++) music_sample();
+        music_level(8);
+        int before = mus.lvl;
+        for (int i = 0; i < 2 * SR; i++) music_sample();
+        fprintf(f, "musique changement de niveau : avant la mesure=%d apres=%d tempo=%.0f BPM (attendu 0, 8, 204)\n",
+                before, mus.lvl, SR * 60.0f / 4 / mus.sps);
+        music_set(-1, 0);
+    }
+    {                                                     /* la limite de frags voyage dans PkSnap (partie rapide = 7) */
+        PkSnap sn;
+        memset(&sn, 0, sizeof sn);
+        sn.fragLimit = FRAG_LIMIT_QUICK; apply_snap(&sn); int recu = fragLimit;
+        sn.fragLimit = 0; apply_snap(&sn);
+        fprintf(f, "limite de frags : recue=%d, snapshot sans limite=%d, taille PkSnap=%d (attendu %d, %d)\n",
+                recu, fragLimit, (int)sizeof sn, FRAG_LIMIT_QUICK, FRAG_LIMIT);
+        memset(NP, 0, sizeof NP);
+    }
+    fprintf(f, "musique PvP (limite 15) : 0-0=%d 4-2=%d 5-1=%d 9-9=%d 10-3=%d 14-13=%d 14-14=%d (attendu 0 0 3 3 6 6 8)\n",
+            music_pvp_level(0, 0, 15), music_pvp_level(4, 2, 15), music_pvp_level(5, 1, 15), music_pvp_level(9, 9, 15),
+            music_pvp_level(10, 3, 15), music_pvp_level(14, 13, 15), music_pvp_level(14, 14, 15));
+    fprintf(f, "musique PvP (limite 7) : 2-0=%d 3-0=%d 5-2=%d 6-6=%d (attendu 0 3 6 8)\n",
+            music_pvp_level(2, 0, 7), music_pvp_level(3, 0, 7), music_pvp_level(5, 2, 7), music_pvp_level(6, 6, 7));
+
     botLog = NULL;
     netMode = NET_OFF; dmMode = 0;
     fclose(f);
+}
+
+/* Intensite de la musique : PvP = kills du leader (un round = un kill), solo = numero de vague.
+ * Hors partie : niveau 0. Chaque joueur le calcule seul : les frags de tous sont deja dans NP[]. */
+static void music_follow_game(void) {
+    int lvl = 0;
+    if (appState == APP_GAME && dmMode) {
+        int lead = 0, second = 0;
+        for (int i = 0; i < MAXP; i++) {
+            if (!NP[i].active) continue;
+            if (NP[i].kills > lead) { second = lead; lead = NP[i].kills; }
+            else if (NP[i].kills > second) second = NP[i].kills;
+        }
+        lvl = music_pvp_level(lead, second, fragLimit);
+    } else if (appState == APP_GAME) {
+        lvl = wave - 1;
+    }
+    music_level(lvl);
 }
 
 static void do_action(void) {
@@ -13327,12 +13554,29 @@ static void do_action(void) {
         break;
     case ACT_HOST:
         if (net_host_start()) { appState = APP_GAME; if (!botMode) set_capture(1); }
+        hostQuick = 0;
         break;
     case ACT_BROWSE:
         if (net_browse_start()) { appState = APP_JOIN; netStatus[0] = 0; }
         break;
     case ACT_VSBOT:                                       /* heberge en local, puis lance un bot (autre processus) qui nous rejoint */
         if (!net_host_start()) break;
+#ifndef _WIN32
+        {
+            char exe[MAX_PATH], lvs[8], nm[48];
+            uint32_t exeLen = sizeof exe;
+            int lv = pendingArg < 0 ? 0 : pendingArg > 2 ? 2 : pendingArg;
+            snprintf(lvs, sizeof lvs, "%d", lv);
+            snprintf(nm, sizeof nm, "Bot_%s", botLevelNames[lv]);
+            char *argv[] = { exe, "--bot", "join", "--local", "--hidden", "--nolan", "--level", lvs, "--name", nm,
+                             "--time", "1000000", NULL };
+            extern char **environ;
+            if (_NSGetExecutablePath(exe, &exeLen) == 0 && posix_spawn(&botProc, exe, NULL, NULL, argv, environ) == 0) {
+                vsBot = 1; botLevel = lv;
+                appState = APP_GAME; set_capture(1);
+            } else { botProc = 0; set_status("impossible de lancer le bot"); net_shutdown(); }
+        }
+#else
         {
             char exe[MAX_PATH], cmd[MAX_PATH + 160];
             STARTUPINFOA si = { sizeof si };
@@ -13347,6 +13591,7 @@ static void do_action(void) {
                 appState = APP_GAME; set_capture(1);
             } else { set_status("impossible de lancer le bot"); net_shutdown(); }
         }
+#endif
         break;
     case ACT_JOIN_FOUND:
         join_found(pendingArg, 0);
@@ -13388,8 +13633,12 @@ static void do_action(void) {
     }
 }
 
+#ifdef _WIN32
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     (void)prev;
+#else
+static int velocity_main(const char *cmd) {
+#endif
     memcpy(binds, bindDefault, sizeof binds);
     if (cmd && strncmp(cmd, "--test ", 7) == 0) { run_tests(cmd + 7); return 0; }
     const char *shotPath = NULL;
@@ -13399,8 +13648,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     {
         static char args[1024];
         snprintf(args, sizeof args, "%s", cmd ? cmd : "");
+#ifdef _WIN32
         DWORD un = sizeof myName;
         if (!GetUserNameA(myName, &un) || !myName[0]) snprintf(myName, sizeof myName, "joueur");
+#else
+        struct passwd *pw = getpwuid(getuid());
+        snprintf(myName, sizeof myName, "%s", pw && pw->pw_name[0] ? pw->pw_name : "joueur");
+#endif
         myName[15] = 0;
         for (char *t = strtok(args, " "); t; t = strtok(NULL, " ")) {
             if (!strcmp(t, "--bot") && (t = strtok(NULL, " "))) botMode = !strcmp(t, "host") ? 1 : 2;
@@ -13423,6 +13677,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         }
     }
 
+#ifndef _WIN32
+    if (!mac_window_create(winW, winH, "VELOCITY", !botHidden)) return 1;
+    if (botMode) mac_window_place(botMode == 1 ? 0 : 820, 40, 800, 450);   /* deux bots cote a cote, fenetres reduites */
+    mac_window_size(&winW, &winH);
+#else
     SetProcessDPIAware();
     WNDCLASSA wc = { 0 };
     wc.style = CS_OWNDC;
@@ -13458,6 +13717,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
 
     RAWINPUTDEVICE rid = { 0x01, 0x02, 0, hwnd };
     RegisterRawInputDevices(&rid, 1, sizeof rid);
+#endif
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_LIGHT0);
@@ -13471,13 +13731,22 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     build_world_list();
     make_sounds();
     {                                                     /* velocity.ini, a cote de l'executable */
+#ifdef _WIN32
         char *slash;
         GetModuleFileNameA(NULL, cfgPath, sizeof cfgPath);
         slash = strrchr(cfgPath, '\\');
         if (slash) strcpy(slash + 1, "velocity.ini"); else cfgPath[0] = 0;
+#else                                                     /* le .app peut etre en lecture seule : reglages dans ~/Library */
+        const char *home = getenv("HOME");
+        if (home) {
+            snprintf(cfgPath, sizeof cfgPath, "%s/Library/Application Support/Velocity", home);
+            mkdir(cfgPath, 0755);
+            snprintf(cfgPath, sizeof cfgPath, "%s/Library/Application Support/Velocity/velocity.ini", home);
+        } else cfgPath[0] = 0;
+#endif
         if (!botMode && !shotMode && cfg_load()) toggle_fullscreen();
     }
-    if (!shotMode && !botHidden) audio_init();
+    if (!shotMode && !botHidden) { audio_init(); music_set(0, 0); }
     reset_game();
 
     if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu") || strstr(shotPath, "loadout"))) {   /* captures des menus */
@@ -13690,13 +13959,19 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     QueryPerformanceCounter(&start);
     last = start;
     float acc = 0, fpsAcc = 0; int fpsFrames = 0;
+#ifdef _WIN32
     MSG msgw;
+#endif
     for (;;) {
+#ifdef _WIN32
         while (PeekMessageA(&msgw, NULL, 0, 0, PM_REMOVE)) {
             if (msgw.message == WM_QUIT) goto done;
             TranslateMessage(&msgw);
             DispatchMessageA(&msgw);
         }
+#else
+        if (!mac_pump()) goto done;
+#endif
         QueryPerformanceCounter(&now);
         float dt = (float)(now.QuadPart - last.QuadPart) / (float)freq.QuadPart;
         nowT = (double)(now.QuadPart - start.QuadPart) / (double)freq.QuadPart;
@@ -13735,10 +14010,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         }
         render((captured || dmMode) && appState == APP_GAME ? acc / TICK : 1.0f, dt);
         uiClick = 0;
+#ifdef _WIN32
         SwapBuffers(hdc);
+#else
+        mac_swap();
+#endif
         tesla_audio();                                    /* Tesla : boucles sonores des arcs */
+        music_follow_game();
         audio_update();
-        if (lbWantHost) { lbWantHost = 0; if (appState == APP_JOIN) pendingAction = ACT_HOST; }
+        if (lbWantHost) { lbWantHost = 0; if (appState == APP_JOIN) { pendingAction = ACT_HOST; hostQuick = 1; } }
         if (pendingAction) do_action();
     }
 done:
@@ -13829,8 +14109,26 @@ done:
     net_shutdown();
     if (botLog) fclose(botLog);
     set_capture(0);
+#ifdef _WIN32
     if (audio_ok) { waveOutReset(wout); waveOutClose(wout); }
     wglMakeCurrent(NULL, NULL);
     wglDeleteContext(rc);
+#else
+    if (audio_ok) mac_audio_close();
+    mac_shutdown();
+#endif
     return 0;
 }
+
+#ifndef _WIN32
+int main(int argc, char **argv) {
+    static char cmd[1024];                                /* la ligne de commande entiere, comme sous Windows */
+    cmd[0] = 0;
+    for (int i = 1; i < argc; i++) {
+        if (!strncmp(argv[i], "-psn_", 5)) continue;      /* argument ajoute par Finder sur les anciens macOS */
+        size_t n = strlen(cmd);
+        snprintf(cmd + n, sizeof cmd - n, "%s%s", n ? " " : "", argv[i]);
+    }
+    return velocity_main(cmd);
+}
+#endif
