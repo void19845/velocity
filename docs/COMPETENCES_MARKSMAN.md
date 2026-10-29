@@ -1,79 +1,70 @@
-# Competences Marksman — design (remplacement des pieces)
+# Competences interchangeables avec la piece — design (v2)
 
 Statut : **proposition, rien n'est code**. Branche de travail : `dev`.
+Remplace la v1 (qui supprimait les pieces) : ici la **piece devient une competence parmi d'autres**.
 
-## 1. Pourquoi remplacer les pieces
+## 1. Idee
 
-La piece est aujourd'hui le centre du jeu d'adresse : on la lance, le rail la touche et ricoche
-(x`COIN_MULT` par rebond), le yoyo la frappe (`FLAIL_COIN_*`), la scie la frole (`SAW_COIN_*`), le tesla
-la charge. Probleme : c'est **un objet physique a viser**, donc lourd a synchroniser (`EV_COIN`, `netId`,
-vol, gravite, vol de piece adverse) et il impose un seul style : lancer, puis tirer dedans.
+Aujourd'hui le joueur a un emplacement fixe : la **piece** (`A_COIN`, charges `COIN_MAX`, recharge `COIN_RECHARGE`).
+On le transforme en **emplacement de competence** : meme touche, meme jauge de charges au HUD, mais le
+contenu est choisi dans l'ecran LOADOUT, comme l'arme de melee (`wantMelee` / `MK_*`).
 
-Un jeu de **competences** garde l'esprit (adresse, enchainement, risque) mais rend l'effet
-**lisible, previsible et peu couteux en reseau**.
+```
+loadout = 2 armes de tir (WP_*)  +  1 arme de melee (MK_*)  +  1 competence (SK_*)
+                                                                 ^ nouveau, SK_COIN par defaut
+```
 
-## 2. Principes
+Rien n'est perdu : **SK_COIN est exactement la piece actuelle** (ricochet, frappe de yoyo, scie, tesla,
+contre-jeu). Le jeu actuel reste jouable a l'identique tant qu'on ne choisit pas autre chose.
 
-1. Meme plafond de skill : un bon joueur doit pouvoir faire plus de degats qu'avec les pieces.
-2. Le rail reste l'arme-reine ; les competences l'amplifient, elles ne le remplacent pas.
-3. Pas de nouvel objet physique : tout est **etat sur le joueur ou la cible** (marque, charge, fenetre).
-4. Chaque competence a un contre-jeu (visible par la cible, ou limitee dans le temps).
-5. Les interactions des autres armes (yoyo, scie, tesla, egide) sont conservees en changeant seulement
-   leur declencheur : *piece* -> *cible marquee* ou *tir amplifie*.
+## 2. Mecanique commune
 
-## 3. Le kit Marksman (3 competences)
+- Une competence = `SK_*`, avec : `charges max`, `recharge`, `utiliser()`. Tout passe par la touche `A_COIN`
+  (renommee `A_SKILL` dans le code ; l'ancien nom reste dans `velocity.ini` pour ne pas casser les touches).
+- Etat joueur : `P.skill` (le `SK_*` choisi), `P.coins` devient `P.skillCharges`. Le reste (`COIN_MAX`,
+  `COIN_RECHARGE`) devient une table par competence : `skillDef[SK_COUNT] = { nom, max, recharge }`.
+- Choix au LOADOUT, applique au prochain respawn (`loadout_apply`), sauvegarde dans `velocity.ini`
+  (cle `skill=`), comme `wantMelee`. Validation dans `loadout_valid`.
+- HUD : les memes pastilles de charges, avec le nom de la competence.
+- Reseau : `EV_COIN` generalise en `EV_SKILL` (`sub` = type de competence). Le choix de competence voyage
+  dans l'etat joueur (comme `meleeKind`) pour que les autres voient le bon effet. **Incrementer `NET_VER`.**
+- Bots : choisissent une competence au hasard parmi celles jouables, et savent utiliser SK_COIN et SK_MARK.
 
-Touches : nouvelles actions `A_SKILL1`, `A_SKILL2`, `A_SKILL3` (a la place de `A_COIN` pour la premiere).
-Recharges independantes, jauge visible au HUD comme les charges de pieces.
+## 3. Catalogue de depart (a affiner)
 
-| Competence | Effet | Valeurs de depart | Remplace |
+| Competence | Utilisation | Effet | Charges / recharge |
 |---|---|---|---|
-| **MARQUE** (`SK_MARK`) | Tir instantane sans degats : pose une marque 4 s sur la premiere cible touchee (ennemi ou joueur). Une cible marquee est visible a travers les murs. | portee 90 m, recharge 6 s, marque 4 s | la piece comme point d'appel |
-| **CHARGE** (`SK_CHARGE`) | Le prochain tir de rail est amplifie : maintenir la touche 0,6 s charge une fenetre de 2 s ; un rail tire dans la fenetre gagne x1,5 et perce une cible. Le mouvement n'est pas ralenti, mais la charge se perd a l'impact d'un coup recu. | recharge 8 s | `COIN_MULT` sur ricochet |
-| **RICOCHET** (`SK_BOUNCE`) | Le prochain tir de rail se redirige automatiquement vers la cible marquee la plus proche (jusqu'a 3 rebonds de cible a cible, x1,25 chacun, comme `COIN_SEEK_RANGE`). Sans marque : se comporte comme un tir normal. | recharge 10 s | ricochet de piece |
+| **PIECE** (`SK_COIN`) | appui | lance une piece ; le rail qui la touche ricoche (x1,5), yoyo et scie interagissent | 4 / 2 s (actuel) |
+| **MARQUE** (`SK_MARK`) | appui | tir sans degats : marque 4 s une cible, visible a travers les murs ; le rail qui touche une cible marquee ricoche vers la marque suivante (x1,25) | 2 / 6 s |
+| **CHARGE** (`SK_CHARGE`) | maintenir 0,6 s | ouvre 2 s pendant lesquelles le prochain rail fait x1,5 et perce une cible ; perdue si on est touche | 1 / 8 s |
+| **MIRAGE** (`SK_DECOY`) | appui | leurre immobile 3 s ; un rail qui le traverse ricoche vers la cible la plus proche (piece qui ne tombe pas) | 2 / 7 s |
 
-Combo de reference : MARQUE -> CHARGE -> RICOCHET -> rail = x1,5 x 1,25^n. Plafond a verifier contre
-`PVP_HIT_CAP` (60 PV par touche) : en PvP le plafond reste la regle, le gain vient de la fiabilite du tir
-(pas de piece a viser) plutot que du degat brut.
+Les trois dernieres n'ont pas besoin de projectile physique propre : MARQUE et CHARGE sont des etats,
+MIRAGE reutilise l'entite `Coin` (immobile, sans gravite). C'est ce qui rend l'etape 1 peu risquee.
 
-## 4. Nouvelles interactions entre armes
+## 4. Interactions avec les autres armes
 
-| Arme | Avant (piece) | Apres (marque / charge) |
-|---|---|---|
-| Yoyo | frappe une piece : tir de 40 degats vers une cible | touche une cible **marquee** : la tire vers soi et la verrouille pour le rail (fenetre combo `FLAIL_COMBO_T` reelle, plus seulement visuelle) |
-| Scie | frole une piece : la relance en l'air | traverse ou plante dans une cible marquee : degats x1,25 et la marque se prolonge de 2 s |
-| Tesla | charge la piece | un arc touchant une cible marquee la **propage** a une cible voisine |
-| Egide | n'avait pas d'interaction | un tir marque sur un porteur d'egide ignore 30 % de l'absorption (`SHIELD_*`) |
-| Parry | renvoyait aussi les pieces | un parry parfait **retire la marque** de l'attaquant (contre-jeu) |
+Le yoyo, la scie, le tesla et l'egide ne reagissent plus a « une piece » mais a un **point d'ancrage**
+(`anchor`) : piece, mirage ou cible marquee. Une seule fonction de recherche d'ancrage, appelee par
+`flail_strike_coin`, la scie et le tesla. Ainsi une nouvelle competence qui cree un ancrage fonctionne
+d'office avec toutes les armes.
 
-## 5. Reseau et code (esquisse)
+Contre-jeu : un parry parfait retire la marque de l'attaquant ; une piece ou un mirage adverse se
+« vole » comme aujourd'hui (message `PIECE VOLEE !`).
 
-- Etat joueur : `P.skillCd[3]`, `P.chargeT`, et sur chaque cible `markT` / `markBy`.
-- Hote autoritaire (comme le bouclier) : la pose de marque est un evenement `EV_MARK` arbitre dans
-  `host_handle()` ; l'etat de marque est resynchronise dans l'etat joueur (pas de nouvel objet a suivre,
-  donc suppression de `EV_COIN`, `netId` des pieces et vol de piece).
-- **Incrementer `NET_VER`** : paquet et evenements changent.
-- Suppression : `Coin`, `CO`, `throw_coin`, `coin_tick`, `ricochet` (remplace par `ricochet_marked`),
-  reglages `COIN_*` et `FLAIL_COIN_*`, `SAW_COIN_*`, texte « PIECE VOLEE ». Garder `W_COIN` le temps d'une
-  etape pour les journaux, puis le renommer.
-- Entrees : `A_SKILL1..3` + `actId` + `actLabel` + `bindDefault` ; bots dans `botHeld` / `botPress`.
-- Aucun accent dans les chaines C (police CP1252).
+## 5. Plan par etapes (chacune compilable, testee)
 
-## 6. Plan de migration (par etapes, chacune compilable et testee)
+1. **Emplacement generique** : `SK_COIN` seul, tables `skillDef`, choix dans le LOADOUT, `velocity.ini`,
+   `EV_SKILL`. Comportement identique a aujourd'hui (les tests existants doivent rester verts).
+2. **Ancrage commun** (`anchor`) pour yoyo / scie / tesla, sans changer le comportement.
+3. **SK_MARK**, avec lignes de test (`marque : duree, portee`, `marque + rail : x1,25`, contre-jeu parry).
+4. **SK_CHARGE**, puis **SK_DECOY**.
+5. Bots, HUD, captures (`--shot` du loadout), match bot contre bot **avant / apres**.
+6. Fusion `dev` -> `stable` apres verification complete.
 
-1. **Etat de marque** + competence MARQUE seule (HUD, effet visuel, reseau). Les pieces restent.
-2. **CHARGE** et **RICOCHET** ; ajouter les lignes de test (`marque : portee, duree`, `charge : x1,5`,
-   `ricochet : 3 rebonds`, contre-jeu parry).
-3. Reconnecter yoyo, scie, tesla, egide aux marques (section 4).
-4. Retirer les pieces et leur code ; bots : apprendre la sequence MARQUE -> CHARGE -> rail.
-5. Match bot contre bot **avant / apres** : temps pour tuer, one-shots, touches arbitrees. Verifier que le
-   temps pour tuer ne baisse pas de plus de 10 %.
-6. Fusion `dev` -> `stable` seulement apres cette comparaison.
+## 6. Questions ouvertes
 
-## 7. Questions ouvertes (a trancher par le proprietaire)
-
-- **Nombre de competences :** 3 comme ci-dessus, ou une seule (MARQUE) pour commencer plus simple ?
-- **Maintien ou appui :** CHARGE doit-elle se maintenir (plus d'adresse) ou s'activer d'un appui (plus fluide) ?
-- **Marque visible par la cible ?** Plus juste (contre-jeu), mais moins brutal pour le tireur.
-- **Mode solo :** les vagues d'ennemis gardent-elles un role pour la piece (score) ou tout passe aux marques ?
-- **Autres kits :** ce fichier ne couvre que Marksman ; prevoir des kits pour d'autres styles (melee, mobilite) ?
+- Une seule competence a la fois (propose), ou deux emplacements (piece + autre) ?
+- Les competences sont-elles toutes dans le meme budget de charges, ou chacune a sa jauge ?
+- Mode solo : toutes les competences disponibles des le debut, ou deblocage par vague ?
+- Equilibrage PvP : les competences non-piece doivent-elles etre plafonnees par `PVP_HIT_CAP` (60 PV) ?
