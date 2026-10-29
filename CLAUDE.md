@@ -35,7 +35,7 @@ cmd //c ".\\build.bat"        # bash
 1. **Tests auto** : `velocity.exe --test test.txt` → chaque ligne affiche la valeur obtenue et
    « (attendu …) ». Toute nouvelle mécanique reçoit sa ligne de test dans `run_tests()`.
 2. **Captures** : `velocity.exe --shot X.bmp`. Le nom choisit la scène : `rail`, `dm`, `settings`,
-   `menu`, `impact`, `fx` (sinon combat solo). Convertir en PNG avec System.Drawing pour la lire.
+   `menu`, `loadout`, `update`, `impact`, `fx` (sinon combat solo). Convertir en PNG avec System.Drawing pour la lire.
 3. **Match bot contre bot** (réseau réel sur la machine) :
    ```
    velocity.exe --bot host --name Hote --time 90 --log host.txt
@@ -62,11 +62,18 @@ cmd //c ".\\build.bat"        # bash
   en français sans accents, comme l'existant.
 - Fichiers utilisateur : `velocity.ini` (réglages et touches du joueur) — ne jamais l'écraser ;
   les modes `--bot` / `--shot` / `--test` ne sauvegardent pas.
+- **Mise à jour** (bouton du menu, §3.11 de `docs/CODE.md`) : les joueurs reçoivent la branche `release`, construite
+  par la CI depuis `stable` avec `version.txt` et le numéro `VELOCITY_BUILD`. Merger dans `stable` = publier chez
+  tous les joueurs : seulement sur accord explicite du propriétaire.
 
 ## Pièges déjà rencontrés
 
 - Patchs Python via heredoc bash : un `\n` dans une chaîne C devient un vrai saut de ligne et
-  casse la compilation. Écrire le script dans un fichier (chaînes `r"""…"""`) ou utiliser Edit.
+  casse la compilation, et un `\\` devient `\`. Écrire le script dans un fichier (chaînes `r"""…"""`) ou utiliser Edit.
+- `velocity.exe` verrouillé (le jeu tourne chez le propriétaire) : compiler sous un autre nom pour les tests
+  (`/Fe:vtest.exe /Fo:vtest.obj`) plutôt que fermer ses fenêtres.
+- Windows Defender met parfois en quarantaine les exe compilés (`Trojan:Win32/Bearfoos.A!ml`, faux positif) :
+  recompiler et relancer ; ne jamais toucher aux réglages de sécurité.
 - `bind` est une fonction Winsock : le tableau des touches s'appelle `binds`.
 - Ordre des définitions : `pname()` et la section réseau sont **après** le combat — avant,
   utiliser `NP[i].name` ; les fonctions `net_fx_*` / `net_hit` y sont déclarées en avance.

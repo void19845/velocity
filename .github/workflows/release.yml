@@ -1,4 +1,6 @@
-# Branche `release` : uniquement les binaires (velocity.exe, Velocity-macOS.zip), construits depuis `stable`.
+# Branche `release` : uniquement les binaires (velocity.exe, Velocity-macOS.zip), construits depuis `stable`,
+# et version.txt (numero de build, taille et SHA-256 de chaque binaire) lu par le bouton MISE A JOUR du jeu.
+# Le numero de build est github.run_number : compile dans le jeu (VELOCITY_BUILD) et ecrit dans version.txt.
 # Se lance a chaque push sur stable, ou a la main (onglet Actions > Release > Run workflow).
 name: Release
 
@@ -28,6 +30,8 @@ jobs:
 
       - name: Compiler (MSVC)
         shell: cmd
+        env:
+          VELOCITY_BUILD: ${{ github.run_number }}
         run: build.bat
 
       - name: Tests automatiques
@@ -52,6 +56,8 @@ jobs:
 
       - name: Compiler (universel arm64 + x86_64)
         if: hashFiles('build_mac.sh') != ''
+        env:
+          VELOCITY_BUILD: ${{ github.run_number }}
         run: |
           chmod +x build_mac.sh
           ./build_mac.sh
@@ -78,6 +84,7 @@ jobs:
       - name: Mettre a jour la branche release
         env:
           SHA: ${{ needs.windows.outputs.sha }}
+          BUILD: ${{ github.run_number }}
           TOKEN: ${{ github.token }}
         run: |
           git init -q rel && cd rel
@@ -87,10 +94,20 @@ jobs:
           git rm -rqf --ignore-unmatch .
           cp ../bin/Velocity-Windows/velocity.exe .
           if [ -f ../bin/Velocity-macOS/Velocity-macOS.zip ]; then cp ../bin/Velocity-macOS/Velocity-macOS.zip .; fi
+          {                                       # lu par le bouton MISE A JOUR du jeu
+            echo "build=$BUILD"
+            echo "sha=$SHA"
+            echo "win_size=$(stat -c %s velocity.exe)"
+            echo "win_sha256=$(sha256sum velocity.exe | cut -d' ' -f1)"
+            if [ -f Velocity-macOS.zip ]; then
+              echo "mac_size=$(stat -c %s Velocity-macOS.zip)"
+              echo "mac_sha256=$(sha256sum Velocity-macOS.zip | cut -d' ' -f1)"
+            fi
+          } > version.txt
           {
             echo "# VELOCITY - binaires"
             echo
-            echo "Construits automatiquement depuis \`stable\` ($SHA). Ne pas modifier cette branche a la main."
+            echo "Construits automatiquement depuis \`stable\` ($SHA), build $BUILD. Ne pas modifier cette branche a la main."
             echo
             echo "- Windows : \`velocity.exe\`"
             if [ -f Velocity-macOS.zip ]; then

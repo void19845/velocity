@@ -411,9 +411,9 @@ int mac_audio_open(int rate, int nbuf, int buflen) {
     AudioStreamBasicDescription f = { 0 };
     f.mSampleRate = rate; f.mFormatID = kAudioFormatLinearPCM;
     f.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
-    f.mBitsPerChannel = 16; f.mChannelsPerFrame = 1; f.mBytesPerFrame = 2; f.mFramesPerPacket = 1; f.mBytesPerPacket = 2;
+    f.mBitsPerChannel = 16; f.mChannelsPerFrame = 2; f.mBytesPerFrame = 4; f.mFramesPerPacket = 1; f.mBytesPerPacket = 4;   /* stereo entrelace */
     if (AudioQueueNewOutput(&f, audio_cb, NULL, NULL, NULL, 0, &gQ) != noErr) return 0;
-    gBufBytes = buflen * 2;
+    gBufBytes = buflen * 4;                               /* buflen = nombre d'images (paires gauche / droite) */
     for (int i = 0; i < nbuf; i++) {
         if (AudioQueueAllocateBuffer(gQ, (UInt32)gBufBytes, &gBuf[i]) != noErr) return 0;
         gBuf[i]->mUserData = (void *)(intptr_t)i;

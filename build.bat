@@ -8,4 +8,7 @@ set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set /p VSPATH=<"%TEMP%\vspath.txt"
 call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>nul
 :build
-cl /nologo /O2 /W3 /std:c11 /Fe:velocity.exe main.c /link /SUBSYSTEM:WINDOWS
+rem VELOCITY_BUILD : numero de build donne par la CI de release (bouton MISE A JOUR) ; absent = build 0 (dev)
+set "VBUILD="
+if defined VELOCITY_BUILD set "VBUILD=/DVELOCITY_BUILD=%VELOCITY_BUILD%"
+cl /nologo /O2 /W3 /std:c11 %VBUILD% /Fe:velocity.exe main.c /link /SUBSYSTEM:WINDOWS

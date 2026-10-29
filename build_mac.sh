@@ -8,7 +8,8 @@ APP=Velocity.app
 rm -rf "$APP" build
 mkdir -p build "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-clang -O2 -std=gnu11 -fobjc-arc -Wall -Wno-deprecated-declarations \
+# VELOCITY_BUILD : numero de build donne par la CI de release (bouton MISE A JOUR) ; absent = build 0 (dev)
+clang -O2 -std=gnu11 -fobjc-arc -Wall -Wno-deprecated-declarations ${VELOCITY_BUILD:+-DVELOCITY_BUILD=$VELOCITY_BUILD} \
     -mmacosx-version-min=10.15 -arch arm64 -arch x86_64 \
     main.c mac_platform.m \
     -framework Cocoa -framework OpenGL -framework AudioToolbox -framework CoreText -framework Carbon \

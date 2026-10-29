@@ -326,7 +326,9 @@ vitesse **relative** : foncer sur quelqu'un qui fonce sur vous frappe très fort
 
 ### 3.7 Audio synthétisé
 
-- Format : 44,1 kHz (`SR`), mono, 16 bits. `NBUF` tampons de `BUFLEN` échantillons.
+- Format : 44,1 kHz (`SR`), **stéréo** entrelacé (gauche, droite), 16 bits. `NBUF` tampons de `BUFLEN` images
+  (`BUFLEN` paires) ; `audio_fill(out, n)` écrit `n` images. Les bruitages sont mono (au centre), la musique est
+  stéréo (`music_frame`) ; sous macOS `mac_audio_open` ouvre l'AudioQueue en 2 voies (non testé sur Mac).
 - `audio_update` est appelé **à chaque image** : il remplit les tampons rendus par `waveOut`
   (`WHDR_DONE`) via `audio_fill`. Le mixage somme `MAXV` voix avec interpolation linéaire, puis un
   écrêtage doux `tanhf` multiplié par `masterVol`.
@@ -336,11 +338,21 @@ vitesse **relative** : foncer sur quelqu'un qui fonce sur vous frappe très fort
   exponentielles) puis convertis par `mksound`. `sbuf(secondes, &n)` alloue un tampon de travail.
 - Pas d'audio en mode `--shot` ni `--test` (`audio_ok == 0`, `play` ne fait rien).
 - **Musique** (hard techno, un morceau par carte) : tout le design est dans **`music.h`** (morceaux `tracks[]`
-  + moteur), inclus par `main.c`. Séquenceur synthétisé mixé dans `audio_fill` via `music_sample()`, volume
+  + moteur), inclus par `main.c`. Séquenceur synthétisé mixé dans `audio_fill` via `music_frame()` (stéréo), volume
   `musicVol` (`music=` dans `velocity.ini`, curseur « Musique »). Un morceau : BPM de départ, `bpmStep` (BPM
-  gagnés par niveau), tonique (Hz), jusqu'à 8 mesures de 16 pas (`MusBar` : masques `kick/clap/hat/ohat`, notes
-  `bass/lead` en demi-tons, `RS` = silence). Instruments : kick saturé à chute de hauteur, basse rumble en
-  sidechain, hats/clap en bruit, lead de deux scies saturées.
+  gagnés par niveau), tonique (Hz), jusqu'à 16 **cellules** d'une mesure de 16 pas (`MusBar` : masques
+  `kick/clap/hat/ohat`, notes `bass/lead` en demi-tons, `RS` = silence, `fx` = `FX_RISER` / `FX_CRASH`), et
+  l'**ordre des cellules sur 32 mesures** (`song` aux niveaux 0-2 avec intro progressive, `songHi` dès le
+  niveau 3 sans intro) plus une transposition `prog` par groupe de 4 mesures. Instruments : kick saturé à chute
+  de hauteur, basse rumble en sidechain, hats/clap/crash/riser en bruit, lead supersaw (7 scies désaccordées, écart croissant avec le niveau), acid
+  (scie dans un filtre résonant, dès le niveau 5).
+  - **Stéréo** : kick, basse et acid au centre ; hats à des positions aléatoires ; clap, crash et riser larges
+    (deux bruits différents) ; les 7 scies du supersaw réparties de gauche à droite ; écho ping-pong du lead
+    (3 pas). `music_sample()` reste la version mono (moyenne) pour les tests.
+  - **Diversité** : breaks, risers, crashs toutes les 8 mesures, filtre du lead qui respire sur 16 mesures, et
+    micro-variations tirées au hasard (hats qui sautent ou fantômes, octaves, notes voisines dans la gamme
+    `musScale`, notes courtes ou longues, rolls de kick, motif acid). Le hasard dépend de `musSeed`, changé à
+    chaque entrée en partie : une même graine redonne exactement la même musique (tests).
   - `music_set(piste, niveau)` lance un morceau (`-1` = silence), fondu de 1,5 s.
   - **Intensité** : `music_level(n)` (0 à `MUS_LVMAX` = 8), appelé chaque image par `music_follow_game()`.
     Appliqué au début de la mesure suivante : tempo, couches (clap dès 1, lead clairsemé dès 2, lead complet
@@ -349,8 +361,8 @@ vitesse **relative** : foncer sur quelqu'un qui fonce sur vous frappe très fort
       leader (tiers de `FRAG_LIMIT` : 0-4 / 5-9 / 10-14), niveaux `musPhaseLvl` = 0, 3, 6, puis le **final**
       (niveau 8) quand les deux premiers sont à limite − 1 (14-14, soit le 30e round). Pour la partie rapide à
       7 frags, l'hôte annonce `fragLimit` (`FRAG_LIMIT_QUICK` = 7) dans `PkSnap.fragLimit`.
-    - **Solo** : niveau = numéro de vague − 1. Hors partie : niveau 0.
-  - **Écouter sans le jeu** : `build_music.bat` puis `musique.exe [piste] [niveau]` (touches 0-8, +/-, P, Q) ou
+    - **Solo** : niveau = numéro de vague − 1. La musique ne joue que pendant une partie (`APP_GAME`) : silence dans les menus, départ avec fondu à l'entrée en partie.
+  - **Écouter sans le jeu** : `build_music.bat` puis `musique.exe [piste] [niveau]` (touches 0-8, +/-, P piste, R autre graine, Q) ou
     `musique.exe --wav sortie.wav piste niveau secondes`.
   - Tests : lignes « musique » de `run_tests`.
 
@@ -389,7 +401,7 @@ F2/F3 (sensibilité), F11 (plein écran), R (recommencer en solo, `latch[SC_R]`)
 - Fichier : `velocity.ini` **à côté de l'exécutable** (chemin `cfgPath`, calculé avec
   `GetModuleFileNameA` dans `WinMain`). Format `cle=valeur`, une par ligne, `#` pour un commentaire :
   `name`, `sens`, `fov`, `volume`, `invert_y`, `show_fps`, `fullscreen`, `impact_frames`, `screen_fx`,
-  puis `bind_<actId>=code1,code2`.
+  `online`, `update_check` (vérifier les mises à jour au démarrage), puis `bind_<actId>=code1,code2`.
 - `cfg_load` lit au démarrage (pas en mode bot ni `--shot`), borne les valeurs (`clampf`) et ignore
   les clés inconnues. Il renvoie 1 si le plein écran est demandé.
 - `cfg_save` réécrit tout le fichier ; il ne fait rien si `botMode`, `shotMode` ou `cfgPath` vide.
@@ -420,6 +432,36 @@ F2/F3 (sensibilité), F11 (plein écran), R (recommencer en solo, `latch[SC_R]`)
   (`draw_remote_players`), éclats, pièces, cellules, câble du grappin, puis tout ce qui brille en
   additif (rayons, particules, projectiles, reflets, jump pads), l'arme en main (`draw_viewmodel`),
   l'impact frame et enfin `draw_hud`.
+
+### 3.11 Mise à jour depuis GitHub (bouton MISE A JOUR)
+
+Section « Mise a jour » de `main.c`, juste avant « Interface ».
+
+- **Source** : la branche `release` du dépôt public `void19845/velocity`, remplie par `.github/workflows/release.yml`
+  à chaque push sur `stable` : `velocity.exe`, `Velocity-macOS.zip` et **`version.txt`** (`build`, `sha`,
+  `win_size`, `win_sha256`, `mac_size`, `mac_sha256`). Lu à `https://raw.githubusercontent.com/void19845/velocity/release/`
+  (`UPD_HOST`, `UPD_DIR`).
+- **Numéro de build** : `VELOCITY_BUILD`, passé par `build.bat` / `build_mac.sh` si la variable d'environnement
+  existe (la CI y met `github.run_number`, le même numéro que `version.txt`). Absent = `0` = « dev ».
+  Une version est proposée si `build` de `version.txt` > `VELOCITY_BUILD`.
+- **États** `updState` : `UPD_IDLE`, `UPD_CHECKING`, `UPD_UPTODATE`, `UPD_AVAILABLE`, `UPD_DOWNLOADING`, `UPD_READY`,
+  `UPD_ERROR`. Le libellé du bouton vient de `upd_label`, le clic de `upd_click`, les messages de `upd_poll`
+  (appelé par `draw_main_menu`). Le bouton n'existe que dans le menu principal.
+- **Fils** : `upd_check_th` (lit `version.txt`, `upd_parse`) et `upd_download_th` (télécharge dans
+  `velocity.exe.new`, progression `updGot` / `updTotal`, puis contrôle taille + **SHA-256** maison `sha256_file`).
+  HTTP : `upd_http_get` (WinHTTP ; macOS : `/usr/bin/curl`). Données partagées sous `updCs`.
+- **Installation** (`upd_install`, fil principal) : Windows renomme l'exe en cours en `velocity.exe.old`, met le
+  nouveau à sa place (l'ancien est remis si ça échoue), relance avec `--updated` et quitte ; `upd_cleanup` supprime
+  `.old` au démarrage suivant. macOS : `Velocity.app.zip` à côté du `.app`, extraction `ditto`, `.app` remplacé
+  (ancien en `.old`), relance par `open -n … --args --updated`. `velocity.ini` n'est jamais touché.
+- **Démarrage** : `upd_cleanup`, message « mise a jour installee » si `--updated`, puis vérification automatique
+  silencieuse si `update_check=1` (`updQuiet` : un échec n'affiche rien). Rien en `--bot`, `--shot`, `--test`.
+- **Erreurs** : réseau, « aucune version publiee » (HTTP ≠ 200), fichier corrompu, dossier non inscriptible
+  (le bouton ouvre alors la page de la branche `release`, `UPD_PAGE`).
+- **Tests** : lignes « mise a jour » et « sha256 » de `run_tests` ; capture `--shot update` (bouton en téléchargement).
+- **Antivirus** : Windows Defender signale parfois `velocity.exe` (et les builds de test) comme
+  `Trojan:Win32/Bearfoos.A!ml`, un faux positif heuristique déjà vu avant le bouton de mise à jour. Pistes :
+  signaler le faux positif à Microsoft, ajouter une ressource de version (`VERSIONINFO`), signer le binaire.
 
 ---
 
