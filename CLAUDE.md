@@ -10,6 +10,13 @@ Le propriétaire est francophone : réponses, commentaires et docs **en françai
   et §4 de `docs/CODE.md`. Le lobby est dans **`worker/`** (`node test.js` pour ses tests, `node dev-server.js`
   pour un lobby local ; le déploiement `npx wrangler deploy` est à faire par le propriétaire).
 
+## Branches
+
+- **`stable`** : version distribuable, toujours compilable, tests verts. On n'y merge que depuis `dev`,
+  apres verification complete (build sans warning, `--test`, match bot).
+- **`dev`** : nouvelles fonctionnalites et experiences. Travailler ici par defaut.
+- `master` : ancien nom, conserve a l'identique du point de depart de `stable`.
+
 ## Compiler
 
 ```

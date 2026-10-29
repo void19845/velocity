@@ -216,7 +216,8 @@ enum { ANVIL_IDLE, ANVIL_DIVE, ANVIL_STUN };
 /* --- Scie : disque-boomerang (une seule, ni jauge ni recharge : la scie est sa munition) --- */
 #define SAW_SPEED        32.0f   /* vitesse de lancer, plus la vitesse du joueur dans l'axe */
 #define SAW_MIN_SPEED    20.0f   /* plancher si on lance en reculant */
-#define SAW_GRAVITY      6.0f    /* gravite legere : ~1,4 m de chute sur 22 m */
+#define SAW_GRAVITY      4.5f    /* gravite legere : ~1 m de chute sur 22 m */
+#define SAW_SPAWN_UP     0.25f   /* la scie part au-dessus des yeux (elle partait trop bas) */
 #define SAW_DMG          30.0f   /* degats de base... */
 #define SAW_DMG_PER_MS   1.5f    /* ...plus 1,5 par m/s de vitesse relative au-dela de l'offset */
 #define SAW_REL_OFFSET   12.0f   /* cible immobile (rel 32) : 60 PvE / 42 PvP, 3 touches (choix du 27/10) */
@@ -451,7 +452,7 @@ static const AmmoDef ammoDef[WP_COUNT] = {
     { "VENTOUSE",  1,  3,   150, 1.00f, 0.35f, 0.35f },
     { "TESLA",     60, 100, 2.5f, 0.60f, 0.70f, 1.00f },  /* 1 point = 0,4 de batterie */
 };
-static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "FLEAU", "IMPULSION", "EGIDE" };
+static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "YOYO", "IMPULSION", "EGIDE" };
 static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 1, 1 };   /* chaque arme codee passe sa case a 1 */
 static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 1, 1, 1 };
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, MINE_CD, 0.1f };  /* barre de recharge du HUD */
@@ -4253,7 +4254,7 @@ static void fire_saw(void) {
     if (P.ammo[WP_SAW] < 1 || P.sawCd > 0) return;
     V3 f = view_dir();
     float s = fmaxf(SAW_SPEED + vdot(P.vel, f), SAW_MIN_SPEED);   /* seule la vitesse dans l'axe est heritee */
-    Proj *p = spawn_proj(PR_SAW, eye_pos(), vmul(f, s));
+    Proj *p = spawn_proj(PR_SAW, vadd(eye_pos(), v3(0, SAW_SPAWN_UP, 0)), vmul(f, s));
     if (!p) return;
     p->sawState = SAW_FLY; p->sawAxis = saw_axis(f);
     p->netId = ((unsigned int)(myId + 1) << 24) | ((unsigned int)PR_SAW << 20) | (++sawCounter & 0xFFFFF);
@@ -8696,24 +8697,23 @@ static void draw_mine_vm(float ready) {
 /* --- fin Ventouse --- */
 /* --- Fleau : rendu ---------------------------------------------------- */
 /* tete a pointes centree en c (demi-taille s) : boite + 3 pointes le long des axes */
-static void flail_head_model(V3 c, float s) {
-    glColor3f(0.3f, 0.31f, 0.35f);
-    box_faces(vsub(c, v3(s, s, s)), vadd(c, v3(s, s, s)));
+static void flail_head_model(V3 c, float s) {            /* yoyo : deux disques rouges autour d'un axe d'acier */
+    glColor3f(0.85f, 0.18f, 0.15f);
+    float r = s * 1.5f, e = s * 0.35f;
+    box_faces(vsub(c, v3(r, r, e * 2.2f)), vadd(c, v3(r, r, -e * 0.4f)));
+    box_faces(vsub(c, v3(r, r, -e * 0.4f)), vadd(c, v3(r, r, e * 2.2f)));
     glColor3f(0.55f, 0.57f, 0.62f);
-    float l = s * 1.7f, w = s * 0.3f;
-    box_faces(vsub(c, v3(l, w, w)), vadd(c, v3(l, w, w)));
-    box_faces(vsub(c, v3(w, l, w)), vadd(c, v3(w, l, w)));
-    box_faces(vsub(c, v3(w, w, l)), vadd(c, v3(w, w, l)));
+    box_faces(vsub(c, v3(s * 0.35f, s * 0.35f, e * 2.4f)), vadd(c, v3(s * 0.35f, s * 0.35f, e * 2.4f)));
 }
-/* chaine de a a b : 16 maillons de deux teintes, chainette approchee par une parabole de fleche sag */
+/* ficelle de a a b : un seul trait clair, retombant en parabole de fleche sag */
 static void draw_chain(V3 a, V3 b, float sag) {
-    glLineWidth(3);
+    glLineWidth(2);
     glBegin(GL_LINES);
+    glColor3f(0.92f, 0.9f, 0.82f);
     for (int s = 0; s < 16; s++) {
         float u0 = s / 16.0f, u1 = (s + 1) / 16.0f;
         V3 p0 = vadd(vlerp(a, b, u0), v3(0, -sag * 4 * u0 * (1 - u0), 0));
         V3 p1 = vadd(vlerp(a, b, u1), v3(0, -sag * 4 * u1 * (1 - u1), 0));
-        if (s & 1) glColor3f(0.55f, 0.57f, 0.62f); else glColor3f(0.30f, 0.31f, 0.35f);
         glVertex3f(p0.x, p0.y, p0.z); glVertex3f(p1.x, p1.y, p1.z);
     }
     glEnd();
@@ -8761,9 +8761,9 @@ static void draw_flail_vm(void) {
     glTranslatef(-0.9f, -0.22f, -0.3f);
     glRotatef(-25 - 50 * lift, 1, 0, 0);                  /* incline vers l'avant, releve pendant le lancer */
     glRotatef(12 + 25 * lift, 0, 0, 1);
-    glColor3f(0.36f, 0.26f, 0.17f);                       /* manche en bois */
-    box_faces(v3(-0.022f, 0, -0.022f), v3(0.022f, 0.38f, 0.022f));
-    glColor3f(0.4f, 0.41f, 0.45f);                        /* bague d'acier */
+    glColor3f(0.92f, 0.9f, 0.82f);                        /* ficelle nouee au doigt */
+    box_faces(v3(-0.008f, 0, -0.008f), v3(0.008f, 0.38f, 0.008f));
+    glColor3f(0.4f, 0.41f, 0.45f);                        /* bague */
     box_faces(v3(-0.03f, 0.34f, -0.03f), v3(0.03f, 0.4f, 0.03f));
     if (P.flailT <= 0) {
         float sx = clampf(-P.swayX * 5, -0.15f, 0.15f) + 0.02f * sinf(gameTime * 2.3f);
@@ -9130,7 +9130,7 @@ static const float pcol[MAXP][3] = {
     { 0.8f, 0.45f, 1.0f }, { 1.0f, 0.4f, 0.7f }, { 0.4f, 1.0f, 0.9f }, { 0.9f, 0.9f, 0.9f },
 };
 static const char *weaponNames[W_COUNT] = { "RAIL", "ROQUETTE", "EPEE", "GRAPPIN", "PARRY", "SOLO", "RICOCHET",
-                                            "ENCLUME", "LANCE", "FLEAU", "POINGS", "EGIDE", "EVENTAIL", "ELAN",
+                                            "ENCLUME", "LANCE", "YOYO", "POINGS", "EGIDE", "EVENTAIL", "ELAN",
                                             "SCIE", "VENTOUSE", "TESLA" };
 
 static int button(float x, float y, float w, float h, const char *label) {
