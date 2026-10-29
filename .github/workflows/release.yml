@@ -1,0 +1,103 @@
+# Branche `release` : uniquement les binaires (velocity.exe, Velocity-macOS.zip), construits depuis `stable`.
+# Se lance a chaque push sur stable, ou a la main (onglet Actions > Release > Run workflow).
+name: Release
+
+on:
+  push:
+    branches: [stable]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stable
+
+      - id: sha
+        shell: bash
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Compiler (MSVC)
+        shell: cmd
+        run: build.bat
+
+      - name: Tests automatiques
+        shell: pwsh
+        run: |
+          $p = Start-Process .\velocity.exe -ArgumentList "--test","test.txt" -PassThru
+          $p.WaitForExit(180000) | Out-Null
+          if (-not $p.HasExited) { $p.Kill(); throw "--test : delai depasse" }
+          if ($p.ExitCode -ne 0) { throw "--test : code $($p.ExitCode)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Velocity-Windows
+          path: velocity.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stable
+
+      - name: Compiler (universel arm64 + x86_64)
+        if: hashFiles('build_mac.sh') != ''
+        run: |
+          chmod +x build_mac.sh
+          ./build_mac.sh
+          Velocity.app/Contents/MacOS/velocity --test test.txt
+
+      - name: Pas de port macOS dans stable
+        if: hashFiles('build_mac.sh') == ''
+        run: echo "::notice::stable n'a pas encore build_mac.sh, pas de binaire macOS"
+
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('Velocity-macOS.zip') != ''
+        with:
+          name: Velocity-macOS
+          path: Velocity-macOS.zip
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: bin
+
+      - name: Mettre a jour la branche release
+        env:
+          SHA: ${{ needs.windows.outputs.sha }}
+          TOKEN: ${{ github.token }}
+        run: |
+          git init -q rel && cd rel
+          git remote add origin "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git fetch -q --depth 1 origin release; then git checkout -q -b release FETCH_HEAD
+          else git checkout -q --orphan release; fi
+          git rm -rqf --ignore-unmatch .
+          cp ../bin/Velocity-Windows/velocity.exe .
+          if [ -f ../bin/Velocity-macOS/Velocity-macOS.zip ]; then cp ../bin/Velocity-macOS/Velocity-macOS.zip .; fi
+          {
+            echo "# VELOCITY - binaires"
+            echo
+            echo "Construits automatiquement depuis \`stable\` ($SHA). Ne pas modifier cette branche a la main."
+            echo
+            echo "- Windows : \`velocity.exe\`"
+            if [ -f Velocity-macOS.zip ]; then
+              echo "- macOS : \`Velocity-macOS.zip\` (au premier lancement : clic droit > Ouvrir)"
+            fi
+          } > README.md
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Binaires de stable $SHA" || { echo "rien a changer"; exit 0; }
+          git push -q origin release
