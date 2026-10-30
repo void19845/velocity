@@ -1437,6 +1437,7 @@ typedef struct {
     int teslaVisHit;
     double lastLanceT;                                    /* Lance : derniere fois vu lance couchee (hote) */
     unsigned char lanceSeen;                              /* Lance : ST_LANCE au tick precedent (front montant -> son) */
+    unsigned char team;                                   /* equipe 0 (bleue) ou 1 (rouge), si teamSize > 0 */
     /* --- Egide : derniere fois vu bouclier leve (hote) ; jauge, brise, arrache (hote : autorite ; clients : miroir) --- */
     double lastShieldT;
     float shieldGauge, shieldBrokenT, shieldRipT;
@@ -1446,6 +1447,15 @@ typedef struct {
 static NetPlayer NP[MAXP + 1];                            /* NP[MAXP] : place vide du spectateur (myId = MAXP) */
 static int netMode, appState, myId, dmMode, matchOver, matchWinner;
 static int fragLimit = FRAG_LIMIT;                        /* limite de la partie en cours (l'hote decide, les clients la recoivent) */
+/* --- equipes : 0 = chacun pour soi, 1 a 4 = NvN (l'hote decide, les clients le recoivent dans PkSnap) --- */
+#define TEAM_MAX      4       /* 4 contre 4 au plus (MAXP = 8) */
+#define TEAM_FRAG_BASE 10     /* limite d'equipe = TEAM_FRAG_BASE + TEAM_FRAG_PER x joueurs par equipe */
+#define TEAM_FRAG_PER  5
+#define TEAM_DRAW      2      /* matchWinner en equipes : 0, 1, ou egalite */
+static int teamSize;                                      /* mode de la partie en cours */
+static int wantTeams;                                     /* mode choisi au menu pour la prochaine partie hebergee */
+static const char *teamNames[2] = { "BLEUE", "ROUGE" };
+static const float teamCol[2][3] = { { 0.35f, 0.65f, 1.0f }, { 1.0f, 0.38f, 0.30f } };
 static int hostQuick;                                     /* 1 : la prochaine partie hebergee vient d'une PARTIE RAPIDE */
 static int spectating, specFollow = -1;                   /* spectateur : suit le joueur specFollow, -1 = camera libre */
 static float matchT, matchEndT;
@@ -1462,7 +1472,25 @@ static void np_aabb(int i, float grow, V3 *mn, V3 *mx) {
     *mn = v3(d.x - HW - grow, d.y - grow, d.z - HW - grow);
     *mx = v3(d.x + HW + grow, d.y + np_height(i) + grow, d.z + HW + grow);
 }
-static int np_target(int i) { return dmMode && i != myId && NP[i].active && NP[i].alive; }
+/* a et b sont-ils allies ? (jamais en chacun pour soi, jamais soi-meme) */
+static int same_team(int a, int b) {
+    return teamSize > 0 && a != b && a >= 0 && b >= 0 && a < MAXP && b < MAXP && NP[a].team == NP[b].team;
+}
+static int team_score(int t) {
+    int s = 0;
+    for (int i = 0; i < MAXP; i++) if (NP[i].active && NP[i].team == t) s += NP[i].kills;
+    return s;
+}
+static int team_count(int t) {
+    int n = 0;
+    for (int i = 0; i < MAXP; i++) n += NP[i].active && NP[i].team == t;
+    return n;
+}
+static int team_frag_limit(int ts) { return ts > 0 ? TEAM_FRAG_BASE + TEAM_FRAG_PER * ts : FRAG_LIMIT; }
+static int host_max_players(void) { return teamSize > 0 ? teamSize * 2 : MAXP; }
+/* np_present : un autre joueur vivant (a dessiner) ; np_target : un autre joueur vivant qu'on peut toucher (pas un allie) */
+static int np_present(int i) { return dmMode && i != myId && NP[i].active && NP[i].alive; }
+static int np_target(int i) { return np_present(i) && !same_team(i, myId); }
 /* vitesse relative entre le joueur et une cible : c'est elle qui compte pour les coups */
 static float rel_speed(V3 targetVel) { return vlen(vsub(P.vel, targetVel)); }
 /* --- Egide : face d'un joueur distant (comme view_dir, en 3D : regarder en l'air protege d'un pique), bouclier leve --- */
@@ -1482,13 +1510,25 @@ static int botLevel = 1;                                  /* difficulte du bot :
 static int botLocal, botHidden;                           /* --local : le bot rejoint 127.0.0.1 ; --hidden : fenetre reduite et muette */
 static int vsBot;                                         /* partie joueur contre bot : jamais annoncee en ligne */
 #ifdef _WIN32
-static HANDLE botProc;                                    /* processus du bot adverse (partie joueur contre bot) */
+static HANDLE botProc[MAXP];                              /* processus des bots (partie contre des bots, un par place) */
 #else
-static pid_t botProc;
+static pid_t botProc[MAXP];
 #endif
 static const char *botLevelNames[3] = { "FACILE", "NORMAL", "DIFFICILE" };
 static const float botAimMul[3]  = { 6.5f, 1.3f, 0.45f };   /* imprecision de visee */
 static const float botReactT[3]  = { 1.1f, 0.32f, 0.14f };  /* delai avant de tirer apres avoir vu la cible */
+static const float botHitP[3]    = { 0.18f, 0.38f, 0.60f };  /* chance qu'un tir soit cadre (sinon il frole la cible) */
+static int botAimTest;                                    /* run_tests : ancienne visee sinusoidale, deterministe */
+/* tirage d'un tir du bot : decalage lateral (m) au niveau de la cible. Cadre : moins de 0,2 m du centre ; rate : il
+ * frole la cible (0,55 a 1,2 m sur le cote, un peu plus de loin) au lieu de partir n'importe ou. Renvoie 1 si cadre */
+static int bot_roll_aim(float dist, float *offX, float *offY) {
+    float p = botHitP[botLevel] * clampf(1.15f - dist / 80, 0.5f, 1);
+    if (frand() < p) { *offX = frange(-0.2f, 0.2f); *offY = frange(-0.25f, 0.25f); return 1; }
+    float side = frand() < 0.5f ? -1.0f : 1.0f;
+    *offX = side * (frange(0.55f, 1.2f) + dist * 0.008f);
+    *offY = frange(-0.35f, 0.35f);
+    return 0;
+}
 static const float botParryP[3]  = { 0.15f, 0.5f, 0.85f };  /* chance de tenter un parry quand l'epee adverse arrive */
 static void netlog(const char *fmt, ...);
 static void net_hit(int target, float dmg, V3 knock, int weapon);
@@ -1502,7 +1542,6 @@ static void net_fx_fist(V3 pos, V3 dir, float x, int sub);   /* Poings : EV_MELE
 static void net_fx_slam(V3 pos, float radius, float vy, int hits);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
 static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed);
-static void net_hit_lance(int target, float dmg, V3 knock, float spd, float vc, int couched);   /* Lance : net_hit + f[4..6] */
 /* Scie : definies apres les roquettes */
 static void net_fx_saw(int sub, Proj *p, int target, int actor);
 static int saw_hook_test(float *t);                       /* grappin : le crochet touche ma scie plantee ? */
@@ -1565,6 +1604,7 @@ static unsigned char botHeld[A_COUNT], botPress[A_COUNT];  /* ce que les bots "a
 static float fovBase = BASE_HFOV;
 static int invertY, showFps = 1;
 static int impactFrames = 1, screenFx = 1;               /* options : impact frames (flashs) et effets d'ecran */
+static int gfxShadows = 1, gfxBloom = 1;                  /* graphismes : ombres des objets mobiles, halo lumineux (bloom) */
 
 /* ------------------------------------------------------------------ */
 /* Effets visuels de combat                                            */
@@ -2305,6 +2345,8 @@ static void parry_feedback(V3 where) {
 /* le choix vit hors de P (reset_game remet P a zero) et ne s'applique qu'au (re)spawn */
 static int wantLoadout[2] = { WP_RAIL, WP_ROCKET }, wantMelee = MK_SWORD;
 static int loadoutOpen;                                   /* ecran LOADOUT ouvert */
+static int hostOpen, hostBots = -1;                       /* ecran HEBERGER ouvert ; bots pour completer (-1 : aucun, sinon niveau) */
+static int hostFfa;                                       /* la prochaine partie hebergee est en chacun pour soi (duel du menu) */
 static float ammoGainT, dryHintT, dryT;                   /* HUD : "+50" vert, panneau de melee qui clignote ; temps a sec */
 static int ammoGainSlot, ammoGainPts;                     /* emplacement qui clignote (2 = les deux) */
 static float apStat[AP_COUNT];                            /* journal : points par origine */
@@ -2668,7 +2710,7 @@ static void slam_contact(void) {
 static void anvil_remote_tick(void) {
     for (int i = 0; i < MAXP; i++) {
         unsigned char pad = NP[i].st.pad;
-        if (!np_target(i)) { NP[i].anvilPrevPad = 0; continue; }
+        if (!np_present(i)) { NP[i].anvilPrevPad = 0; continue; }
         if (pad & ST_SLAM) {
             V3 p = NP[i].disp;
             for (int k = 0; k < 2; k++)
@@ -2857,7 +2899,7 @@ static void lance_tick(float dt, int held) {
 /* lances couchees des autres joueurs : le son de la lance qui s'abaisse (front montant de ST_LANCE) */
 static void lance_remote_tick(void) {
     for (int i = 0; i < MAXP; i++) {
-        int on = np_target(i) && (NP[i].st.pad & ST_LANCE) != 0;
+        int on = np_present(i) && (NP[i].st.pad & ST_LANCE) != 0;
         if (on && !NP[i].lanceSeen) play(S_LANCE_COUCH, 0.7f * atten(NP[i].disp), 1.0f);
         NP[i].lanceSeen = (unsigned char)on;
     }
@@ -3971,7 +4013,7 @@ static V3 np_eye(int i) {
 }
 /* joueur ciblable par l'arc de `shooter` (moi compris si c'est un autre qui tire) */
 static int tesla_player_ok(int i, int shooter) {
-    if (i == shooter || !NP[i].active || !NP[i].alive) return 0;
+    if (i == shooter || !NP[i].active || !NP[i].alive || same_team(i, shooter)) return 0;
     return i != myId || !P.dead;
 }
 static V3 tesla_pcenter(int i) { return i == myId ? pcenter() : np_center(i); }
@@ -4862,7 +4904,7 @@ static void proj_tick(float dt) {
             }
             for (int j = 0; dmMode && j < MAXP; j++) {    /* LAN : collision avec les joueurs */
                 V3 mn, mx; float te;
-                if (j == p->owner || !NP[j].active || !NP[j].alive) continue;
+                if (j == p->owner || !NP[j].active || !NP[j].alive || same_team(j, p->owner)) continue;
                 if (j == myId) {
                     if (P.dead) continue;
                     paabb(P.pos, pheight(), &mn, &mx);
@@ -5051,7 +5093,7 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   11
+#define NET_VER   12
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
@@ -5071,12 +5113,13 @@ typedef struct {
     unsigned char kind, from, target, sub, actor, pad[3];
     float f[7];
 } NetEvent;
-typedef struct { PkHead h; char name[16]; unsigned char players, maxp, pad[2]; } PkAnnounce;
+typedef struct { PkHead h; char name[16]; unsigned char players, maxp, teams, pad; } PkAnnounce;   /* teams : teamSize */
 typedef struct { PkHead h; char name[16]; unsigned char spec, pad[3]; } PkJoin;
 typedef struct { PkHead h; unsigned char id, refused, pad[2]; } PkWelcome;
 typedef struct { PkHead h; NetPState st; } PkState;
-typedef struct { unsigned char active, alive; short hp, kills, deaths; NetPState st; } SnapP;
-typedef struct { PkHead h; float matchT; unsigned char matchOver, winner; unsigned short pickMask; unsigned char fragLimit; SnapP p[MAXP]; } PkSnap;
+typedef struct { unsigned char active, alive; short hp, kills, deaths; NetPState st; unsigned char team; } SnapP;
+typedef struct { PkHead h; float matchT; unsigned char matchOver, winner; unsigned short pickMask; unsigned char fragLimit, teamSize;
+                 SnapP p[MAXP]; } PkSnap;
 typedef struct { PkHead h; char names[MAXP][16]; } PkRoster;
 typedef struct { PkHead h; NetEvent ev; } PkEvent;
 #pragma pack(pop)
@@ -5084,6 +5127,7 @@ typedef struct { PkHead h; NetEvent ev; } PkEvent;
 typedef struct {
     char name[16]; struct sockaddr_in addr; int players, maxp; double seen;
     int online, spec;                                     /* online : salon du lobby (addr = ip:port public) ; spec : spectateurs */
+    int teams;                                            /* LAN : mode annonce (0 chacun pour soi, N = NvN) */
     char id[8];                                           /* identifiant du salon chez le lobby */
 } Found;
 #define MAXFOUND 12
@@ -5367,14 +5411,6 @@ static void net_fx_tesla(int sub, unsigned int netId, V3 pos, int actor, int tar
 }
 /* --- fin Tesla --- */
 /* --- Lance : evenements --- */
-/* comme net_hit, avec f[4] = |P.vel| avant le transfert, f[5] = v_c (ou v_rel de l'estoc), f[6] = 1 lance couchee, 0 estoc */
-static void net_hit_lance(int target, float dmg, V3 knock, float spd, float vc, int couched) {
-    if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
-    NetEvent e = ev_new(EV_HIT);
-    e.target = (unsigned char)target; e.sub = W_LANCE;
-    e.f[0] = dmg; vf(&e.f[1], knock); e.f[4] = spd; e.f[5] = vc; e.f[6] = couched ? 1.0f : 0.0f;
-    net_emit(&e);
-}
 /* --- fin Lance : evenements --- */
 /* --- Ventouse : evenements --- */
 /* EV_MINE : sub = MINE_EV_*, netId de la mine, f[0..2] = a, f[3..5] = b, f[6] = x, target = joueur porteur ou pareur */
@@ -5834,7 +5870,7 @@ static void apply_event(const NetEvent *ev) {
             float tw = ray_world(a, dir[k], SG_RANGE, &n), t;
             V3 mn, mx;
             for (int i = 0; i < MAXP; i++) {              /* arret visuel sur les corps affiches */
-                if (i == ev->from || !NP[i].active || !NP[i].alive) continue;
+                if (i == ev->from || !NP[i].active || !NP[i].alive || same_team(i, ev->from)) continue;
                 if (i == myId) { if (P.dead) continue; paabb(P.pos, pheight(), &mn, &mx); }
                 else np_aabb(i, 0.05f, &mn, &mx);
                 if (ray_box(a, dir[k], mn, mx, tw, &t, NULL) && t < tw) tw = t;
@@ -5914,10 +5950,12 @@ static void apply_event(const NetEvent *ev) {
             netlog("debut du match");
         } else {
             matchOver = 1; matchWinner = ev->target; matchEndT = 8;
-            snprintf(msg, sizeof msg, "%s GAGNE", pname(ev->target));
+            if (teamSize > 0 && ev->target >= TEAM_DRAW) snprintf(msg, sizeof msg, "EGALITE");
+            else if (teamSize > 0) snprintf(msg, sizeof msg, "EQUIPE %s GAGNE", teamNames[ev->target & 1]);
+            else snprintf(msg, sizeof msg, "%s GAGNE", pname(ev->target));
             msgT = 4;
             play(S_WAVE, 0.8f, 0.8f);
-            netlog("fin du match, gagnant : %s", pname(ev->target));
+            netlog("fin du match, gagnant : %s", msg);
         }
         break;
     case EV_COIN:                                         /* piece d'un autre joueur : visible, mais pas a nous */
@@ -6125,7 +6163,9 @@ static void host_kill(int killer, int victim, int kind) {
     e.actor = (unsigned char)killer; e.target = (unsigned char)victim; e.sub = (unsigned char)kind;
     net_emit(&e);
     apply_event(&e);
-    if (killer != victim && killer < MAXP && NP[killer].kills >= fragLimit) host_end_match(killer);
+    if (killer == victim || killer >= MAXP) return;
+    if (teamSize > 0) { if (team_score(NP[killer].team) >= fragLimit) host_end_match(NP[killer].team); }
+    else if (NP[killer].kills >= fragLimit) host_end_match(killer);
 }
 
 static int hitCount[W_COUNT], parryCount;                       /* statistiques pour le journal du bot */
@@ -6396,6 +6436,7 @@ static int host_handle(const NetEvent *ev) {
     if (ev->kind == EV_HIT) {
         int v = ev->target;
         if (ev->sub >= W_COUNT) return 1;
+        if (ev->sub != W_SELF && same_team(ev->from, v)) return 1;   /* equipes : jamais de degats entre allies */
         if (ev->netId && mine_fate(ev->netId) && mine_fate(ev->netId)->who != ev->from) {   /* Ventouse : decision perdue */
             mineHitsIgnored++;
             netlog("ventouse : touche de %s ignoree (mine arrachee ou deja explosee)", pname(ev->from));
@@ -6446,14 +6487,23 @@ static V3 pick_spawn(int who) {
         { 0, 0, 24 }, { 0, 0, -24 }, { 24, 0, 0 }, { -24, 0, 0 }, { -30, 0, -30 }, { 30, 0, -30 }, { 30, 0, 30 },
         { -30, 0, 30 }, { 36, 7, 0 }, { -36, 7, 0 }, { 0, 7, 36 }, { 0, 7, -36 }, { 5, 4, 5 }, { -46, 0, 0 }, { 46, 0, 0 },
     };
+    /* equipes : chaque camp a sa moitie de carte (bleus au nord, z < 0 ; rouges au sud, miroir en z) */
+    static const float teamPts[][3] = {
+        { 0, 0, -24 }, { -30, 0, -30 }, { 30, 0, -30 }, { 0, 7, -36 }, { -14, 0, -46 }, { 14, 0, -46 },
+        { -24, 0, -10 }, { 24, 0, -10 }, { -46, 0, -14 }, { 46, 0, -14 },
+    };
+    int team = teamSize > 0 && who >= 0 && who < MAXP;
+    int n = team ? (int)(sizeof teamPts / sizeof teamPts[0]) : (int)(sizeof pts / sizeof pts[0]);
+    float zs = team && NP[who].team == 1 ? -1.0f : 1.0f;
     float best = -1;
-    V3 bp = v3(0, 0, 24);
-    for (int k = 0; k < (int)(sizeof pts / sizeof pts[0]); k++) {
-        V3 p = v3(ms(pts[k][0]), pts[k][1], ms(pts[k][2]));
+    V3 bp = team ? v3(0, 0, ms(-24 * zs)) : v3(0, 0, 24);
+    for (int k = 0; k < n; k++) {
+        const float *q = team ? teamPts[k] : pts[k];
+        V3 p = v3(ms(q[0]), q[1], ms(q[2] * (team ? zs : 1.0f)));
         if (!pos_free(p, H_STAND)) continue;
-        float md = 200;                                   /* le plus loin possible des autres */
+        float md = 200;                                   /* le plus loin possible des autres (des ennemis en equipes) */
         for (int i = 0; i < MAXP; i++) {
-            if (i == who || !NP[i].active || !NP[i].alive) continue;
+            if (i == who || !NP[i].active || !NP[i].alive || same_team(i, who)) continue;
             V3 o = i == myId ? P.pos : NP[i].disp;
             md = fminf(md, vlen(vsub(p, o)));
         }
@@ -6472,8 +6522,20 @@ static void host_respawn(int i) {
     apply_event(&e);
 }
 
+/* equipes : un depart a laisse un ecart de 2 ou plus -> le dernier arrive de la grosse equipe change de camp */
+static void host_balance_teams(void) {
+    if (teamSize <= 0) return;
+    for (int guard = 0; guard < MAXP; guard++) {
+        int a = team_count(0), b = team_count(1), big = a > b ? 0 : 1;
+        if (abs(a - b) < 2) break;
+        for (int i = MAXP - 1; i >= 1; i--)
+            if (NP[i].active && NP[i].team == big) { NP[i].team = (unsigned char)(1 - big); netlog("%s passe chez les %s", pname(i), teamNames[1 - big]); break; }
+    }
+}
+
 static void host_start_match(void) {
     matchOver = 0; matchT = 0;
+    host_balance_teams();
     for (int i = 0; i < MAXP; i++) NP[i].kills = NP[i].deaths = 0;
     NetEvent e = ev_new(EV_MATCH);
     net_emit(&e);
@@ -6515,7 +6577,10 @@ static void host_tick(float dt) {
         matchT += dt;
         if (matchT >= MATCH_TIME) {
             int w = 0;
-            for (int i = 0; i < MAXP; i++) if (NP[i].active && NP[i].kills > NP[w].kills) w = i;
+            if (teamSize > 0) {                           /* equipes : la plus forte, egalite = TEAM_DRAW */
+                int a = team_score(0), b = team_score(1);
+                w = a > b ? 0 : b > a ? 1 : TEAM_DRAW;
+            } else for (int i = 0; i < MAXP; i++) if (NP[i].active && NP[i].kills > NP[w].kills) w = i;
             host_end_match(w);
         }
         for (int i = 0; i < MAXP; i++)
@@ -6543,7 +6608,9 @@ static void host_on_join(const PkJoin *pj, const struct sockaddr_in *from) {
     }
     for (int i = 1; i < MAXP; i++) if (NP[i].active && same_addr(&NP[i].addr, from)) id = i;
     if (id < 0) {
-        for (int i = 1; i < MAXP; i++) if (!NP[i].active) { id = i; break; }
+        int count = 0;
+        for (int i = 0; i < MAXP; i++) count += NP[i].active;
+        for (int i = 1; i < MAXP && count < host_max_players(); i++) if (!NP[i].active) { id = i; break; }
         if (id < 0) {
             PkWelcome w;
             head(&w.h, PK_WELCOME); w.id = 0; w.refused = 1; w.pad[0] = w.pad[1] = 0;
@@ -6557,6 +6624,8 @@ static void host_on_join(const PkJoin *pj, const struct sockaddr_in *from) {
         NP[id].addr = *from;
         NP[id].lastHeard = nowT;
         NP[id].respawnT = 1.0f;
+        NP[id].team = 0;                                  /* equipes : la moins nombreuse, bleue a egalite (id deja compte en bleu) */
+        if (teamSize > 0) NP[id].team = (unsigned char)(team_count(0) - 1 > team_count(1) ? 1 : 0);
         NetEvent e = ev_new(EV_INFO);
         e.sub = 0; e.target = (unsigned char)id;
         net_emit(&e);
@@ -6589,7 +6658,7 @@ static void host_recv(PkHead *h, int n, struct sockaddr_in *from) {
         for (int i = 0; i < MAXP; i++) count += NP[i].active;
         head(&a.h, PK_ANNOUNCE);
         memcpy(a.name, myName, 16);
-        a.players = (unsigned char)count; a.maxp = MAXP; a.pad[0] = a.pad[1] = 0;
+        a.players = (unsigned char)count; a.maxp = (unsigned char)host_max_players(); a.teams = (unsigned char)teamSize; a.pad = 0;
         net_send(&a, sizeof a, from);
         break;
     }
@@ -6629,11 +6698,13 @@ static void dm_local_start(void) {
 }
 
 static void stop_bot_proc(void) {
+    for (int k = 0; k < MAXP; k++) {
 #ifdef _WIN32
-    if (botProc) { TerminateProcess(botProc, 0); CloseHandle(botProc); botProc = NULL; }
+        if (botProc[k]) { TerminateProcess(botProc[k], 0); CloseHandle(botProc[k]); botProc[k] = NULL; }
 #else
-    if (botProc > 0) { kill(botProc, SIGTERM); waitpid(botProc, NULL, 0); botProc = 0; }
+        if (botProc[k] > 0) { kill(botProc[k], SIGTERM); waitpid(botProc[k], NULL, 0); botProc[k] = 0; }
 #endif
+    }
     vsBot = 0;
 }
 
@@ -6651,7 +6722,7 @@ static void net_shutdown(void) {
         netlog("deconnexion");
     }
     netMode = NET_OFF; connected = 0; joining = 0; dmMode = 0; matchOver = 0; myId = 0; nFound = 0;
-    spectating = 0; specFollow = -1;
+    spectating = 0; specFollow = -1; teamSize = 0;
     memset(NP, 0, sizeof NP);
     memset(SP, 0, sizeof SP);
     online_reset();
@@ -6695,6 +6766,7 @@ static void apply_snap(const PkSnap *s) {
     matchOver = s->matchOver;
     matchWinner = s->winner;
     fragLimit = s->fragLimit > 0 ? s->fragLimit : FRAG_LIMIT;
+    teamSize = s->teamSize <= TEAM_MAX ? s->teamSize : 0;
     for (int i = 0; i < npu; i++) {                       /* l'hote dit quelles recharges sont la */
         if (s->pickMask & (1 << i)) PU[i].t = 0;
         else if (PU[i].t <= 0) PU[i].t = PICKUP_RESPAWN;
@@ -6703,6 +6775,7 @@ static void apply_snap(const PkSnap *s) {
         const SnapP *sp = &s->p[i];
         int wasActive = NP[i].active, wasAlive = NP[i].alive;
         NP[i].active = sp->active; NP[i].kills = sp->kills; NP[i].deaths = sp->deaths; NP[i].hp = sp->hp;
+        NP[i].team = (unsigned char)(sp->team & 1);
         if (i == myId) { P.hp = sp->hp; NP[i].alive = sp->alive; continue; }
         if (!sp->active) continue;
         NP[i].st = sp->st;
@@ -6722,7 +6795,7 @@ static void found_add(const PkAnnounce *a, const struct sockaddr_in *from) {
     memcpy(found[k].name, a->name, 16);
     found[k].name[15] = 0;
     found[k].addr = *from;
-    found[k].players = a->players; found[k].maxp = a->maxp;
+    found[k].players = a->players; found[k].maxp = a->maxp; found[k].teams = a->teams;
     found[k].seen = nowT;
 }
 
@@ -6735,7 +6808,7 @@ static void client_recv(PkHead *h, int n, struct sockaddr_in *from) {
     case PK_WELCOME:
         if (joining && n >= (int)sizeof(PkWelcome)) {
             const PkWelcome *w = (const PkWelcome *)h;
-            if (w->refused) { joining = 0; set_status(joinSpec ? "plus de place pour les spectateurs" : "partie pleine (8 joueurs max)"); }
+            if (w->refused) { joining = 0; set_status(joinSpec ? "plus de place pour les spectateurs" : "partie pleine"); }
             else on_welcome(w->id);
         }
         break;
@@ -6817,8 +6890,9 @@ static void net_update(float dt) {
             for (int i = 0; i < MAXP; i++) {
                 s.p[i].active = (unsigned char)NP[i].active; s.p[i].alive = (unsigned char)NP[i].alive;
                 s.p[i].hp = (short)ceilf(NP[i].hp); s.p[i].kills = (short)NP[i].kills; s.p[i].deaths = (short)NP[i].deaths;
-                s.p[i].st = NP[i].st;
+                s.p[i].st = NP[i].st; s.p[i].team = NP[i].team;
             }
+            s.teamSize = (unsigned char)teamSize;
             host_send_all(&s, sizeof s);
             flush_events();
         }
@@ -6892,9 +6966,12 @@ static int net_host_start(void) {
     find_local_ip();
     dm_local_start();
     matchOver = 0; matchT = 0;
-    fragLimit = hostQuick ? FRAG_LIMIT_QUICK : FRAG_LIMIT; hostQuick = 0;
+    teamSize = hostQuick || hostFfa ? 0 : wantTeams;      /* partie rapide et duel du menu : chacun pour soi */
+    hostFfa = 0;
+    fragLimit = hostQuick ? FRAG_LIMIT_QUICK : team_frag_limit(teamSize); hostQuick = 0;
+    NP[0].team = 0;
     host_respawn(0);
-    netlog("partie hebergee, ip %s, %d frags", hostIpText, fragLimit);
+    netlog("partie hebergee, ip %s, %d frags, equipes %d", hostIpText, fragLimit, teamSize);
     return 1;
 }
 
@@ -7277,7 +7354,7 @@ static void lb_line(const char *s) {
     } else if (!strcmp(s, "none")) {
         set_status("aucune partie en ligne : tu en crees une");
         lbWantHost = 1;
-    } else if (!strcmp(s, "err full")) set_status("partie pleine (8 joueurs max)");
+    } else if (!strcmp(s, "err full")) set_status("partie pleine");
     else if (!strcmp(s, "err unknown")) set_status("cette partie n'existe plus");
 }
 
@@ -7329,7 +7406,8 @@ static void lb_update(float dt) {
             ep_text(&myPub, pub, sizeof pub);
             lan_ep_text(lan, sizeof lan, NET_PORT);
             lb_safe_name(nm, sizeof nm);
-            lb_send("host %d %d %d %d %s %s %s", NET_VER, pl, MAXP, sp, pub, lan, nm);
+            if (teamSize > 0) snprintf(nm + (strlen(nm) > 11 ? 11 : strlen(nm)), 5, "_%dV%d", teamSize, teamSize);   /* le mode se lit dans le nom (15 car. max) */
+            lb_send("host %d %d %d %d %s %s %s", NET_VER, pl, host_max_players(), sp, pub, lan, nm);
         }
     }
 
@@ -7759,6 +7837,15 @@ static void bot_think(float dt) {
     if (see) seeT += dt; else seeT = 0;
     float aimErr = (0.012f + (best >= 0 ? bd : 0) * 0.0014f) * botAimMul[botLevel];
     float aimErrYaw = aimErr * sinf(botT * 7.3f + botMode), aimErrPitch = aimErr * 0.6f * cosf(botT * 5.1f);
+    if (!botAimTest) {                                    /* un tirage par tir (refait apres chaque coup) + leger tremblement */
+        static float offX, offY;
+        static int rolled;
+        if (P.fireCd > 0) rolled = 0;
+        else if (!rolled) { bot_roll_aim(best >= 0 ? bd : 20, &offX, &offY); rolled = 1; }
+        float d = fmaxf(best >= 0 ? bd : 20, 2);
+        aimErrYaw = offX / d + 0.003f * sinf(botT * 7.3f + botMode);
+        aimErrPitch = offY / d + 0.002f * cosf(botT * 5.1f);
+    }
 
     /* --- Fleau : combo fleau -> tir. Moins de 0,3 s apres une touche, la cible vole vers nous (parabole connue) :
      * on la tire, sans erreur de visee supplementaire, avant toute autre manoeuvre (le dash rendu lancerait un cross-up) --- */
@@ -8361,6 +8448,8 @@ static void fx_tick(float dt) {
 static GLuint texGrid, texWall, texGrime, texDot, worldList, fontBase[3];
 static int fontW[3], fontH[3];
 static V3 camR, camU, camEye;
+static GLfloat mvMat[16], prMat[16];                      /* matrices de la camera (projections a l'ecran, soleil de l'arme) */
+static float viewSun = 1;                                 /* le joueur est-il au soleil (lisse) : eclaire l'arme en main */
 static float fps;
 
 /* generateur local, isole du rng de jeu : les textures doivent rester reproductibles sans
@@ -8536,9 +8625,8 @@ static void box_faces(V3 a, V3 b) {
     glEnd();
 }
 
-/* comme box_faces, mais choix des faces (masque FACE_*) et echelle de texture : sert au rendu du
- * monde en plusieurs passes (sol/mur separes, puis grain de pres) sans toucher a box_faces, utilise
- * partout ailleurs (armes, ennemis) a l'echelle fixe 0.5 */
+/* masque de faces et quad a echelle de texture libre : rendu du monde en plusieurs passes (world_faces),
+ * sans toucher a box_faces, utilise partout ailleurs (armes, ennemis) a l'echelle fixe 0.5 */
 enum { FACE_PX = 1, FACE_NX = 2, FACE_PY = 4, FACE_NY = 8, FACE_PZ = 16, FACE_NZ = 32,
        FACE_SIDES = FACE_PX | FACE_NX | FACE_PZ | FACE_NZ, FACE_UD = FACE_PY | FACE_NY,
        FACE_ALL = FACE_SIDES | FACE_UD };
@@ -8554,17 +8642,6 @@ static void quad_tex(V3 n, V3 a, V3 b, V3 c, V3 d, float scale) {
         glTexCoord2f(u * scale, v * scale);
         glVertex3f(p.x, p.y, p.z);
     }
-}
-
-static void box_faces_m(V3 a, V3 b, int mask, float scale) {
-    glBegin(GL_QUADS);
-    if (mask & FACE_PX) quad_tex(v3(1, 0, 0),  v3(b.x, a.y, a.z), v3(b.x, b.y, a.z), v3(b.x, b.y, b.z), v3(b.x, a.y, b.z), scale);
-    if (mask & FACE_NX) quad_tex(v3(-1, 0, 0), v3(a.x, a.y, a.z), v3(a.x, a.y, b.z), v3(a.x, b.y, b.z), v3(a.x, b.y, a.z), scale);
-    if (mask & FACE_PY) quad_tex(v3(0, 1, 0),  v3(a.x, b.y, a.z), v3(a.x, b.y, b.z), v3(b.x, b.y, b.z), v3(b.x, b.y, a.z), scale);
-    if (mask & FACE_NY) quad_tex(v3(0, -1, 0), v3(a.x, a.y, a.z), v3(b.x, a.y, a.z), v3(b.x, a.y, b.z), v3(a.x, a.y, b.z), scale);
-    if (mask & FACE_PZ) quad_tex(v3(0, 0, 1),  v3(a.x, a.y, b.z), v3(b.x, a.y, b.z), v3(b.x, b.y, b.z), v3(a.x, b.y, b.z), scale);
-    if (mask & FACE_NZ) quad_tex(v3(0, 0, -1), v3(a.x, a.y, a.z), v3(a.x, b.y, a.z), v3(b.x, b.y, a.z), v3(b.x, a.y, a.z), scale);
-    glEnd();
 }
 
 static void box_edges(V3 a, V3 b) {
@@ -8611,7 +8688,229 @@ static void prism_z(V3 c, float z0, float z1, float r0, float r1, int n, int cap
     }
 }
 
+/* ---- eclairage precalcule (lightmaps) ----------------------------------------------------
+ * Le decor ne bouge jamais : au chargement, chaque face de boite recoit une petite texture
+ * d'eclairage (soleil avec ombres portees, ciel attenue par l'occlusion ambiante, lueur des
+ * jump pads). Le rendu du monde la multiplie (x2, pour pouvoir eclaircir) sur la texture de base.
+ * Pas de shader : tout se fait en pipeline fixe, avec des rayons contre les AABB. */
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+#define LM_DENS     3.0f      /* texels de lightmap par metre */
+#define LM_MAXT     512       /* cote maximal d'une lightmap */
+#define AO_RAYS     12        /* rayons d'occlusion ambiante par texel */
+#define AO_RANGE    4.5f      /* portee des rayons d'occlusion (m) */
+#define LMG_CELL    4.0f      /* grille d'acceleration des rayons courts (m) */
+#define LMG_N       44
+#define LMG_MAXB    48
+static V3 sun_dir(void) { return vnorm(v3(0.55f, 0.66f, -0.82f)); }   /* vers le soleil (ombres, lumiere, ciel) */
+static const float sunCol[3] = { 1.00f, 0.84f, 0.66f }, skyCol[3] = { 0.52f, 0.54f, 0.74f },
+                   bounceCol[3] = { 0.16f, 0.13f, 0.12f }, padGlowCol[3] = { 0.25f, 0.85f, 1.0f };
+typedef struct { GLuint tex; float su, sv; int on; } LMap;   /* su, sv : coordonnee de texture du bord oppose */
+static LMap lmaps[MAXB][6];
+static unsigned char lmgN[LMG_N][LMG_N], lmgB[LMG_N][LMG_N][LMG_MAXB];
+static double lmBakeMs;                                   /* duree du precalcul (journal, tests) */
+
+/* face f d'une boite (0 +x, 1 -x, 2 +y, 3 -y, 4 +z, 5 -z, comme FACE_*) : 4 coins dans l'ordre de box_faces_m */
+static void face_corners(V3 a, V3 b, int f, V3 o[4]) {
+    switch (f) {
+    case 0: o[0] = v3(b.x, a.y, a.z); o[1] = v3(b.x, b.y, a.z); o[2] = v3(b.x, b.y, b.z); o[3] = v3(b.x, a.y, b.z); break;
+    case 1: o[0] = v3(a.x, a.y, a.z); o[1] = v3(a.x, a.y, b.z); o[2] = v3(a.x, b.y, b.z); o[3] = v3(a.x, b.y, a.z); break;
+    case 2: o[0] = v3(a.x, b.y, a.z); o[1] = v3(a.x, b.y, b.z); o[2] = v3(b.x, b.y, b.z); o[3] = v3(b.x, b.y, a.z); break;
+    case 3: o[0] = v3(a.x, a.y, a.z); o[1] = v3(b.x, a.y, a.z); o[2] = v3(b.x, a.y, b.z); o[3] = v3(a.x, a.y, b.z); break;
+    case 4: o[0] = v3(a.x, a.y, b.z); o[1] = v3(b.x, a.y, b.z); o[2] = v3(b.x, b.y, b.z); o[3] = v3(a.x, b.y, b.z); break;
+    default: o[0] = v3(a.x, a.y, a.z); o[1] = v3(a.x, b.y, a.z); o[2] = v3(b.x, b.y, a.z); o[3] = v3(b.x, a.y, a.z); break;
+    }
+}
+static V3 face_normal(int f) { V3 n = v3(0, 0, 0); *vc(&n, f / 2) = (f & 1) ? -1.0f : 1.0f; return n; }
+static int face_u(int f) { return f / 2 == 0 ? 2 : 0; }   /* axe des s : z pour les faces x, x sinon */
+static int face_v(int f) { return f / 2 == 1 ? 2 : 1; }   /* axe des t : z pour les faces y, y sinon */
+static int pow2up(int n) { int p = 1; while (p < n) p <<= 1; return p; }
+
+static int point_in_box(V3 p) {
+    for (int i = 0; i < nb; i++)
+        if (p.x > boxes[i].mn.x && p.x < boxes[i].mx.x && p.y > boxes[i].mn.y && p.y < boxes[i].mx.y &&
+            p.z > boxes[i].mn.z && p.z < boxes[i].mx.z) return 1;
+    return 0;
+}
+/* face jamais visible : sous le sol, hors de l'arene, ou entierement enfouie dans d'autres boites */
+static int face_hidden(int bi, int f) {
+    Box *b = &boxes[bi];
+    V3 n = face_normal(f), c[4];
+    if (f == 3 && b->mn.y <= 0.001f) return 1;
+    face_corners(b->mn, b->mx, f, c);
+    float W = ms(56) + 0.5f;
+    V3 mid = vmul(vadd(vadd(c[0], c[1]), vadd(c[2], c[3])), 0.25f);
+    V3 mo = vadd(mid, vmul(n, 0.05f));
+    if (fabsf(mo.x) > W || fabsf(mo.z) > W) return 1;
+    if (!point_in_box(mo)) return 0;
+    for (int k = 0; k < 4; k++) {
+        V3 q = vadd(vadd(vlerp(c[k], mid, 0.02f), vmul(n, 0.05f)), v3(0, 0, 0));
+        if (!point_in_box(q)) return 0;
+    }
+    return 1;
+}
+
+static void lm_grid_build(void) {                         /* boites proches de chaque case, pour les rayons courts */
+    float org = -ms(56) - 4;
+    memset(lmgN, 0, sizeof lmgN);
+    for (int gx = 0; gx < LMG_N; gx++)
+        for (int gz = 0; gz < LMG_N; gz++) {
+            float x0 = org + gx * LMG_CELL, z0 = org + gz * LMG_CELL;
+            for (int i = 0; i < nb && lmgN[gx][gz] < LMG_MAXB; i++) {
+                Box *b = &boxes[i];
+                if (b->mx.x + AO_RANGE < x0 || b->mn.x - AO_RANGE > x0 + LMG_CELL ||
+                    b->mx.z + AO_RANGE < z0 || b->mn.z - AO_RANGE > z0 + LMG_CELL) continue;
+                lmgB[gx][gz][lmgN[gx][gz]++] = (unsigned char)i;
+            }
+        }
+}
+static float ray_near(V3 o, V3 d, float maxt) {           /* comme ray_world, limite aux boites voisines de o */
+    float org = -ms(56) - 4;
+    int gx = (int)((o.x - org) / LMG_CELL), gz = (int)((o.z - org) / LMG_CELL);
+    if (gx < 0 || gz < 0 || gx >= LMG_N || gz >= LMG_N) return ray_world(o, d, maxt, 0);
+    float best = maxt;
+    for (int k = 0; k < lmgN[gx][gz]; k++) {
+        Box *b = &boxes[lmgB[gx][gz][k]];
+        float t;
+        if (ray_box(o, d, b->mn, b->mx, best, &t, NULL) && t < best) best = t;
+    }
+    return best;
+}
+
+/* lumiere recue en p (normale n) : RGB, environ 0 a 2 */
+static void lm_light(V3 p, V3 n, unsigned int seed, float out[3]) {
+    V3 L = sun_dir(), o = vadd(p, vmul(n, 0.04f));
+    float ndl = vdot(n, L), sun = 0;
+    if (ndl > 0 && ray_world(o, L, 400, 0) >= 399) sun = ndl;
+    V3 t1 = fabsf(n.y) > 0.9f ? v3(1, 0, 0) : vnorm(vcross(v3(0, 1, 0), n)), t2 = vcross(n, t1);
+    float rot = (float)((seed * 2654435761u) >> 8) * (1.0f / 16777216.0f) * 2 * PI, occ = 0;
+    for (int k = 0; k < AO_RAYS; k++) {                   /* hemisphere, poids en cosinus (spirale doree) */
+        float r = sqrtf((k + 0.5f) / AO_RAYS), ph = k * 2.39996f + rot, h = sqrtf(1 - r * r);
+        V3 d = vadd(vadd(vmul(t1, r * cosf(ph)), vmul(t2, r * sinf(ph))), vmul(n, h));
+        float t = ray_near(o, d, AO_RANGE);
+        if (t < AO_RANGE) occ += 1 - t / AO_RANGE;
+    }
+    float ao = 1 - occ / AO_RAYS;
+    ao = ao * ao * 0.85f + 0.15f;
+    float sky = (0.78f + 0.22f * n.y) * ao, bounce = (0.5f - 0.5f * n.y) * ao;
+    for (int c = 0; c < 3; c++) out[c] = skyCol[c] * sky + sunCol[c] * sun * 1.3f + bounceCol[c] * bounce;
+    for (int i = 0; i < nb; i++) {                        /* jump pads : lueur cyan sur le decor proche */
+        if (boxes[i].kind != B_PAD) continue;
+        V3 c = vlerp(boxes[i].mn, boxes[i].mx, 0.5f);
+        c.y = boxes[i].mx.y + 0.3f;
+        V3 dv = vsub(c, o);
+        float dist = vlen(dv);
+        if (dist > 9 || dist < 1e-3f) continue;
+        float lam = vdot(n, vmul(dv, 1 / dist)), fall = (1 - dist / 9) * (1 - dist / 9);
+        if (lam <= 0 || ray_near(o, vmul(dv, 1 / dist), dist - 0.4f) < dist - 0.45f) continue;
+        for (int k = 0; k < 3; k++) out[k] += padGlowCol[k] * 0.9f * lam * fall;
+    }
+}
+
+static void bake_lightmaps(void) {
+    LARGE_INTEGER f0, t0, t1;
+    QueryPerformanceFrequency(&f0); QueryPerformanceCounter(&t0);
+    lm_grid_build();
+    float *buf = (float *)malloc(LM_MAXT * LM_MAXT * 3 * sizeof(float)), *tmp = (float *)malloc(LM_MAXT * LM_MAXT * 3 * sizeof(float));
+    unsigned char *img = NULL;
+    int imgCap = 0;
+    for (int bi = 0; bi < nb; bi++)
+        for (int f = 0; f < 6; f++) {
+            LMap *m = &lmaps[bi][f];
+            m->on = 0;
+            if (face_hidden(bi, f)) continue;
+            Box *b = &boxes[bi];
+            int ua = face_u(f), va = face_v(f);
+            float u0 = *vc(&b->mn, ua), u1 = *vc(&b->mx, ua), v0 = *vc(&b->mn, va), v1 = *vc(&b->mx, va);
+            int nu = (int)ceilf((u1 - u0) * LM_DENS), nv = (int)ceilf((v1 - v0) * LM_DENS);
+            nu = nu < 2 ? 2 : nu > LM_MAXT ? LM_MAXT : nu; nv = nv < 2 ? 2 : nv > LM_MAXT ? LM_MAXT : nv;
+            V3 n = face_normal(f), p = (f & 1) ? b->mn : b->mx;
+            for (int j = 0; j < nv; j++)
+                for (int i = 0; i < nu; i++) {
+                    *vc(&p, ua) = u0 + (i + 0.5f) / nu * (u1 - u0);
+                    *vc(&p, va) = v0 + (j + 0.5f) / nv * (v1 - v0);
+                    lm_light(p, n, (unsigned)(bi * 7919 + f * 104729 + j * 1031 + i), &buf[(j * nu + i) * 3]);
+                }
+            for (int pass = 0; pass < 2; pass++)          /* flou 1-2-1 (s puis t) : adoucit les bords d'ombre et le bruit */
+                for (int j = 0; j < nv; j++)
+                    for (int i = 0; i < nu; i++)
+                        for (int c = 0; c < 3; c++) {
+                            int a0 = pass ? (j > 0 ? j - 1 : j) * nu + i : j * nu + (i > 0 ? i - 1 : i);
+                            int a2 = pass ? (j < nv - 1 ? j + 1 : j) * nu + i : j * nu + (i < nu - 1 ? i + 1 : i);
+                            float *src = pass ? tmp : buf, *dst = pass ? buf : tmp;
+                            dst[(j * nu + i) * 3 + c] = 0.25f * src[a0 * 3 + c] + 0.5f * src[(j * nu + i) * 3 + c] + 0.25f * src[a2 * 3 + c];
+                        }
+            int tw = pow2up(nu), th = pow2up(nv);
+            if (tw * th * 3 > imgCap) { imgCap = tw * th * 3; img = (unsigned char *)realloc(img, imgCap); }
+            memset(img, 0, tw * th * 3);
+            for (int j = 0; j < nv; j++)
+                for (int i = 0; i < nu; i++)
+                    for (int c = 0; c < 3; c++)
+                        img[(j * tw + i) * 3 + c] = (unsigned char)(clampf(buf[(j * nu + i) * 3 + c] * 0.5f, 0, 1) * 255 + 0.5f);
+            glGenTextures(1, &m->tex);
+            glBindTexture(GL_TEXTURE_2D, m->tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tw, th, 0, GL_RGB, GL_UNSIGNED_BYTE, img);
+            m->su = (float)nu / tw; m->sv = (float)nv / th; m->on = 1;
+        }
+    free(buf); free(tmp); free(img);
+    QueryPerformanceCounter(&t1);
+    lmBakeMs = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f0.QuadPart;
+}
+
+/* une face, coordonnees de lightmap (0..su, 0..sv) */
+static void lm_face(int bi, int f) {
+    Box *b = &boxes[bi];
+    LMap *m = &lmaps[bi][f];
+    V3 c[4], n = face_normal(f);
+    int ua = face_u(f), va = face_v(f);
+    float u0 = *vc(&b->mn, ua), du = *vc(&b->mx, ua) - u0, v0 = *vc(&b->mn, va), dv = *vc(&b->mx, va) - v0;
+    face_corners(b->mn, b->mx, f, c);
+    glNormal3f(n.x, n.y, n.z);
+    for (int k = 0; k < 4; k++) {
+        glTexCoord2f((*vc(&c[k], ua) - u0) / du * m->su, (*vc(&c[k], va) - v0) / dv * m->sv);
+        glVertex3f(c[k].x, c[k].y, c[k].z);
+    }
+}
+
+/* lumiere du soleil en p : 1 au soleil, 0 a l'ombre (eclairage des objets mobiles) */
+static float sun_vis(V3 p) { return ray_world(p, sun_dir(), 400, 0) >= 399 ? 1.0f : 0.0f; }
+/* eclairage des objets mobiles : soleil (attenue a l'ombre) + ciel, dans le repere courant */
+static void set_dyn_light(float vis) {
+    V3 L = sun_dir();
+    GLfloat lp[4] = { L.x, L.y, L.z, 0 }, amb[4] = { 0.40f, 0.40f, 0.52f, 1 };
+    GLfloat dif[4] = { sunCol[0] * (0.25f + 0.65f * vis), sunCol[1] * (0.25f + 0.65f * vis), sunCol[2] * (0.25f + 0.65f * vis), 1 };
+    glLightfv(GL_LIGHT0, GL_POSITION, lp);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, dif);
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, amb);
+}
+
+
+/* dessine les faces visibles du monde, passe par passe (sol/plafond ou murs, ou toutes) */
+static void world_faces(int mask, float scale) {
+    glBegin(GL_QUADS);
+    for (int i = 0; i < nb; i++) {
+        glColor3f(boxes[i].col.x, boxes[i].col.y, boxes[i].col.z);
+        for (int f = 0; f < 6; f++) {
+            if (!(mask & (1 << f)) || !lmaps[i][f].on) continue;
+            V3 c[4], n = face_normal(f);
+            face_corners(boxes[i].mn, boxes[i].mx, f, c);
+            quad_tex(n, c[0], c[1], c[2], c[3], scale);
+        }
+    }
+    glEnd();
+}
+
+static GLuint skylineList;
+static void build_skyline_list(void);
 static void build_world_list(void) {
+    bake_lightmaps();
+    GLfloat fogScene[4] = { 0.34f, 0.30f, 0.44f, 1 }, fogGray[4] = { 0.5f, 0.5f, 0.5f, 1 }, fogWhite[4] = { 1, 1, 1, 1 };
     worldList = glGenLists(1);
     glNewList(worldList, GL_COMPILE);
     glEnable(GL_CULL_FACE);                                   /* normales sortantes verifiees : la face interieure de
@@ -8619,43 +8918,55 @@ static void build_world_list(void) {
     glCullFace(GL_BACK);
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(1, 1);
-    glEnable(GL_LIGHTING);
+    glDisable(GL_LIGHTING);                                   /* l'eclairage vient des lightmaps (passe 3) */
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, texGrid);                    /* passe 1 : sol/plafond (faces horizontales) */
-    for (int i = 0; i < nb; i++) {
-        glColor3f(boxes[i].col.x, boxes[i].col.y, boxes[i].col.z);
-        box_faces_m(boxes[i].mn, boxes[i].mx, FACE_UD, 0.5f);
-    }
+    world_faces(FACE_UD, 0.5f);
     glBindTexture(GL_TEXTURE_2D, texWall);                    /* passe 2 : murs (faces verticales) */
-    for (int i = 0; i < nb; i++) {
-        glColor3f(boxes[i].col.x, boxes[i].col.y, boxes[i].col.z);
-        box_faces_m(boxes[i].mn, boxes[i].mx, FACE_SIDES, 0.5f);
-    }
-    glDepthFunc(GL_LEQUAL);                                   /* passe 3 : grain fin, meme profondeur que 1/2 */
+    world_faces(FACE_SIDES, 0.5f);
+    glDepthFunc(GL_LEQUAL);                                   /* passes suivantes : meme profondeur que 1/2 */
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);                  /* passe 3 : lightmaps, x2 (0,5 = inchange) */
+    glFogfv(GL_FOG_COLOR, fogGray);                           /* au loin, la lightmap s'efface dans le brouillard */
+    glColor3f(1, 1, 1);
+    for (int i = 0; i < nb; i++)
+        for (int f = 0; f < 6; f++) {
+            if (!lmaps[i][f].on) continue;
+            glBindTexture(GL_TEXTURE_2D, lmaps[i][f].tex);
+            glBegin(GL_QUADS);
+            lm_face(i, f);
+            glEnd();
+        }
+    glBlendFunc(GL_DST_COLOR, GL_ZERO);                       /* passe 4 : grain fin, multiplicatif */
+    glFogfv(GL_FOG_COLOR, fogWhite);
     glBindTexture(GL_TEXTURE_2D, texGrime);
     glColor3f(1, 1, 1);
-    glDisable(GL_LIGHTING);
-    glDisable(GL_FOG);                                        /* sinon le brouillard se multiplierait deux fois */
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_DST_COLOR, GL_ZERO);
-    for (int i = 0; i < nb; i++) box_faces_m(boxes[i].mn, boxes[i].mx, FACE_ALL, 2.37f);
+    glBegin(GL_QUADS);
+    for (int i = 0; i < nb; i++)
+        for (int f = 0; f < 6; f++) {
+            if (!lmaps[i][f].on) continue;
+            V3 c[4];
+            face_corners(boxes[i].mn, boxes[i].mx, f, c);
+            quad_tex(face_normal(f), c[0], c[1], c[2], c[3], 2.37f);
+        }
+    glEnd();
+    glFogfv(GL_FOG_COLOR, fogScene);
     glDisable(GL_BLEND);
-    glEnable(GL_FOG);
     glDepthFunc(GL_LESS);
     glDisable(GL_POLYGON_OFFSET_FILL);
     glDisable(GL_TEXTURE_2D);
-    glDisable(GL_LIGHTING);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glLineWidth(1.5f);
     for (int i = 1; i < nb; i++) {
         if (boxes[i].kind == B_PAD) glColor4f(0.6f, 1.0f, 1.0f, 0.9f);
-        else glColor4f(0.05f, 0.05f, 0.1f, 0.45f);
+        else glColor4f(0.05f, 0.05f, 0.1f, 0.25f);
         box_edges(boxes[i].mn, boxes[i].mx);
     }
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);                                  /* n'affecte que ce display list, pas le reste du rendu */
     glEndList();
+    build_skyline_list();
 }
 
 static void make_font(int i, int px) {
@@ -8675,15 +8986,89 @@ static void make_font(int i, int px) {
 #endif
 }
 
+/* police en texture : les glyphes bitmap (glBitmap, tres lent sur certains pilotes, dont macOS) sont dessines une
+ * seule fois au demarrage puis relus dans un atlas ; chaque caractere devient un quad texture, au pixel pres */
+#define FONT_PAD 4                                        /* marge autour d'un glyphe (debordements du gras) */
+static GLuint fontTex[3];
+static int fontCW[3], fontCH[3], fontAsc[3], fontAW[3], fontAH[3];   /* cellule, hauteur au-dessus de la ligne, atlas */
+static void make_font_atlas(int f) {
+    int cw = fontW[f] + 2 * FONT_PAD, ch = (int)(fontH[f] * 1.6f) + 2 * FONT_PAD, asc = (int)(fontH[f] * 1.2f) + FONT_PAD;
+    int aw = pow2up(16 * cw), ah = pow2up(14 * ch), perRow = winW / cw, perCol = winH / ch;
+    if (perRow < 1 || perCol < 1) return;
+    fontCW[f] = cw; fontCH[f] = ch; fontAsc[f] = asc; fontAW[f] = aw; fontAH[f] = ah;
+    unsigned char *atlas = (unsigned char *)calloc((size_t)aw * ah, 1), *rgb = (unsigned char *)malloc((size_t)winW * winH * 3);
+    glViewport(0, 0, winW, winH);
+    glMatrixMode(GL_PROJECTION); glLoadIdentity(); glOrtho(0, winW, winH, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+    glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_TEXTURE_2D); glDisable(GL_LIGHTING); glDisable(GL_FOG);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadBuffer(GL_BACK);
+    for (int start = 0; start < 224; start += perRow * perCol) {   /* par lots : la fenetre peut etre petite (bots) */
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glColor3f(1, 1, 1);
+        for (int g = start; g < 224 && g < start + perRow * perCol; g++) {
+            int k = g - start;
+            glRasterPos2f((float)((k % perRow) * cw + FONT_PAD), (float)((k / perRow) * ch + asc));
+            glCallList(fontBase[f] + (GLuint)g);
+        }
+        glFinish();
+        glReadPixels(0, 0, winW, winH, GL_RGB, GL_UNSIGNED_BYTE, rgb);
+        for (int g = start; g < 224 && g < start + perRow * perCol; g++) {
+            int k = g - start, sx = (k % perRow) * cw, sy = (k / perRow) * ch, ax = (g % 16) * cw, ay = (g / 16) * ch;
+            for (int r = 0; r < ch; r++)                  /* lignes relues : de bas en haut */
+                for (int c = 0; c < cw; c++)
+                    atlas[(size_t)(ay + r) * aw + ax + c] = rgb[((size_t)(winH - 1 - (sy + r)) * winW + sx + c) * 3];
+        }
+    }
+    glGenTextures(1, &fontTex[f]);
+    glBindTexture(GL_TEXTURE_2D, fontTex[f]);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, aw, ah, 0, GL_ALPHA, GL_UNSIGNED_BYTE, atlas);
+    free(atlas); free(rgb);
+    glEnable(GL_DEPTH_TEST);
+}
+
+static void text_quads(int f, float x, float y, const char *s) {
+    float cw = (float)fontCW[f], ch = (float)fontCH[f], iw = 1.0f / fontAW[f], ih = 1.0f / fontAH[f];
+    float px = floorf(x + 0.5f) - FONT_PAD, py = floorf(y + 0.5f) - fontAsc[f];
+    for (; *s; s++, px += fontW[f]) {
+        int g = (unsigned char)*s - 32;
+        if (g <= 0) continue;                             /* espace (ou caractere de controle) : rien a dessiner */
+        float u0 = (g % 16) * cw * iw, v0 = (g / 16) * ch * ih, u1 = u0 + cw * iw, v1 = v0 + ch * ih;
+        glTexCoord2f(u0, v0); glVertex2f(px, py);
+        glTexCoord2f(u1, v0); glVertex2f(px + cw, py);
+        glTexCoord2f(u1, v1); glVertex2f(px + cw, py + ch);
+        glTexCoord2f(u0, v1); glVertex2f(px, py + ch);
+    }
+}
+
 static void text(int f, float x, float y, const char *s, float r, float g, float b, float a) {
-    int n = (int)strlen(s);
-    glColor4f(0, 0, 0, a * 0.7f);
-    glRasterPos2f(x + 2, y + 2);
-    glListBase(fontBase[f] - 32);
-    glCallLists(n, GL_UNSIGNED_BYTE, s);
+    if (!fontTex[f]) {                                    /* atlas absent (fenetre trop petite) : glyphes bitmap */
+        int n = (int)strlen(s);
+        glColor4f(0, 0, 0, a * 0.7f);
+        glRasterPos2f(x + 2, y + 2);
+        glListBase(fontBase[f] - 32);
+        glCallLists(n, GL_UNSIGNED_BYTE, s);
+        glColor4f(r, g, b, a);
+        glRasterPos2f(x, y);
+        glCallLists(n, GL_UNSIGNED_BYTE, s);
+        return;
+    }
+    GLboolean blend = glIsEnabled(GL_BLEND);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, fontTex[f]);
+    glBegin(GL_QUADS);
+    glColor4f(0, 0, 0, a * 0.7f);                         /* ombre portee, puis le texte */
+    text_quads(f, x + 2, y + 2, s);
     glColor4f(r, g, b, a);
-    glRasterPos2f(x, y);
-    glCallLists(n, GL_UNSIGNED_BYTE, s);
+    text_quads(f, x, y, s);
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+    if (!blend) glDisable(GL_BLEND);
 }
 static void text_c(int f, float cx, float y, const char *s, float r, float g, float b, float a) {
     text(f, cx - fontW[f] * (float)strlen(s) * 0.5f, y, s, r, g, b, a);
@@ -8716,19 +9101,6 @@ static void set_frustum(float vfovDeg, float aspect, float zn, float zf) {
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glFrustum(-r, r, -t, t, zn, zf);
-}
-
-static void draw_sky(float vfov) {
-    float horizon = -tanf(P.pitch) / tanf(vfov * PI / 360.0f);   /* y NDC de l'horizon */
-    glMatrixMode(GL_PROJECTION); glLoadIdentity();
-    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
-    glDisable(GL_DEPTH_TEST);
-    glBegin(GL_QUADS);
-    glColor3f(0.04f, 0.05f, 0.12f); glVertex2f(-1, 1); glVertex2f(1, 1);
-    glColor3f(0.34f, 0.30f, 0.44f); glVertex2f(1, horizon); glVertex2f(-1, horizon);
-    glVertex2f(-1, horizon); glVertex2f(1, horizon); glVertex2f(1, -1); glVertex2f(-1, -1);
-    glEnd();
-    glEnable(GL_DEPTH_TEST);
 }
 
 static void draw_enemy(Enemy *e) {
@@ -8916,7 +9288,7 @@ static void draw_tesla_arcs(void) {                       /* passe additive */
         billboard(tesla_end(l->bk, l->bi, l->bp), 0.3f);
     }
     for (int i = 0; dmMode && i < MAXP; i++)              /* canon des joueurs distants dont l'arc est actif */
-        if (np_target(i) && (NP[i].st.pad & ST_ZAP) && NP[i].st.weapon == WP_TESLA) {
+        if (np_present(i) && (NP[i].st.pad & ST_ZAP) && NP[i].st.weapon == WP_TESLA) {
             glColor4f(0.55f, 0.8f, 1, 0.7f + 0.3f * sinf(gameTime * 40 + i));
             billboard(np_hand(i), 0.22f);
         }
@@ -9083,7 +9455,7 @@ static void draw_chain(V3 a, V3 b, float sag) {
 /* chaine du joueur distant i (depuis sa main gauche, comme draw_remote_players) pendant son coup, sinon 0 */
 static int np_flail_chain(int i, V3 *hand, V3 *head, float *sag) {
     NetPlayer *n = &NP[i];
-    if (!np_target(i) || (n->st.pad & 0x0F) != MK_FLAIL || !n->st.melee) return 0;
+    if (!np_present(i) || (n->st.pad & 0x0F) != MK_FLAIL || !n->st.melee) return 0;
     float cy = cosf(n->st.yaw), sy = sinf(n->st.yaw), ox = -0.4f, oz = -0.1f;
     *hand = vadd(n->disp, v3(ox * cy - oz * sy, np_height(i) - 0.6f, ox * sy + oz * cy));
     *head = flail_head(*hand, n->st.yaw, n->st.pitch, 1 - n->st.melee / 255.0f, flail_range(vlen(np_vel(i))), 0, *hand, sag);
@@ -9246,9 +9618,19 @@ static void draw_viewmodel(float aspect) {
     glRotatef(-P.roll * 0.5f, 0, 0, 1);
     if (P.sliding) glRotatef(-10, 0, 0, 1);
 
-    GLfloat lp[4] = { -0.3f, 1, 0.6f, 0 }, lp1[4] = { 0.3f, -0.4f, -0.6f, 0 };
-    glLightfv(GL_LIGHT0, GL_POSITION, lp);
-    glLightfv(GL_LIGHT1, GL_POSITION, lp1);
+    {                                                     /* le soleil de la scene, ramene dans le repere de la vue */
+        V3 L = sun_dir();
+        GLfloat lp[4] = { mvMat[0] * L.x + mvMat[4] * L.y + mvMat[8] * L.z, mvMat[1] * L.x + mvMat[5] * L.y + mvMat[9] * L.z,
+                          mvMat[2] * L.x + mvMat[6] * L.y + mvMat[10] * L.z, 0 }, lp1[4] = { 0.3f, -0.4f, -0.6f, 0 };
+        float k = 0.3f + 0.45f * viewSun;
+        GLfloat dif[4] = { sunCol[0] * k, sunCol[1] * k, sunCol[2] * k, 1 }, amb[4] = { 0.42f, 0.42f, 0.52f, 1 };
+        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, amb);
+        float lv = lp[0] * lp[0] + lp[1] * lp[1] + lp[2] * lp[2];
+        if (lp[1] < 0.2f * sqrtf(lv)) { lp[0] *= 0.5f; lp[1] = 0.6f * sqrtf(lv); lp[2] *= 0.5f; }   /* jamais par en dessous */
+        glLightfv(GL_LIGHT0, GL_POSITION, lp);
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, dif);
+        glLightfv(GL_LIGHT1, GL_POSITION, lp1);
+    }
     glEnable(GL_LIGHTING);
     if (P.meleeKind == MK_ANVIL) draw_anvil_vm();
     else if (P.meleeKind == MK_LANCE) draw_lance_vm();    /* Lance : toujours visible */
@@ -9448,8 +9830,8 @@ static void cfg_save(void) {
     fprintf(f, "# VELOCITY - reglages (modifiable a la main)" "\n");
     fprintf(f, "name=%s" "\n" "sens=%.5f" "\n" "fov=%.0f" "\n" "volume=%.2f" "\n" "music=%.2f" "\n" "invert_y=%d" "\n" "show_fps=%d" "\n" "fullscreen=%d" "\n",
             myName, sens, fovBase, masterVol, musicVol, invertY, showFps, fullscreen);
-    fprintf(f, "impact_frames=%d" "\n" "screen_fx=%d" "\n", impactFrames, screenFx);
-    fprintf(f, "online=%d" "\n", onlineOn);
+    fprintf(f, "impact_frames=%d" "\n" "screen_fx=%d" "\n" "shadows=%d" "\n" "bloom=%d" "\n", impactFrames, screenFx, gfxShadows, gfxBloom);
+    fprintf(f, "online=%d" "\n" "teams=%d" "\n", onlineOn, wantTeams);
     fprintf(f, "loadout=%d,%d" "\n" "melee=%d" "\n", wantLoadout[0], wantLoadout[1], wantMelee);
     if (strcmp(lobbyAddr, LOBBY_DEFAULT)) fprintf(f, "lobby=%s" "\n", lobbyAddr);   /* le defaut peut changer avec une mise a jour */
     for (int a = 0; a < A_COUNT; a++) fprintf(f, "bind_%s=%d,%d" "\n", actId[a], binds[a][0], binds[a][1]);
@@ -9475,7 +9857,10 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
         else if (!strcmp(line, "show_fps")) showFps = atoi(v) != 0;
         else if (!strcmp(line, "impact_frames")) impactFrames = atoi(v) != 0;
         else if (!strcmp(line, "screen_fx")) screenFx = atoi(v) != 0;
+        else if (!strcmp(line, "shadows")) gfxShadows = atoi(v) != 0;
+        else if (!strcmp(line, "bloom")) gfxBloom = atoi(v) != 0;
         else if (!strcmp(line, "online")) onlineOn = atoi(v) != 0;
+        else if (!strcmp(line, "teams")) wantTeams = atoi(v) < 0 ? 0 : atoi(v) > TEAM_MAX ? TEAM_MAX : atoi(v);
         else if (!strcmp(line, "lobby") && v[0]) snprintf(lobbyAddr, sizeof lobbyAddr, "%s", v);
         else if (!strcmp(line, "fullscreen")) fs = atoi(v) != 0;
         else if (!strcmp(line, "loadout")) sscanf(v, "%d,%d", &wantLoadout[0], &wantLoadout[1]);
@@ -9508,12 +9893,22 @@ static void assign_bind(int code) {
 }
 static int uiMX, uiMY, uiClick, uiFocus, pendingAction, pendingArg;   /* uiFocus : 1 = pseudo, 2 = IP */
 static char ipField[32];
-static GLfloat mvMat[16], prMat[16];
 
 static const float pcol[MAXP][3] = {
     { 0.3f, 0.8f, 1.0f }, { 1.0f, 0.45f, 0.3f }, { 0.5f, 1.0f, 0.4f }, { 1.0f, 0.85f, 0.3f },
     { 0.8f, 0.45f, 1.0f }, { 1.0f, 0.4f, 0.7f }, { 0.4f, 1.0f, 0.9f }, { 0.9f, 0.9f, 0.9f },
 };
+/* couleur d'un joueur : la sienne en chacun pour soi ; en equipes, celle de l'equipe, eclaircie selon le rang */
+static const float *pcolor(int i) {
+    static float c[MAXP + 1][3];
+    if (i < 0 || i > MAXP) i = MAXP;
+    if (teamSize <= 0 || i >= MAXP) return pcol[i < MAXP ? i : MAXP - 1];
+    int t = NP[i].team & 1, rank = 0;
+    for (int j = 0; j < i; j++) rank += NP[j].active && NP[j].team == t;
+    float k = 0.18f * rank;
+    for (int a = 0; a < 3; a++) c[i][a] = teamCol[t][a] + (1 - teamCol[t][a]) * k * 0.6f;
+    return c[i];
+}
 static const char *weaponNames[W_COUNT] = { "RAIL", "ROQUETTE", "EPEE", "GRAPPIN", "PARRY", "SOLO", "RICOCHET",
                                             "ENCLUME", "LANCE", "YOYO", "POINGS", "EGIDE", "EVENTAIL", "ELAN",
                                             "SCIE", "VENTOUSE", "TESLA" };
@@ -9594,23 +9989,28 @@ static void draw_settings(float cx, float cy) {
     musicVol = slider(4, lx, y, lw, "Musique", buf, musicVol, 0, 1);
     y += 50;
     snprintf(buf, sizeof buf, "Inverser l'axe Y : %s", invertY ? "OUI" : "NON");
-    if (button(lx, y, lw, 46, buf)) invertY = !invertY;
-    y += 58;
+    if (button(lx, y, lw, 44, buf)) invertY = !invertY;
+    y += 53;
     snprintf(buf, sizeof buf, "Afficher les FPS : %s", showFps ? "OUI" : "NON");
-    if (button(lx, y, lw, 46, buf)) showFps = !showFps;
-    y += 58;
+    if (button(lx, y, lw, 44, buf)) showFps = !showFps;
+    y += 53;
     snprintf(buf, sizeof buf, "Impact frames (flashs) : %s", impactFrames ? "OUI" : "NON");
-    if (button(lx, y, lw, 46, buf)) impactFrames = !impactFrames;
-    y += 58;
+    if (button(lx, y, lw, 44, buf)) impactFrames = !impactFrames;
+    y += 53;
     snprintf(buf, sizeof buf, "Effets d'ecran : %s", screenFx ? "OUI" : "NON");
-    if (button(lx, y, lw, 46, buf)) screenFx = !screenFx;
-    y += 58;
+    if (button(lx, y, lw, 44, buf)) screenFx = !screenFx;
+    y += 53;
+    snprintf(buf, sizeof buf, "OMBRES : %s", gfxShadows ? "OUI" : "NON");   /* graphismes : deux demi-boutons */
+    if (button(lx, y, lw * 0.5f - 5, 44, buf)) gfxShadows = !gfxShadows;
+    snprintf(buf, sizeof buf, "BLOOM : %s", gfxBloom ? "OUI" : "NON");
+    if (button(lx + lw * 0.5f + 5, y, lw * 0.5f - 5, 44, buf)) gfxBloom = !gfxBloom;
+    y += 53;
     snprintf(buf, sizeof buf, "Plein ecran : %s", fullscreen ? "OUI" : "NON");
-    if (button(lx, y, lw, 46, buf)) pendingAction = ACT_FULLSCREEN;
-    y += 58;
+    if (button(lx, y, lw, 44, buf)) pendingAction = ACT_FULLSCREEN;
+    y += 53;
     snprintf(buf, sizeof buf, "Parties en ligne : %s", onlineOn ? "OUI" : "NON");
-    if (button(lx, y, lw, 46, buf)) { onlineOn = !onlineOn; cfg_save(); }
-    y += 80;
+    if (button(lx, y, lw, 44, buf)) { onlineOn = !onlineOn; cfg_save(); }
+    y += 70;
     if (button(lx, y, 210, 50, "RETOUR")) { settingsOpen = 0; waitAct = -1; cfg_save(); }
     if (button(lx + 230, y, 210, 50, "PAR DEFAUT")) { memcpy(binds, bindDefault, sizeof binds); cfg_save(); }
 
@@ -9701,6 +10101,62 @@ static void draw_death_loadout(float cx, float y) {
     text_c(1, cx, y + 32, buf, 1, 0.9f, 0.6f, 1);
 }
 
+/* ecran HEBERGER UNE PARTIE : nombre de joueurs (chacun pour soi ou equipes 1v1 a 4v4), bots pour completer */
+static void draw_host_menu(float cx, float cy) {
+    static const char *modeNames[TEAM_MAX + 1] = { "LIBRE", "1V1", "2V2", "3V3", "4V4" };
+    static const char *botNames[4] = { "AUCUN", "FACILE", "NORMAL", "DIFFICILE" };
+    char buf[128];
+    rect(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.78f);
+    text_c(2, cx, cy - 300, "HEBERGER UNE PARTIE", 0.5f, 0.9f, 1.0f, 1);
+    float bw = 620, bx = cx - bw * 0.5f, y = cy - 210;
+    rect(bx - 30, y - 40, bw + 60, 470, 0.03f, 0.04f, 0.08f, 0.6f);
+    rect(bx - 30, y - 40, bw + 60, 2, 0.5f, 0.9f, 1.0f, 0.5f);
+    text(1, bx, y, "NOMBRE DE JOUEURS", 0.5f, 0.9f, 1.0f, 1);
+    y += 18;
+    for (int m = 0; m <= TEAM_MAX; m++) {                 /* chacun pour soi, puis 1v1 a 4v4 */
+        float mx = bx + m * 126.0f;
+        if (button(mx, y, 116, 50, modeNames[m])) wantTeams = m;
+        if (wantTeams == m) {                             /* mode choisi : cadre lumineux */
+            rect(mx, y, 116, 3, 1, 0.85f, 0.4f, 1); rect(mx, y + 47, 116, 3, 1, 0.85f, 0.4f, 1);
+            rect(mx, y, 3, 50, 1, 0.85f, 0.4f, 1); rect(mx + 113, y, 3, 50, 1, 0.85f, 0.4f, 1);
+        }
+    }
+    y += 82;
+    if (wantTeams > 0)
+        snprintf(buf, sizeof buf, "2 equipes de %d  -  %d joueurs max  -  premiere equipe a %d frags", wantTeams, wantTeams * 2,
+                 team_frag_limit(wantTeams));
+    else snprintf(buf, sizeof buf, "chacun pour soi  -  %d joueurs max  -  premier a %d frags", MAXP, FRAG_LIMIT);
+    text(0, bx, y, buf, 0.85f, 0.85f, 0.95f, 1);
+    y += 50;
+    text(1, bx, y, "COMPLETER AVEC DES BOTS", 0.5f, 0.9f, 1.0f, 1);
+    y += 18;
+    for (int k = 0; k < 4; k++) {                         /* -1 = aucun bot, sinon leur niveau */
+        float mx = bx + k * 157.0f;
+        if (button(mx, y, 147, 50, botNames[k])) hostBots = k - 1;
+        if (hostBots == k - 1) {
+            rect(mx, y, 147, 3, 1, 0.85f, 0.4f, 1); rect(mx, y + 47, 147, 3, 1, 0.85f, 0.4f, 1);
+            rect(mx, y, 3, 50, 1, 0.85f, 0.4f, 1); rect(mx + 144, y, 3, 50, 1, 0.85f, 0.4f, 1);
+        }
+    }
+    y += 82;
+    if (hostBots < 0) snprintf(buf, sizeof buf, "les autres joueurs te trouvent en LAN ou en ligne");
+    else if (wantTeams > 0)
+        snprintf(buf, sizeof buf, "%d bot%s : toi + %d allie%s contre %d", wantTeams * 2 - 1, wantTeams * 2 - 1 > 1 ? "s" : "",
+                 wantTeams - 1, wantTeams > 2 ? "s" : "", wantTeams);
+    else snprintf(buf, sizeof buf, "1 bot, la partie reste ouverte en LAN");
+    text(0, bx, y, buf, 0.85f, 0.85f, 0.95f, 1);
+    y += 46;
+    if (button(bx, y, bw, 56, "LANCER LA PARTIE")) {
+        hostOpen = 0;
+        if (hostBots < 0) pendingAction = ACT_HOST;
+        else { pendingAction = ACT_VSBOT; pendingArg = hostBots; }
+    }
+    y += 70;
+    if (button(bx, y, 240, 48, "RETOUR")) { hostOpen = 0; cfg_save(); }
+    draw_status(bx, y + 90);
+    if (uiClick) uiClick = 0;
+}
+
 static void draw_main_menu(float cx, float cy) {
     /* assombri surtout en haut (lisibilite du titre) ; vers le bas, le decor (sol, arene) reste visible */
     rect_vgrad(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.78f, 0.30f);
@@ -9712,22 +10168,22 @@ static void draw_main_menu(float cx, float cy) {
     text_c(2, cx, cy - 300, "V E L O C I T Y", 0.5f, 0.9f, 1.0f, 1);
     text_c(0, cx, cy - 268, "movement shooter en C", 0.7f, 0.7f, 0.8f, 1);
     rect(cx - 220, cy - 252, 440, 2, 0.5f, 0.9f, 1.0f, 0.5f);   /* trait d'accent sous le sous-titre */
-    float bx = cx - 620, bw = 420, y = cy - 200;
-    rect(bx - 30, y - 30, bw + 60, 512, 0.03f, 0.04f, 0.08f, 0.55f);        /* panneau derriere les boutons */
+    float bx = cx - 620, bw = 420, y = cy - 205;
+    rect(bx - 30, y - 30, bw + 60, 556, 0.03f, 0.04f, 0.08f, 0.55f);        /* panneau derriere les boutons */
     rect(bx - 30, y - 30, bw + 60, 2, 0.5f, 0.9f, 1.0f, 0.5f);
-    rect(bx - 30, y + 480, bw + 60, 2, 0.5f, 0.9f, 1.0f, 0.25f);
+    rect(bx - 30, y + 524, bw + 60, 2, 0.5f, 0.9f, 1.0f, 0.25f);
     field(bx, y, bw, 48, "PSEUDO", myName, 1);
     y += 76;
     if (button(bx, y, bw, 52, "SOLO  -  VAGUES")) pendingAction = ACT_SOLO;
-    y += 58;
-    text(0, bx, y, "JOUEUR CONTRE BOT", 0.7f, 0.75f, 0.85f, 1);
-    y += 16;
+    y += 66;
+    text(0, bx, y + 2, "JOUEUR CONTRE BOT  (duel)", 0.7f, 0.75f, 0.85f, 1);
+    y += 14;
     for (int lv = 0; lv < 3; lv++)                        /* un duel contre un bot : trois niveaux */
-        if (button(bx + lv * 142, y, 136, 46, botLevelNames[lv])) { pendingAction = ACT_VSBOT; pendingArg = lv; }
+        if (button(bx + lv * 142, y, 136, 46, botLevelNames[lv])) { pendingAction = ACT_VSBOT; pendingArg = lv; hostFfa = 1; }
     y += 54;
     if (button(bx, y, bw, 46, "PARTIE RAPIDE  -  EN LIGNE")) pendingAction = ACT_QUICK;
     y += 54;
-    if (button(bx, y, bw, 46, "HEBERGER UNE PARTIE")) pendingAction = ACT_HOST;
+    if (button(bx, y, bw, 46, "HEBERGER UNE PARTIE")) { hostOpen = 1; uiFocus = 0; }
     y += 54;
     if (button(bx, y, bw, 46, "REJOINDRE / REGARDER")) pendingAction = ACT_BROWSE;
     y += 54;
@@ -9736,7 +10192,7 @@ static void draw_main_menu(float cx, float cy) {
     if (button(bx, y, bw, 46, "PARAMETRES")) settingsOpen = 1;
     y += 54;
     if (button(bx, y, bw, 46, "QUITTER")) pendingAction = ACT_QUIT;
-    draw_status(bx, y + 90);
+    draw_status(bx, y + 72);
     draw_controls(cx - 130, cy - 200);
     if (uiClick) { uiClick = 0; uiFocus = 0; }
 }
@@ -9759,8 +10215,12 @@ static void draw_join_menu(float cx, float cy) {
         if (found[i].online)
             snprintf(buf, sizeof buf, "[EN LIGNE]  %s    %d/%d joueurs%s", found[i].name, found[i].players, found[i].maxp,
                      found[i].spec ? "  (spectateurs)" : "");
-        else snprintf(buf, sizeof buf, "[LAN]  %s    %d/%d joueurs    %s", found[i].name, found[i].players, found[i].maxp,
-                      inet_ntoa(found[i].addr.sin_addr));
+        else {
+            char mode[16];
+            if (found[i].teams > 0) snprintf(mode, sizeof mode, "%dV%d", found[i].teams, found[i].teams); else snprintf(mode, sizeof mode, "LIBRE");
+            snprintf(buf, sizeof buf, "[LAN %s]  %s    %d/%d joueurs    %s", mode, found[i].name, found[i].players, found[i].maxp,
+                     inet_ntoa(found[i].addr.sin_addr));
+        }
         if (button(bx, y, bw - 170, 46, buf)) { pendingAction = ACT_JOIN_FOUND; pendingArg = i; }
         if (button(bx + bw - 160, y, 160, 46, "REGARDER")) { pendingAction = ACT_SPEC_FOUND; pendingArg = i; }
         y += 54;
@@ -9809,9 +10269,47 @@ static void draw_pause(float cx, float cy) {
     if (uiClick) { uiClick = 0; pendingAction = ACT_RESUME; }  /* clic ailleurs = reprendre */
 }
 
+static void draw_team_scoreboard(float cx, float cy) {
+    char buf[64];
+    float w = 440, gap = 70, y = cy - 120;
+    int most = team_count(0) > team_count(1) ? team_count(0) : team_count(1);
+    for (int t = 0; t < 2; t++) {
+        int order[MAXP], n = 0;
+        for (int i = 0; i < MAXP; i++) if (NP[i].active && NP[i].team == t) order[n++] = i;
+        for (int a = 1; a < n; a++)
+            for (int b = a; b > 0 && NP[order[b]].kills > NP[order[b - 1]].kills; b--) {
+                int tt = order[b]; order[b] = order[b - 1]; order[b - 1] = tt;
+            }
+        float x = t == 0 ? cx - gap * 0.5f - w : cx + gap * 0.5f;
+        const float *tc = teamCol[t];
+        rect(x - 20, y - 96, w + 40, 130 + most * 38.0f, 0.03f, 0.04f, 0.08f, 0.88f);
+        rect(x - 20, y - 96, w + 40, 4, tc[0], tc[1], tc[2], 0.9f);
+        snprintf(buf, sizeof buf, "EQUIPE %s", teamNames[t]);
+        text(1, x, y - 58, buf, tc[0], tc[1], tc[2], 1);
+        snprintf(buf, sizeof buf, "%d", team_score(t));
+        text(2, x + w - fontW[2] * (float)strlen(buf), y - 46, buf, 1, 1, 1, 1);
+        text(0, x, y - 14, "JOUEUR", 0.6f, 0.7f, 0.85f, 1);
+        text(0, x + 270, y - 14, "FRAGS", 0.6f, 0.7f, 0.85f, 1);
+        text(0, x + 360, y - 14, "MORTS", 0.6f, 0.7f, 0.85f, 1);
+        for (int k = 0; k < n; k++) {
+            int i = order[k];
+            float yy = y + 30 + k * 38.0f;
+            if (i == myId) rect(x - 10, yy - 26, w + 20, 34, 1, 1, 1, 0.08f);
+            text(1, x, yy, NP[i].name, pcolor(i)[0], pcolor(i)[1], pcolor(i)[2], NP[i].alive ? 1.0f : 0.5f);
+            snprintf(buf, sizeof buf, "%d", NP[i].kills);
+            text(1, x + 270, yy, buf, 1, 1, 1, 1);
+            snprintf(buf, sizeof buf, "%d", NP[i].deaths);
+            text(1, x + 360, yy, buf, 0.8f, 0.8f, 0.85f, 1);
+        }
+    }
+    snprintf(buf, sizeof buf, "%dV%d   -   premiere equipe a %d frags", teamSize, teamSize, fragLimit);
+    text_c(0, cx, y + 70 + most * 38.0f, buf, 0.75f, 0.8f, 0.9f, 1);
+}
+
 static void draw_scoreboard(float cx, float cy) {
     int order[MAXP], n = 0;
     char buf[64];
+    if (teamSize > 0) { draw_team_scoreboard(cx, cy); return; }
     for (int i = 0; i < MAXP; i++) if (NP[i].active) order[n++] = i;
     for (int a = 1; a < n; a++)                           /* tri par frags */
         for (int b = a; b > 0 && NP[order[b]].kills > NP[order[b - 1]].kills; b--) {
@@ -9826,7 +10324,7 @@ static void draw_scoreboard(float cx, float cy) {
         int i = order[k];
         float yy = y + 30 + k * 38.0f;
         if (i == myId) rect(x - 10, yy - 26, w + 20, 34, 1, 1, 1, 0.08f);
-        text(1, x, yy, NP[i].name, pcol[i][0], pcol[i][1], pcol[i][2], NP[i].alive ? 1.0f : 0.5f);
+        text(1, x, yy, NP[i].name, pcolor(i)[0], pcolor(i)[1], pcolor(i)[2], NP[i].alive ? 1.0f : 0.5f);
         snprintf(buf, sizeof buf, "%d", NP[i].kills);
         text(1, x + 360, yy, buf, 1, 1, 1, 1);
         snprintf(buf, sizeof buf, "%d", NP[i].deaths);
@@ -9843,8 +10341,12 @@ static void draw_killfeed(void) {
         else if (f->killer == f->victim) snprintf(buf, sizeof buf, "%s s'est fait sauter", pname(f->victim));
         else snprintf(buf, sizeof buf, "%s  [%s]  %s", pname(f->killer), weaponNames[f->kind % W_COUNT], pname(f->victim));
         int mine = f->killer == myId || f->victim == myId;
-        text(0, winW - 30.0f - fontW[0] * (float)strlen(buf), 64 + k * 26.0f, buf, 1, mine ? 0.85f : 1, mine ? 0.4f : 1,
-             clampf(f->t, 0, 1));
+        float r = 1, g = mine ? 0.85f : 1, b = mine ? 0.4f : 1;
+        if (teamSize > 0 && !f->info && f->killer >= 0 && f->killer < MAXP && !mine) {   /* equipes : couleur du tueur */
+            const float *c = teamCol[NP[f->killer].team & 1];
+            r = 0.55f + 0.45f * c[0]; g = 0.55f + 0.45f * c[1]; b = 0.55f + 0.45f * c[2];
+        }
+        text(0, winW - 30.0f - fontW[0] * (float)strlen(buf), 64 + k * 26.0f, buf, r, g, b, clampf(f->t, 0, 1));
     }
 }
 
@@ -9861,12 +10363,29 @@ static int project(V3 p, float *sx, float *sy) {
 
 static void draw_name_tags(void) {
     for (int i = 0; i < MAXP; i++) {
-        if (!np_target(i)) continue;
+        if (!np_present(i)) continue;
+        int ally = same_team(i, myId);                    /* equipes : un allie se voit a travers les murs */
         V3 head = vadd(NP[i].disp, v3(0, np_height(i) + 0.45f, 0));
         float sx, sy;
-        if (!los(camEye, head) || !project(head, &sx, &sy)) continue;
-        text_c(0, sx, sy, NP[i].name, pcol[i][0], pcol[i][1], pcol[i][2], 0.95f);
+        int seen = los(camEye, head);
+        if ((!ally && !seen) || !project(head, &sx, &sy)) continue;
+        const float *c = pcolor(i);
+        if (ally) {                                       /* chevron d'allie au-dessus du nom */
+            float a = seen ? 0.95f : 0.6f;
+            glColor4f(c[0], c[1], c[2], a);
+            glBegin(GL_TRIANGLES);
+            glVertex2f(sx - 7, sy - 26); glVertex2f(sx + 7, sy - 26); glVertex2f(sx, sy - 17);
+            glEnd();
+            text_c(0, sx, sy, NP[i].name, c[0], c[1], c[2], a);
+        } else text_c(0, sx, sy, NP[i].name, c[0], c[1], c[2], 0.95f);
     }
+}
+
+/* texte de fin de match : "X REMPORTE LE MATCH", "EQUIPE BLEUE GAGNE", "EGALITE" */
+static void winner_text(char *buf, int n) {
+    if (teamSize > 0 && matchWinner >= TEAM_DRAW) snprintf(buf, n, "EGALITE");
+    else if (teamSize > 0) snprintf(buf, n, "EQUIPE %s GAGNE", teamNames[matchWinner & 1]);
+    else snprintf(buf, n, "%s REMPORTE LE MATCH", pname(matchWinner));
 }
 
 /* Scie : disques en monde */
@@ -9882,7 +10401,7 @@ static void draw_saws(void) {
             V3 k = p->sawN;                               /* rotation de l'axe autour de la normale (Rodrigues) */
             ax = vadd(vadd(vmul(ax, c), vmul(vcross(k, ax), sn)), vmul(k, vdot(k, ax) * (1 - c)));
         }
-        draw_saw_disc(p->pos, ax, SAW_RADIUS, p->sawSpin, saw_col(p), p->owner >= 0 && p->owner < MAXP ? pcol[p->owner] : sawWhite);
+        draw_saw_disc(p->pos, ax, SAW_RADIUS, p->sawSpin, saw_col(p), p->owner >= 0 && p->owner < MAXP ? pcolor(p->owner) : sawWhite);
     }
 }
 
@@ -9925,10 +10444,11 @@ static void draw_mine_glow(const Proj *p) {
 static void draw_remote_players(void) {
     glEnable(GL_LIGHTING);
     for (int i = 0; i < MAXP; i++) {
-        if (!np_target(i)) continue;
+        if (!np_present(i)) continue;
         NetPlayer *n = &NP[i];
         float h = np_height(i);
-        const float *c = pcol[i];
+        const float *c = pcolor(i);
+        set_dyn_light(sun_vis(np_center(i)));             /* plus sombre a l'ombre d'un mur */
         glPushMatrix();
         glTranslatef(n->disp.x, n->disp.y, n->disp.z);
         glRotatef(-n->st.yaw * 180 / PI, 0, 1, 0);
@@ -10057,7 +10577,7 @@ static void draw_remote_players(void) {
     glLineWidth(3);                                       /* cables des grappins adverses */
     glBegin(GL_LINES);
     for (int i = 0; i < MAXP; i++) {
-        if (!np_target(i) || !(NP[i].st.flags & NF_HOOK)) continue;
+        if (!np_present(i) || !(NP[i].st.flags & NF_HOOK)) continue;
         glColor3f(0.95f, 0.8f, 0.45f);
         glVertex3f(NP[i].disp.x, NP[i].disp.y + np_height(i) - 0.5f, NP[i].disp.z);
         glVertex3f(NP[i].st.hookPos[0], NP[i].st.hookPos[1], NP[i].st.hookPos[2]);
@@ -10122,11 +10642,11 @@ static void draw_spec_hud(float cx, float cy) {
     for (int k = 0; k < n; k++) {
         int i = order[k];
         snprintf(buf, sizeof buf, "%d  %s", NP[i].kills, NP[i].name);
-        text(1, 30, 78 + k * 30.0f, buf, pcol[i][0], pcol[i][1], pcol[i][2], NP[i].alive ? 1.0f : 0.5f);
+        text(1, 30, 78 + k * 30.0f, buf, pcolor(i)[0], pcolor(i)[1], pcolor(i)[2], NP[i].alive ? 1.0f : 0.5f);
     }
     draw_killfeed();
     if (matchOver) {
-        snprintf(buf, sizeof buf, "%s REMPORTE LE MATCH", pname(matchWinner));
+        winner_text(buf, sizeof buf);
         text_c(2, cx, cy - 250, buf, 1, 0.85f, 0.3f, 1);
         draw_scoreboard(cx, cy);
     }
@@ -10293,6 +10813,7 @@ static void draw_hud(void) {
     if (appState != APP_GAME) {
         if (settingsOpen && appState == APP_MENU) draw_settings(cx, cy);
         else if (loadoutOpen && appState == APP_MENU) draw_loadout(cx, cy);
+        else if (hostOpen && appState == APP_MENU) draw_host_menu(cx, cy);
         else if (appState == APP_MENU) draw_main_menu(cx, cy);
         else draw_join_menu(cx, cy);
         glDisable(GL_BLEND);
@@ -10702,12 +11223,33 @@ static void draw_hud(void) {
             if (i != myId && NP[i].kills > NP[myId].kills) rank++;
         }
         int left = (int)fmaxf(0, MATCH_TIME - matchT);
-        snprintf(buf, sizeof buf, "DEATHMATCH LAN   %d joueur%s   %d:%02d", count, count > 1 ? "s" : "", left / 60, left % 60);
-        text(0, 30, 40, buf, 0.85f, 0.85f, 0.95f, 1);
-        snprintf(buf, sizeof buf, "FRAGS %d / %d", NP[myId].kills, fragLimit);
-        text(1, 30, 78, buf, 1, 1, 1, 1);
-        snprintf(buf, sizeof buf, "rang %d / %d   morts %d   [%s] scores", rank, count, NP[myId].deaths, bind_text(A_SCORES));
-        text(0, 30, 104, buf, 0.7f, 0.7f, 0.8f, 0.9f);
+        if (teamSize > 0) {                               /* equipes : score des deux camps en haut au centre */
+            int me = NP[myId].team & 1;
+            snprintf(buf, sizeof buf, "EQUIPES %dV%d   %d:%02d   tu es %s", teamSize, teamSize, left / 60, left % 60,
+                     me ? "ROUGE" : "BLEU");
+            text(0, 30, 40, buf, 0.85f, 0.85f, 0.95f, 1);
+            snprintf(buf, sizeof buf, "FRAGS %d   morts %d   [%s] scores", NP[myId].kills, NP[myId].deaths, bind_text(A_SCORES));
+            text(0, 30, 66, buf, 0.7f, 0.7f, 0.8f, 0.9f);
+            float bw = 150, bh = 46, by = 18;
+            for (int t = 0; t < 2; t++) {
+                const float *tc = teamCol[t];
+                float bx = t == 0 ? cx - bw - 6 : cx + 6, f = clampf(team_score(t) / (float)(fragLimit > 0 ? fragLimit : 1), 0, 1);
+                rect(bx, by, bw, bh, 0.03f, 0.04f, 0.08f, 0.7f);
+                rect(t == 0 ? bx + bw * (1 - f) : bx, by + bh - 5, bw * f, 5, tc[0], tc[1], tc[2], 0.95f);
+                if (t == me) rect(bx, by, bw, 2, 1, 1, 1, 0.7f);
+                snprintf(buf, sizeof buf, "%d", team_score(t));
+                text_c(1, bx + bw * 0.5f, by + 33, buf, tc[0], tc[1], tc[2], 1);
+            }
+            snprintf(buf, sizeof buf, "%d", fragLimit);
+            text_c(0, cx, by + bh + 20, buf, 0.6f, 0.6f, 0.7f, 0.9f);
+        } else {
+            snprintf(buf, sizeof buf, "DEATHMATCH LAN   %d joueur%s   %d:%02d", count, count > 1 ? "s" : "", left / 60, left % 60);
+            text(0, 30, 40, buf, 0.85f, 0.85f, 0.95f, 1);
+            snprintf(buf, sizeof buf, "FRAGS %d / %d", NP[myId].kills, fragLimit);
+            text(1, 30, 78, buf, 1, 1, 1, 1);
+            snprintf(buf, sizeof buf, "rang %d / %d   morts %d   [%s] scores", rank, count, NP[myId].deaths, bind_text(A_SCORES));
+            text(0, 30, 104, buf, 0.7f, 0.7f, 0.8f, 0.9f);
+        }
         draw_killfeed();
     } else {
         int remaining = enemies_alive() + toSpawn;
@@ -10729,8 +11271,9 @@ static void draw_hud(void) {
     if (msgT > 0) text_c(2, cx, cy - 120, msg, 1, 1, 1, clampf(msgT, 0, 1));
 
     if (dmMode && matchOver) {
-        snprintf(buf, sizeof buf, "%s REMPORTE LE MATCH", pname(matchWinner));
-        text_c(2, cx, cy - 250, buf, 1, 0.85f, 0.3f, 1);
+        winner_text(buf, sizeof buf);
+        const float *wc = teamSize > 0 && matchWinner < TEAM_DRAW ? teamCol[matchWinner & 1] : NULL;
+        text_c(2, cx, cy - 250, buf, wc ? wc[0] : 1, wc ? wc[1] : 0.85f, wc ? wc[2] : 0.3f, 1);
         draw_scoreboard(cx, cy);
         snprintf(buf, sizeof buf, "nouveau match dans %d s", (int)ceilf(fmaxf(matchEndT, 0)));
         text_c(1, cx, winH - 150.0f, buf, 0.9f, 0.9f, 0.9f, 1);
@@ -10794,9 +11337,267 @@ static void draw_slam_marker(void) {
     }
 }
 
+/* ---- ciel, ombres dynamiques, bloom --------------------------------------------------------- */
+
+/* couleur du ciel dans la direction d (unitaire) : zenith sombre, horizon violet, lueur autour du soleil */
+static void sky_color(V3 d, float out[3]) {
+    static const float zen[3] = { 0.025f, 0.035f, 0.11f }, mid[3] = { 0.13f, 0.12f, 0.27f }, hor[3] = { 0.36f, 0.30f, 0.45f };
+    V3 S = sun_dir();
+    float e = clampf(d.y, 0, 1), k1 = clampf(e / 0.25f, 0, 1), k2 = clampf((e - 0.25f) / 0.75f, 0, 1);
+    for (int c = 0; c < 3; c++) out[c] = e < 0.25f ? hor[c] + (mid[c] - hor[c]) * k1 : mid[c] + (zen[c] - mid[c]) * sqrtf(k2);
+    float g = fmaxf(0, vdot(d, S));
+    V3 hd = vnorm(v3(d.x, 0, d.z)), hs = vnorm(v3(S.x, 0, S.z));
+    float az = fmaxf(0, vdot(hd, hs)), low = powf(1 - fabsf(d.y), 5);
+    float glow = powf(g, 6) * 0.30f + powf(g, 40) * 0.55f, dusk = powf(az, 3) * low * 0.42f;
+    out[0] += glow * 1.0f + dusk * 1.0f;
+    out[1] += glow * 0.72f + dusk * 0.48f;
+    out[2] += glow * 0.50f + dusk * 0.30f;
+    if (d.y < 0) for (int c = 0; c < 3; c++) out[c] = hor[c];   /* sous l'horizon : couleur du brouillard */
+}
+
+static void draw_sky_dome(V3 eye) {
+    glDisable(GL_FOG); glDisable(GL_DEPTH_TEST); glDisable(GL_LIGHTING); glDisable(GL_TEXTURE_2D);
+    glDepthMask(GL_FALSE);
+    const int NA = 36, NE = 14;
+    for (int j = 0; j < NE; j++) {                        /* bandes de -15 deg a +90 deg */
+        float e0 = -0.26f + (PI * 0.5f + 0.26f) * j / NE, e1 = -0.26f + (PI * 0.5f + 0.26f) * (j + 1) / NE;
+        glBegin(GL_QUAD_STRIP);
+        for (int i = 0; i <= NA; i++) {
+            float a = 2 * PI * i / NA;
+            for (int k = 0; k < 2; k++) {
+                float e = k ? e1 : e0, col[3];
+                V3 d = v3(cosf(e) * cosf(a), sinf(e), cosf(e) * sinf(a));
+                sky_color(d, col);
+                glColor3f(col[0], col[1], col[2]);
+                glVertex3f(eye.x + d.x * 300, eye.y + d.y * 300, eye.z + d.z * 300);
+            }
+        }
+        glEnd();
+    }
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    unsigned int seed = 99;                               /* etoiles, plus nombreuses loin du soleil */
+    glPointSize(2);
+    glBegin(GL_POINTS);
+    for (int i = 0; i < 260; i++) {
+        float a, b, c;
+        seed = seed * 1664525u + 1013904223u; a = (seed >> 8) / 16777216.0f * 2 - 1;
+        seed = seed * 1664525u + 1013904223u; b = (seed >> 8) / 16777216.0f;
+        seed = seed * 1664525u + 1013904223u; c = (seed >> 8) / 16777216.0f * 2 - 1;
+        V3 d = vnorm(v3(a, b * 0.9f + 0.1f, c));
+        float tw = 0.5f + 0.5f * sinf((float)nowT * 2 + i), away = clampf(1 - vdot(d, sun_dir()) * 1.4f, 0, 1);
+        glColor4f(0.8f, 0.85f, 1.0f, (0.25f + 0.45f * tw) * d.y * away);
+        glVertex3f(eye.x + d.x * 290, eye.y + d.y * 290, eye.z + d.z * 290);
+    }
+    glEnd();
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, texDot);
+    V3 sun = vadd(eye, vmul(sun_dir(), 280));
+    glBegin(GL_QUADS);
+    glColor4f(1.0f, 0.55f, 0.38f, 0.16f); billboard(sun, 120);
+    glColor4f(1.0f, 0.75f, 0.55f, 0.35f); billboard(sun, 30);
+    glColor4f(1.0f, 0.95f, 0.85f, 0.95f); billboard(sun, 8);
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST); glEnable(GL_FOG);
+}
+
+/* silhouette de ville au loin, hors de l'arene (decor seulement, aucune collision) */
+static void build_skyline_list(void) {
+    unsigned int s = 0x51C7u;
+    skylineList = glGenLists(1);
+    glNewList(skylineList, GL_COMPILE);
+    glDisable(GL_FOG); glDisable(GL_LIGHTING); glDisable(GL_TEXTURE_2D);
+    for (int k = 0; k < 70; k++) {
+        float a = tnoise(&s) * 2 * PI, r = 260 + tnoise(&s) * 120, w = 7 + tnoise(&s) * 12, d = 7 + tnoise(&s) * 12;
+        float h = 30 + tnoise(&s) * tnoise(&s) * 85, cx = cosf(a) * r, cz = sinf(a) * r, t = tnoise(&s);
+        float base[3] = { 0.16f + 0.03f * t, 0.14f + 0.02f * t, 0.26f + 0.04f * t };   /* proches de l'horizon : brume */
+        glBegin(GL_QUADS);                                /* faces : plus claires en bas (brume), sombres en haut */
+        V3 a0 = v3(cx - w, -2, cz - d), a1 = v3(cx + w, h, cz + d);
+        for (int f = 0; f < 6; f++) {
+            if (f == 3) continue;
+            V3 c[4];
+            face_corners(a0, a1, f, c);
+            for (int q = 0; q < 4; q++) {
+                float m = 1 - clampf(c[q].y / (h + 1), 0, 1);
+                glColor3f(base[0] + 0.14f * m, base[1] + 0.11f * m, base[2] + 0.13f * m);
+                glVertex3f(c[q].x, c[q].y, c[q].z);
+            }
+        }
+        glEnd();
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE);   /* fenetres allumees et feu rouge au sommet */
+        glPointSize(2);
+        glBegin(GL_POINTS);
+        V3 in = vnorm(v3(-cx, 0, -cz));
+        for (int q = 0; q < (int)(h * 0.35f); q++) {
+            float u = tnoise(&s) * 2 - 1, y = 4 + tnoise(&s) * (h - 8), warm = tnoise(&s);
+            V3 side = v3(-in.z, 0, in.x), p = vadd(v3(cx, y, cz), vadd(vmul(in, fmaxf(w, d) + 0.3f), vmul(side, u * w * 0.9f)));
+            if (warm < 0.7f) glColor4f(1.0f, 0.78f, 0.45f, 0.35f); else glColor4f(0.45f, 0.85f, 1.0f, 0.4f);
+            glVertex3f(p.x, p.y, p.z);
+        }
+        glColor4f(1, 0.2f, 0.2f, 0.9f); glVertex3f(cx, h + 1, cz);
+        glEnd();
+        glDisable(GL_BLEND);
+    }
+    glEnable(GL_FOG);
+    glEndList();
+}
+
+/* ombres des objets mobiles : silhouettes aplaties sur le dessus de la boite qui les recoit, selon le soleil.
+ * Le stencil garantit qu'un pixel n'est assombri qu'une fois (pas de double ombre entre deux boites). */
+static void shadow_caster_boxes(V3 pos, float yaw, float h, float r, int round) {
+    V3 L = sun_dir(), o;
+    o = vadd(pos, v3(0, 0.15f, 0));
+    float t = ray_world(o, vmul(L, -1), 60, 0);
+    if (t >= 60 || rayBox < 0 || boxes[rayBox].mx.y > pos.y + 0.2f) return;
+    Box *b = &boxes[rayBox];
+    float gh = b->mx.y, alt = pos.y - gh, a = 0.5f * clampf(1 - alt / 30, 0, 1);
+    if (a <= 0.02f || sun_vis(vadd(pos, v3(0, h * 0.6f, 0))) < 0.5f) return;
+    double cp[4][4] = { { 1, 0, 0, -b->mn.x }, { -1, 0, 0, b->mx.x }, { 0, 0, 1, -b->mn.z }, { 0, 0, -1, b->mx.z } };
+    for (int k = 0; k < 4; k++) { glClipPlane(GL_CLIP_PLANE0 + k, cp[k]); glEnable(GL_CLIP_PLANE0 + k); }
+    float kx = L.x / L.y, kz = L.z / L.y;                 /* projection sur le plan y = gh, le long de L */
+    GLfloat M[16] = { 1, 0, 0, 0, -kx, 0, -kz, 0, 0, 0, 1, 0, kx * gh, gh + 0.03f, kz * gh, 1 };
+    glColor4f(0.02f, 0.02f, 0.06f, a);
+    glPushMatrix();
+    glMultMatrixf(M);
+    glTranslatef(pos.x, pos.y, pos.z);
+    glRotatef(-yaw * 180 / PI, 0, 1, 0);
+    if (round) {
+        box_faces(v3(-r, -r * 0.7f, -r), v3(r, r * 0.7f, r));
+        box_faces(v3(-r * 0.7f, -r, -r * 0.7f), v3(r * 0.7f, r, r * 0.7f));
+    } else {
+        box_faces(v3(-0.36f, 0, -0.24f), v3(0.36f, h - 0.48f, 0.24f));
+        box_faces(v3(-0.23f, h - 0.46f, -0.23f), v3(0.23f, h, 0.23f));
+        box_faces(v3(0.25f, h * 0.45f, -0.75f), v3(0.4f, h * 0.55f, 0.0f));   /* bras et arme */
+    }
+    glPopMatrix();
+    for (int k = 0; k < 4; k++) glDisable(GL_CLIP_PLANE0 + k);
+}
+
+static void draw_dyn_shadows(void) {
+    if (!gfxShadows) return;
+    glDisable(GL_LIGHTING); glDisable(GL_TEXTURE_2D); glDisable(GL_FOG); glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    glDepthFunc(GL_LEQUAL);
+    glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1, -2);
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(GL_EQUAL, 0, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
+    if (appState == APP_GAME && !P.dead && !spectating) shadow_caster_boxes(P.pos, P.yaw, pheight(), 0, 0);
+    for (int i = 0; dmMode && i < MAXP; i++)
+        if (np_present(i)) shadow_caster_boxes(NP[i].disp, NP[i].st.yaw, np_height(i), 0, 0);
+    for (int i = 0; i < MAXE; i++)
+        if (E[i].alive) shadow_caster_boxes(E[i].pos, 0, 0, enemy_radius(E[i].type), 1);
+    for (int i = 0; i < npu; i++)
+        if (PU[i].t <= 0) shadow_caster_boxes(vadd(PU[i].pos, v3(0, 0.15f, 0)), (float)nowT * 1.5f + i, 0, 0.3f, 1);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    glEnable(GL_FOG);
+}
+
+/* ---- bloom : halo autour de ce qui est tres lumineux (copie d'ecran, seuil par carre, flou, ajout) ---- */
+static GLuint bloomScene, bloomA, bloomB;
+static int bloomTW, bloomTH, bloomSW, bloomSH;            /* tailles des textures (puissances de 2) */
+static void bloom_tex(GLuint *t, int w, int h) {
+    if (!*t) glGenTextures(1, t);
+    glBindTexture(GL_TEXTURE_2D, *t);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+}
+static void bloom_quad(float x, float y, float w, float h, float s1, float t1) {   /* repere : pixels, origine en bas */
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex2f(x, y);
+    glTexCoord2f(s1, 0); glVertex2f(x + w, y);
+    glTexCoord2f(s1, t1); glVertex2f(x + w, y + h);
+    glTexCoord2f(0, t1); glVertex2f(x, y + h);
+    glEnd();
+}
+static void bloom_blur(GLuint src, GLuint dst, int horiz, int sw, int sh) {
+    static const float wgt[5] = { 0.07f, 0.24f, 0.38f, 0.24f, 0.07f };
+    float s1 = (float)sw / bloomSW, t1 = (float)sh / bloomSH;
+    glDisable(GL_BLEND);
+    glColor3f(0, 0, 0);
+    glDisable(GL_TEXTURE_2D);
+    bloom_quad(0, 0, (float)sw, (float)sh, 0, 0);
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE);
+    glBindTexture(GL_TEXTURE_2D, src);
+    for (int k = 0; k < 5; k++) {
+        float o = (k - 2) * 1.6f;
+        glColor3f(wgt[k], wgt[k], wgt[k]);
+        bloom_quad(horiz ? o : 0, horiz ? 0 : o, (float)sw, (float)sh, s1, t1);
+    }
+    glBindTexture(GL_TEXTURE_2D, dst);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, sw, sh);
+}
+static void bloom_apply(void) {
+    if (!gfxBloom || winW < 64 || winH < 64) return;
+    int sw = winW / 4, sh = winH / 4;
+    if (pow2up(winW) != bloomTW || pow2up(winH) != bloomTH) {
+        bloomTW = pow2up(winW); bloomTH = pow2up(winH); bloomSW = pow2up(sw); bloomSH = pow2up(sh);
+        bloom_tex(&bloomScene, bloomTW, bloomTH);
+        bloom_tex(&bloomA, bloomSW, bloomSH);
+        bloom_tex(&bloomB, bloomSW, bloomSH);
+    }
+    glMatrixMode(GL_PROJECTION); glLoadIdentity(); glOrtho(0, winW, 0, winH, -1, 1);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+    glDisable(GL_DEPTH_TEST); glDisable(GL_LIGHTING); glDisable(GL_FOG); glDisable(GL_CULL_FACE);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, bloomScene);             /* 1. l'image complete */
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, winW, winH);
+    float ss = (float)winW / bloomTW, st = (float)winH / bloomTH;
+    glDisable(GL_BLEND);                                  /* 2. reduite au quart, puis seuil doux : x^2, puis x^4, x^8 */
+    glColor3f(1, 1, 1);
+    bloom_quad(0, 0, (float)sw, (float)sh, ss, st);
+    glEnable(GL_BLEND); glBlendFunc(GL_DST_COLOR, GL_ZERO);
+    bloom_quad(0, 0, (float)sw, (float)sh, ss, st);
+    glBindTexture(GL_TEXTURE_2D, bloomA);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, sw, sh);
+    bloom_quad(0, 0, (float)sw, (float)sh, (float)sw / bloomSW, (float)sh / bloomSH);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, sw, sh);
+    bloom_quad(0, 0, (float)sw, (float)sh, (float)sw / bloomSW, (float)sh / bloomSH);   /* x^8 : seuls les tons clairs */
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, sw, sh);
+    for (int it = 0; it < 2; it++) {                      /* 3. flou separable, deux fois */
+        bloom_blur(bloomA, bloomB, 1, sw, sh);
+        bloom_blur(bloomB, bloomA, 0, sw, sh);
+    }
+    glDisable(GL_BLEND);                                  /* 4. on remet l'image, puis le halo par-dessus */
+    glColor3f(1, 1, 1);
+    glBindTexture(GL_TEXTURE_2D, bloomScene);
+    bloom_quad(0, 0, (float)winW, (float)winH, ss, st);
+    glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE);
+    glColor3f(0.7f, 0.7f, 0.7f);
+    glBindTexture(GL_TEXTURE_2D, bloomA);
+    bloom_quad(0, 0, (float)winW, (float)winH, (float)sw / bloomSW, (float)sh / bloomSH);
+    glDisable(GL_BLEND);
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_DEPTH_TEST);
+}
+
+/* --shot bench_* : chronometre des etapes du rendu (BT(k) : temps depuis l'etape precedente, ajoute a benchT[k]) */
+static double benchT[12];
+static int benchOn;
+static void BT(int k) {
+    static LARGE_INTEGER last;
+    LARGE_INTEGER n, fq;
+    if (!benchOn) return;
+    glFinish();
+    QueryPerformanceCounter(&n); QueryPerformanceFrequency(&fq);
+    if (k) benchT[k] += (double)(n.QuadPart - last.QuadPart) * 1000.0 / (double)fq.QuadPart;
+    last = n;
+}
 static void render(float alpha, float frameDt) {
+    BT(0);
     glViewport(0, 0, winW, winH);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     float aspect = (float)winW / (float)(winH > 0 ? winH : 1);
 
     float hs = hlen(P.vel);
@@ -10804,8 +11605,6 @@ static void render(float alpha, float frameDt) {
     P.fovCur += (hfov - P.fovCur) * fminf(1, frameDt * 6);
     float hf = fminf(P.fovCur, 150.0f);
     float vfov = 2 * atanf(tanf(hf * PI / 360.0f) / aspect) * 180.0f / PI;
-
-    draw_sky(vfov);
 
     V3 pos = vlerp(P.prevPos, P.pos, alpha);
     V3 eye = v3(pos.x, pos.y + P.eyeH + P.bob + P.stepOfs - P.landDip, pos.z);
@@ -10833,44 +11632,23 @@ static void render(float alpha, float frameDt) {
     glFogf(GL_FOG_START, 50);
     glFogf(GL_FOG_END, 240);
 
-    GLfloat lp[4] = { 0.35f, 1.0f, 0.22f, 0 }, amb[4] = { 0.42f, 0.42f, 0.5f, 1 }, dif[4] = { 0.7f, 0.66f, 0.6f, 1 };
-    glLightfv(GL_LIGHT0, GL_POSITION, lp);
-    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, amb);
-    glLightfv(GL_LIGHT0, GL_DIFFUSE, dif);
+    set_dyn_light(1);
     GLfloat lp1[4] = { -0.4f, 0.3f, -0.5f, 0 }, dif1[4] = { 0.16f, 0.18f, 0.24f, 1 };   /* lumiere d'appoint, froide */
     glLightfv(GL_LIGHT1, GL_POSITION, lp1);
     glLightfv(GL_LIGHT1, GL_DIFFUSE, dif1);
-    {                                                     /* etoiles et soleil, accroches a la camera */
-        glDisable(GL_FOG); glDisable(GL_DEPTH_TEST);
-        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-        unsigned int seed = 99;
-        glPointSize(2);
-        glBegin(GL_POINTS);
-        for (int i = 0; i < 160; i++) {
-            float a, b, c;
-            seed = seed * 1664525u + 1013904223u; a = (seed >> 8) / 16777216.0f * 2 - 1;
-            seed = seed * 1664525u + 1013904223u; b = (seed >> 8) / 16777216.0f;
-            seed = seed * 1664525u + 1013904223u; c = (seed >> 8) / 16777216.0f * 2 - 1;
-            V3 d = vnorm(v3(a, b * 0.8f + 0.12f, c));
-            float tw = 0.5f + 0.5f * sinf(gameTime * 2 + i);
-            glColor4f(0.8f, 0.85f, 1.0f, 0.35f + 0.4f * tw * (d.y));
-            glVertex3f(eye.x + d.x * 300, eye.y + d.y * 300, eye.z + d.z * 300);
-        }
-        glEnd();
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, texDot);
-        V3 sun = vadd(eye, vmul(vnorm(v3(0.55f, 0.16f, -0.82f)), 300));
-        glBegin(GL_QUADS);
-        glColor4f(1.0f, 0.55f, 0.35f, 0.35f); billboard(sun, 120);
-        glColor4f(1.0f, 0.75f, 0.5f, 0.8f); billboard(sun, 30);
-        glEnd();
-        glDisable(GL_TEXTURE_2D);
-        glDisable(GL_BLEND);
-        glEnable(GL_DEPTH_TEST); glEnable(GL_FOG);
-    }
+    viewSun += (sun_vis(eye) - viewSun) * fminf(1, frameDt * 5);
+    BT(1);
+    draw_sky_dome(eye);
+    BT(2);
+    glCallList(skylineList);
+    BT(3);
     glCallList(worldList);
+    BT(4);
+    draw_dyn_shadows();
+    BT(5);
 
-    /* ombres sous les ennemis */
+    /* ombres sous les ennemis (sans les ombres dynamiques) */
+    if (!gfxShadows) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
@@ -10891,9 +11669,11 @@ static void render(float alpha, float frameDt) {
     glDepthMask(GL_TRUE);
     glDisable(GL_TEXTURE_2D);
     glDisable(GL_BLEND);
+    }
 
-    for (int i = 0; i < MAXE; i++) if (E[i].alive) draw_enemy(&E[i]);
+    for (int i = 0; i < MAXE; i++) if (E[i].alive) { set_dyn_light(sun_vis(E[i].pos)); draw_enemy(&E[i]); }
     if (dmMode) draw_remote_players();
+    set_dyn_light(1);
     glEnable(GL_LIGHTING);
     for (int i = 0; i < MAXSH; i++) {                    /* eclats qui rebondissent */
         Shard *h = &SH[i];
@@ -11049,7 +11829,11 @@ static void render(float alpha, float frameDt) {
     glDisable(GL_BLEND);
     glDisable(GL_FOG);
 
+    BT(6);
     if (appState == APP_GAME && !spectating) draw_viewmodel(aspect);
+    BT(7);
+    bloom_apply();
+    BT(8);
     if (impactT > 0 && appState == APP_GAME) {           /* IMPACT FRAME : couleurs inversees + traits radiaux */
         float sx = winW * 0.5f, sy = winH * 0.5f;
         project(impactAt, &sx, &sy);
@@ -11076,7 +11860,9 @@ static void render(float alpha, float frameDt) {
         glEnable(GL_DEPTH_TEST);
         impactT -= frameDt;
     }
+    BT(9);
     draw_hud();
+    BT(10);
 }
 
 /* ------------------------------------------------------------------ */
@@ -11130,6 +11916,7 @@ static int in_key_down(int sc, int repeat) {
             if (uiFocus) uiFocus = 0;
             else if (settingsOpen) { settingsOpen = 0; cfg_save(); }
             else if (loadoutOpen) { loadoutOpen = 0; cfg_save(); }
+            else if (hostOpen) { hostOpen = 0; cfg_save(); }
             else if (appState == APP_JOIN) pendingAction = ACT_BACK;
             else set_capture(0);
         }
@@ -11146,6 +11933,7 @@ static void in_key_up(int sc) { keys[sc] = 0; }
 
 static void in_char(int c) {                              /* saisie du pseudo et de l'IP */
     if (!uiFocus) return;
+    if (appState == APP_GAME && captured) { uiFocus = 0; return; }   /* en jeu, les touches ne vont jamais au pseudo */
     char *f = uiFocus == 1 ? myName : ipField;
     int cap = uiFocus == 1 ? 15 : 31, len = (int)strlen(f);
     if (c == 8) { if (len) f[len - 1] = 0; }
@@ -11427,6 +12215,7 @@ static void egide_test_lan(V3 t, int shield, float yaw) {
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
 static void run_tests(const char *path) {
+    botAimTest = 1;
     FILE *f = fopen(path, "w");
     if (!f) return;
     build_level();
@@ -13788,6 +14577,82 @@ static void run_tests(const char *path) {
         memset(NP, 0, sizeof NP);
     }
 
+    {                                                     /* visee des bots : tirs cadres selon le niveau, sinon ils frolent */
+        int lv0 = botLevel;
+        for (int lv = 0; lv < 3; lv++) {
+            int hits = 0, nearMiss = 0;
+            botLevel = lv;
+            for (int k = 0; k < 2000; k++) {
+                float ox, oy;
+                if (bot_roll_aim(20, &ox, &oy)) hits++;
+                else if (fabsf(ox) > 0.45f && fabsf(ox) < 1.5f) nearMiss++;
+            }
+            fprintf(f, "visee bot niveau %d a 20 m : cadres %.0f%%, rates qui frolent (0,45 a 1,5 m) %.0f%% des rates (attendu ~%.0f%%, 100%%)\n",
+                    lv, hits / 20.0f, 100.0f * nearMiss / fmaxf(1, 2000 - hits), botHitP[lv] * 90);
+        }
+        botLevel = lv0;
+    }
+    {                                                     /* eclairage precalcule : ombre portee de la tour, soleil */
+        float lit[3], sh[3];
+        lm_grid_build();
+        lm_light(v3(ms(6), 4, -ms(6)), v3(0, 1, 0), 1, lit);    /* plateforme centrale, cote soleil */
+        lm_light(v3(-4, 4, 6), v3(0, 1, 0), 1, sh);             /* meme plateforme, derriere la tour */
+        fprintf(f, "eclairage : sol au soleil %.2f, a l'ombre de la tour %.2f, soleil visible %.0f / %.0f (attendu > 1.5x, 1 / 0)\n",
+                lit[1], sh[1], sun_vis(v3(ms(6), 4.1f, -ms(6))), sun_vis(v3(-4, 4.1f, 6)));
+    }
+    {                                                     /* equipes 2v2 : arrivee equilibree, pas de tir allie, victoire d'equipe */
+        int nm0 = netMode, dm0 = dmMode, id0 = myId;
+        netMode = NET_HOST; dmMode = 1; myId = 0; matchOver = 0; teamSize = 2; fragLimit = team_frag_limit(2);
+        memset(NP, 0, sizeof NP);
+        NP[0].active = NP[0].alive = 1; NP[0].hp = 100; NP[0].team = 0; snprintf(NP[0].name, 16, "Hote");
+        for (int k = 0; k < 4; k++) {                     /* 3 places libres, la 4e arrivee est refusee */
+            PkJoin pj;
+            struct sockaddr_in from;
+            memset(&pj, 0, sizeof pj); memset(&from, 0, sizeof from);
+            from.sin_family = AF_INET; from.sin_port = htons((unsigned short)(41000 + k)); from.sin_addr.s_addr = htonl(0x0A000002);
+            snprintf(pj.name, sizeof pj.name, "J%d", k + 1);
+            host_on_join(&pj, &from);
+        }
+        int act = 0;
+        for (int i = 0; i < MAXP; i++) act += NP[i].active;
+        fprintf(f, "equipes arrivee : actifs=%d equipes %d%d%d%d, bleus=%d rouges=%d (attendu 4, 0101, 2, 2)\n", act,
+                NP[0].team, NP[1].team, NP[2].team, NP[3].team, team_count(0), team_count(1));
+        for (int i = 0; i < 4; i++) { NP[i].alive = 1; NP[i].hp = 100; NP[i].disp = v3(-20, 0, 20.0f + 8 * i); }
+        NetEvent e;
+        memset(&e, 0, sizeof e);
+        e.kind = EV_HIT; e.from = 2; e.target = 0; e.sub = W_RAIL; e.f[0] = 50;
+        int cancel = host_handle(&e);
+        float hpAlly = NP[0].hp;
+        e.from = 1;
+        host_handle(&e);
+        float hpEnemy = NP[0].hp;
+        e.from = 0; e.sub = W_SELF; e.f[0] = 10;
+        host_handle(&e);
+        fprintf(f, "equipes tir allie : annule=%d PV=%.0f ; tir ennemi PV=%.0f ; degats sur soi PV=%.0f (attendu 1, 100, 50, 40)\n",
+                cancel, hpAlly, hpEnemy, NP[0].hp);
+        fprintf(f, "equipes cibles : allie cible=%d dessine=%d, ennemi cible=%d (attendu 0, 1, 1)\n", np_target(2), np_present(2), np_target(1));
+        V3 sb = pick_spawn(2), sr = pick_spawn(3);
+        fprintf(f, "equipes spawns : bleu z=%.0f, rouge z=%.0f (attendu < 0, > 0)\n", sb.z, sr.z);
+        NP[0].kills = 10; NP[2].kills = 9; NP[1].kills = 12;   /* aucun joueur n'a 20, mais l'equipe bleue y arrive */
+        host_kill(2, 1, W_RAIL);
+        fprintf(f, "equipes victoire : limite=%d score bleu=%d rouge=%d fin=%d gagnant=%d (attendu 20, 20, 12, 1, 0)\n",
+                fragLimit, team_score(0), team_score(1), matchOver, matchWinner);
+        PkSnap sn;                                         /* le mode et les equipes voyagent dans le snapshot */
+        memset(&sn, 0, sizeof sn);
+        sn.teamSize = 3; sn.fragLimit = 25;
+        for (int i = 0; i < 4; i++) { sn.p[i].active = 1; sn.p[i].team = (unsigned char)(i & 1 ? 0 : 1); }
+        myId = 7;
+        apply_snap(&sn);
+        fprintf(f, "equipes snapshot : mode=%d equipes %d%d%d%d (attendu 3, 1010)\n", teamSize, NP[0].team, NP[1].team, NP[2].team, NP[3].team);
+        memset(NP, 0, sizeof NP);                         /* un depart laisse 3 contre 1 : reequilibre au match suivant */
+        teamSize = 2; myId = 0;
+        for (int i = 0; i < 4; i++) { NP[i].active = 1; NP[i].team = (unsigned char)(i == 3); }
+        host_balance_teams();
+        fprintf(f, "equipes reequilibrage : bleus=%d rouges=%d (attendu 2, 2)\n", team_count(0), team_count(1));
+        memset(NP, 0, sizeof NP);
+        teamSize = 0; matchOver = 0; fragLimit = FRAG_LIMIT;
+        netMode = nm0; dmMode = dm0; myId = id0;
+    }
     for (int lv = 0; lv <= 4; lv += 4) {                  /* musique : 4 s de kicks (niveau 0 = 172 BPM, niveau 4 = 188 BPM), signal borne */
         int kicks = 0, bad = 0; float peak = 0, prevK = 0;
         music_set(0, lv);
@@ -13843,6 +14708,10 @@ static void music_follow_game(void) {
             if (NP[i].kills > lead) { second = lead; lead = NP[i].kills; }
             else if (NP[i].kills > second) second = NP[i].kills;
         }
+        if (teamSize > 0) {                               /* equipes : les deux scores d'equipe */
+            int a = team_score(0), b = team_score(1);
+            lead = a > b ? a : b; second = a > b ? b : a;
+        }
         lvl = music_pvp_level(lead, second, fragLimit);
     } else if (appState == APP_GAME) {
         lvl = wave - 1;
@@ -13851,10 +14720,11 @@ static void music_follow_game(void) {
 }
 
 static void do_action(void) {
+    uiFocus = 0;                                          /* une action quitte toujours la saisie de texte */
     int a = pendingAction;
     pendingAction = ACT_NONE;
     if (!myName[0]) snprintf(myName, sizeof myName, "joueur");
-    if (a == ACT_SOLO || a == ACT_HOST || a == ACT_BROWSE || a == ACT_QUICK) cfg_save();
+    if (a == ACT_SOLO || a == ACT_HOST || a == ACT_BROWSE || a == ACT_QUICK || a == ACT_VSBOT) cfg_save();
     switch (a) {
     case ACT_SOLO:
         net_shutdown(); reset_game(); appState = APP_GAME; set_capture(1);
@@ -13866,40 +14736,39 @@ static void do_action(void) {
     case ACT_BROWSE:
         if (net_browse_start()) { appState = APP_JOIN; netStatus[0] = 0; }
         break;
-    case ACT_VSBOT:                                       /* heberge en local, puis lance un bot (autre processus) qui nous rejoint */
+    case ACT_VSBOT: {                                     /* heberge en local, puis lance les bots (autres processus) qui nous rejoignent */
         if (!net_host_start()) break;
+        int lv = pendingArg < 0 ? 0 : pendingArg > 2 ? 2 : pendingArg;
+        int nBots = teamSize > 0 ? host_max_players() - 1 : 1, ok = 0;   /* equipes : toutes les places libres */
+        for (int k = 0; k < nBots && k < MAXP; k++) {
+            char nm[48];
+            if (nBots > 1) snprintf(nm, sizeof nm, "Bot%d_%s", k + 1, botLevelNames[lv]);
+            else snprintf(nm, sizeof nm, "Bot_%s", botLevelNames[lv]);
 #ifndef _WIN32
-        {
-            char exe[MAX_PATH], lvs[8], nm[48];
+            char exe[MAX_PATH], lvs[8];
             uint32_t exeLen = sizeof exe;
-            int lv = pendingArg < 0 ? 0 : pendingArg > 2 ? 2 : pendingArg;
             snprintf(lvs, sizeof lvs, "%d", lv);
-            snprintf(nm, sizeof nm, "Bot_%s", botLevelNames[lv]);
             char *argv[] = { exe, "--bot", "join", "--local", "--hidden", "--nolan", "--level", lvs, "--name", nm,
                              "--time", "1000000", NULL };
             extern char **environ;
-            if (_NSGetExecutablePath(exe, &exeLen) == 0 && posix_spawn(&botProc, exe, NULL, NULL, argv, environ) == 0) {
-                vsBot = 1; botLevel = lv;
-                appState = APP_GAME; set_capture(1);
-            } else { botProc = 0; set_status("impossible de lancer le bot"); net_shutdown(); }
-        }
+            if (_NSGetExecutablePath(exe, &exeLen) == 0 && posix_spawn(&botProc[k], exe, NULL, NULL, argv, environ) == 0) ok++;
+            else botProc[k] = 0;
 #else
-        {
             char exe[MAX_PATH], cmd[MAX_PATH + 160];
             STARTUPINFOA si = { sizeof si };
             PROCESS_INFORMATION pi;
-            int lv = pendingArg < 0 ? 0 : pendingArg > 2 ? 2 : pendingArg;
             GetModuleFileNameA(NULL, exe, sizeof exe);
-            snprintf(cmd, sizeof cmd, "\"%s\" --bot join --local --hidden --nolan --level %d --name Bot_%s --time 1000000",
-                     exe, lv, botLevelNames[lv]);
+            snprintf(cmd, sizeof cmd, "\"%s\" --bot join --local --hidden --nolan --level %d --name %s --time 1000000", exe, lv, nm);
             if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
                 CloseHandle(pi.hThread);
-                botProc = pi.hProcess; vsBot = 1; botLevel = lv;
-                appState = APP_GAME; set_capture(1);
-            } else { set_status("impossible de lancer le bot"); net_shutdown(); }
-        }
+                botProc[k] = pi.hProcess; ok++;
+            }
 #endif
+        }
+        if (ok) { vsBot = 1; botLevel = lv; appState = APP_GAME; set_capture(1); }
+        else { set_status("impossible de lancer le bot"); net_shutdown(); }
         break;
+    }
     case ACT_JOIN_FOUND:
         join_found(pendingArg, 0);
         break;
@@ -13944,6 +14813,31 @@ static void do_action(void) {
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     (void)prev;
 #else
+/* --shot bench_dm.bmp : temps de rendu moyen (ms) par reglage graphique, ecrit dans bench_dm.bmp.txt */
+static void bench_render(const char *path) {
+    char out[300];
+    snprintf(out, sizeof out, "%s.txt", path);
+    FILE *f = fopen(out, "w");
+    if (!f) return;
+    static const char *names[4] = { "tout", "sans bloom", "sans ombres", "sans les deux" };
+    for (int cfg = 0; cfg < 4; cfg++) {
+        gfxBloom = !(cfg & 1); gfxShadows = !(cfg & 2);
+        LARGE_INTEGER fq, t0, t1;
+        QueryPerformanceFrequency(&fq);
+        for (int i = 0; i < 20; i++) { render(1, TICK); glFinish(); }
+        QueryPerformanceCounter(&t0);
+        for (int i = 0; i < 200; i++) { P.yaw += 0.01f; render(1, TICK); glFinish(); }
+        QueryPerformanceCounter(&t1);
+        fprintf(f, "%-14s %.2f ms/image (%dx%d)\n", names[cfg], (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / fq.QuadPart / 200, winW, winH);
+    }
+    benchOn = 1; gfxBloom = gfxShadows = 1;
+    for (int i = 0; i < 100; i++) render(1, TICK);
+    static const char *sec[11] = { "", "debut/camera", "ciel", "ville", "monde", "ombres", "entites+additif", "arme", "bloom", "impact", "hud" };
+    for (int k = 1; k <= 10; k++) fprintf(f, "  %-16s %.2f ms\n", sec[k], benchT[k] / 100);
+    fprintf(f, "precalcul des lightmaps : %.0f ms\n", lmBakeMs);
+    fclose(f);
+}
+
 static int velocity_main(const char *cmd) {
 #endif
     memcpy(binds, bindDefault, sizeof binds);
@@ -13975,6 +14869,7 @@ static int velocity_main(const char *cmd) {
             else if (!strcmp(t, "--spec")) botSpec = 1;
             else if (!strcmp(t, "--local")) botLocal = 1;
             else if (!strcmp(t, "--hidden")) botHidden = 1;
+            else if (!strcmp(t, "--teams") && (t = strtok(NULL, " "))) wantTeams = atoi(t) < 0 ? 0 : atoi(t) > TEAM_MAX ? TEAM_MAX : atoi(t);
             else if (!strcmp(t, "--level") && (t = strtok(NULL, " "))) botLevel = atoi(t) < 0 ? 0 : atoi(t) > 2 ? 2 : atoi(t);
             else if (!strcmp(t, "--loadout") && (t = strtok(NULL, " "))) {   /* --loadout arme1,arme2[,melee] (WP_*, WP_*, MK_*) */
                 int l0, l1, mk, n = sscanf(t, "%d,%d,%d", &l0, &l1, &mk);
@@ -14031,6 +14926,7 @@ static int velocity_main(const char *cmd) {
     glEnable(GL_LIGHT1);                                      /* lumiere d'appoint froide, cf. render/draw_viewmodel */
     glEnable(GL_COLOR_MATERIAL);
     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+    glEnable(GL_NORMALIZE);                                   /* l'arme en main est mise a l'echelle : sinon le reflet explose */
     {                                                          /* leger reflet specular, decors et armes */
         GLfloat spec[4] = { 0.22f, 0.22f, 0.25f, 1 };
         glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, spec);
@@ -14041,9 +14937,10 @@ static int velocity_main(const char *cmd) {
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     glHint(GL_FOG_HINT, GL_NICEST);
     make_font(0, 18); make_font(1, 28); make_font(2, 56);
+    for (int i = 0; i < 3; i++) make_font_atlas(i);
     make_textures();
     build_level();
-    build_world_list();
+    if (!botHidden || botShot[0]) build_world_list();       /* un bot cache ne dessine rien : pas de lightmaps */
     make_sounds();
     {                                                     /* velocity.ini, a cote de l'executable */
 #ifdef _WIN32
@@ -14064,11 +14961,24 @@ static int velocity_main(const char *cmd) {
     if (!shotMode && !botHidden) { audio_init(); music_set(0, 0); }
     reset_game();
 
-    if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu") || strstr(shotPath, "loadout"))) {   /* captures des menus */
+    if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu") || strstr(shotPath, "loadout") ||
+                     strstr(shotPath, "heberger"))) {   /* captures des menus */
         appState = APP_MENU;
         menu_backdrop();
         if (strstr(shotPath, "settings")) { settingsOpen = 1; waitAct = A_COIN; waitSlot = 1; }
         if (strstr(shotPath, "loadout")) loadoutOpen = 1;
+        if (strstr(shotPath, "heberger")) { hostOpen = 1; wantTeams = 2; hostBots = 1; }
+        render(1, TICK);
+        save_bmp(shotPath);
+        return 0;
+    }
+    if (shotMode && strstr(shotPath, "sansbloom")) gfxBloom = 0;   /* captures de comparaison des graphismes */
+    if (shotMode && strstr(shotPath, "sansombre")) gfxShadows = 0;
+    if (shotMode && strstr(shotPath, "arene")) {          /* vue d'ensemble de la carte (eclairage, ombres) */
+        appState = APP_GAME;
+        reset_game();
+        P.pos = P.prevPos = v3(-ms(46), 20, ms(46)); P.yaw = 0.75f; P.pitch = -0.38f; P.hp = 100;
+        if (strstr(shotPath, "2")) { P.pos = P.prevPos = v3(ms(40), 9, -ms(20)); P.yaw = -2.2f; P.pitch = -0.25f; }
         render(1, TICK);
         save_bmp(shotPath);
         return 0;
@@ -14083,6 +14993,13 @@ static int velocity_main(const char *cmd) {
         snprintf(NP[2].name, 16, "Ninja"); NP[2].active = NP[2].alive = 1; NP[2].kills = 1; NP[2].deaths = 4;
         NP[2].disp = v3(5, 4, 6); NP[2].st.yaw = PI + 0.6f; NP[2].st.pitch = -0.2f;
         kfeed_add(1, 2, W_MELEE, 0); kfeed_add(0, 2, W_RAIL, 0); kfeed_add(-1, 1, 0, 1);
+        if (strstr(shotPath, "equipes")) {                /* 2v2 : Ninja est mon allie (bleu), Rival et Ombre en face */
+            teamSize = 2; fragLimit = team_frag_limit(2);
+            NP[0].team = 0; NP[1].team = 1; NP[2].team = 0;
+            snprintf(NP[3].name, 16, "Ombre"); NP[3].active = NP[3].alive = 1; NP[3].team = 1; NP[3].kills = 2;
+            NP[3].disp = v3(9, 0, 4); NP[3].st.yaw = PI + 0.3f;
+            if (strstr(shotPath, "fin")) { matchOver = 1; matchWinner = 0; matchEndT = 6; NP[0].kills = 11; NP[2].kills = 9; }
+        }
         if (strstr(shotPath, "enclume")) {                /* adversaires a l'Enclume : coup au sol et pique */
             NP[1].st.pad = MK_ANVIL;
             NP[2].st.pad = MK_ANVIL | ST_SLAM; NP[2].disp = v3(-2, 5, 12); vf(NP[2].st.vel, v3(0, -34, 0));
@@ -14112,6 +15029,7 @@ static int velocity_main(const char *cmd) {
             P.meleeKind = MK_SHIELD; P.shieldState = SHS_UP; P.shieldAnim = 1; P.shieldGauge = 80;   /* et le mien leve */
         }
         P.pos = P.prevPos = v3(0, 0, 24); P.yaw = -0.1f; P.pitch = 0.08f; P.hp = 100;
+        if (strstr(shotPath, "bas")) { P.yaw = -0.45f; P.pitch = -0.32f; }   /* regard vers le sol : ombres des joueurs */
         if (strstr(shotPath, "eventail")) {               /* Rival a l'Eventail : son tir recu (traceurs recalcules) */
             NP[1].st.weapon = WP_SHOTGUN; NP[1].st.flags = 0; NP[1].st.melee = 0;
             NetEvent e = ev_new(EV_SHOT);
@@ -14129,6 +15047,7 @@ static int velocity_main(const char *cmd) {
             tesla_fx_tick(TICK);
         }
         matchT = 95;
+        if (strstr(shotPath, "bench")) { bench_render(shotPath); return 0; }
         render(1, TICK);
         save_bmp(shotPath);
         return 0;
@@ -14324,13 +15243,21 @@ static int velocity_main(const char *cmd) {
             mdx = mdy = 0;
             memset(latch, 0, sizeof latch);
         }
-        render((captured || dmMode) && appState == APP_GAME ? acc / TICK : 1.0f, dt);
-        uiClick = 0;
-#ifdef _WIN32
-        SwapBuffers(hdc);
+        if (botHidden) {                                  /* bot cache : personne ne le regarde, pas de rendu ; */
+#ifdef _WIN32                                             /* boucle limitee (~250 Hz) pour laisser la machine au joueur */
+            Sleep(4);
 #else
-        mac_swap();
+            usleep(4000);
 #endif
+        } else {
+            render((captured || dmMode) && appState == APP_GAME ? acc / TICK : 1.0f, dt);
+            uiClick = 0;                                  /* apres le rendu : les boutons (mode immediat) ont vu le clic */
+#ifdef _WIN32
+            SwapBuffers(hdc);
+#else
+            mac_swap();
+#endif
+        }
         tesla_audio();                                    /* Tesla : boucles sonores des arcs */
         music_follow_game();
         audio_update();

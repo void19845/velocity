@@ -1,5 +1,10 @@
 # Plan — mode par équipes (3 contre 3)
 
+> **Statut (30/10/2026) : implémenté**, de 1v1 à 4v4 (étapes 1 à 6, 8, 9 ; l'étape 7 en partie : le salon en ligne
+> annonce le mode dans son nom et son `max`, la partie rapide reste en chacun pour soi). Détails : `docs/CODE.md` §3.11.
+> Décisions prises : carte actuelle (bleus au nord, rouges au sud) ; un départ laisse le déséquilibre jusqu'au match
+> suivant, qui rééquilibre ; aucun dégât de zone sur un allié ; pas de choix d'équipe en V1 (équilibrage automatique).
+
 Objectif : un mode équipe (3v3) à côté du deathmatch libre actuel, sans rien casser de l'existant.
 L'hôte reste autoritaire comme aujourd'hui ; on ajoute une notion d'équipe au-dessus du protocole
 réseau déjà en place.

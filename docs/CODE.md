@@ -309,7 +309,7 @@ vitesse **relative** : foncer sur quelqu'un qui fonce sur vous frappe très fort
 
 ### 3.6 Effets visuels
 
-> Une autre session retouche actuellement ces effets : vérifiez les noms dans `main.c`.
+> Éclairage, ombres, ciel et bloom : voir §3.12.
 
 | Effet | Données | Créer | Mettre à jour | Dessiner |
 |---|---|---|---|---|
@@ -385,6 +385,7 @@ F2/F3 (sensibilité), F11 (plein écran), R (recommencer en solo, `latch[SC_R]`)
 ### 3.9 Réglages et `velocity.ini`
 
 - Variables : `myName`, `sens`, `fovBase`, `masterVol`, `invertY`, `showFps`, `fullscreen`,
+  `wantTeams` (`teams=`), `gfxShadows` (`shadows=`), `gfxBloom` (`bloom=`),
   `impactFrames`, `screenFx`, et les `binds`.
 - Fichier : `velocity.ini` **à côté de l'exécutable** (chemin `cfgPath`, calculé avec
   `GetModuleFileNameA` dans `WinMain`). Format `cle=valeur`, une par ligne, `#` pour un commentaire :
@@ -422,6 +423,59 @@ F2/F3 (sensibilité), F11 (plein écran), R (recommencer en solo, `latch[SC_R]`)
   l'impact frame et enfin `draw_hud`.
 
 ---
+
+### 3.11 Mode équipes (1v1 à 4v4)
+
+- **Choix** : écran HEBERGER UNE PARTIE (`draw_host_menu`, `hostOpen`) : NOMBRE DE JOUEURS (LIBRE / 1V1 / 2V2 /
+  3V3 / 4V4 → `wantTeams`, `teams=` dans `velocity.ini`, `--teams N` pour un bot hôte), COMPLETER AVEC DES BOTS
+  (`hostBots` : aucun ou un niveau), puis LANCER (`ACT_HOST`, ou `ACT_VSBOT` avec des bots). `net_host_start`
+  copie `wantTeams` dans **`teamSize`** (0 = chacun pour soi). Une PARTIE RAPIDE et le duel « joueur contre
+  bot » du menu principal (`hostFfa`) sont toujours en chacun pour soi.
+- **Données** : `NP[i].team` (0 bleue, 1 rouge). L'hôte (id 0) est bleu ; `host_on_join` met chaque arrivant
+  dans l'équipe la moins nombreuse et refuse au-delà de `host_max_players()` = 2 × `teamSize`.
+  `host_balance_teams` (au début de chaque match) corrige un écart de 2 ou plus après un départ.
+  `teamSize` et `SnapP.team` voyagent dans `PkSnap` ; `PkAnnounce.teams` annonce le mode en LAN ; en ligne,
+  le nom du salon finit par `_2V2` et `max` = 2 × `teamSize`.
+- **Pas de dégâts entre alliés** : `same_team(a, b)`. `np_target(i)` exclut les alliés : aucune arme, aucun
+  souffle, aucune aide à la visée, aucun bot ne les vise (les roquettes et la Tesla les traversent).
+  `np_present(i)` = joueur à **dessiner** (alliés compris). Filet de sécurité : `host_handle` annule tout
+  `EV_HIT` entre alliés (sauf `W_SELF`).
+- **Score** : `team_score(t)` = somme des frags de l'équipe. Limite `team_frag_limit(n)` =
+  `TEAM_FRAG_BASE` + `TEAM_FRAG_PER` × n (2v2 : 20, 3v3 : 25, 4v4 : 30). `host_kill` termine le match quand
+  l'équipe du tueur l'atteint ; à `MATCH_TIME`, la meilleure équipe gagne (`TEAM_DRAW` = égalité).
+  En équipes, `matchWinner` est une **équipe** (texte : `winner_text`).
+- **Spawns** : `pick_spawn` prend dans `teamPts` (bleus au nord, z < 0 ; rouges au sud, miroir), le plus loin
+  des **ennemis**.
+- **Affichage** : `pcolor(i)` (couleur d'équipe, éclaircie selon le rang) remplace `pcol[i]` ; scores des deux
+  camps en haut au centre ; `draw_team_scoreboard` ; noms des alliés visibles à travers les murs (chevron) ;
+  fil des kills teinté ; musique : `music_pvp_level` reçoit les deux scores d'équipe.
+- **Contre des bots** (`ACT_VSBOT`) : en équipes, lance `host_max_players() - 1` bots (`botProc[]`) qui
+  remplissent les deux camps (2v2 : toi + 1 bot contre 2 bots).
+
+### 3.12 Éclairage, ombres, ciel, bloom
+
+- **Lightmaps précalculées** (`bake_lightmaps`, appelé par `build_world_list`, ~0,25 s) : une texture par
+  face visible de boîte (`lmaps[boite][face]`, `LM_DENS` = 3 texels/m, `face_hidden` saute les faces enfouies
+  ou hors de l'arène). `lm_light` : soleil (`sun_dir`, ombre portée par `ray_world`) + ciel × occlusion
+  ambiante (`AO_RAYS` rayons courts via la grille `lm_grid_build`/`ray_near`) + rebond du sol + lueur cyan des
+  jump pads. Flou 1-2-1. Le monde est dessiné **sans** éclairage OpenGL, puis la lightmap est multipliée ×2
+  (`GL_DST_COLOR, GL_SRC_COLOR`, 0,5 = neutre ; brouillard gris pour cette passe, blanc pour le grain).
+- **Objets mobiles** : `set_dyn_light(vis)` règle `GL_LIGHT0` sur le soleil, atténué si `sun_vis(p)` = 0
+  (joueurs distants, ennemis) ; l'arme en main suit `viewSun` (lissé). `GL_NORMALIZE` est activé (l'arme
+  est mise à l'échelle, sinon le reflet spéculaire explose).
+- **Ombres dynamiques** (`draw_dyn_shadows`, réglage `shadows=`) : silhouettes (moi, joueurs, ennemis,
+  cellules) aplaties sur le dessus de la boîte qui les reçoit le long du soleil (`shadow_caster_boxes`),
+  découpées par `glClipPlane`, assombries une seule fois grâce au **stencil**.
+- **Ciel** : `draw_sky_dome` (dôme dégradé `sky_color`, lueur autour du soleil, étoiles, disque solaire) et
+  ville lointaine `skylineList` (`build_skyline_list`, décor sans collision).
+- **Bloom** (`bloom_apply`, réglage `bloom=`) : copie de l'image, réduction au quart, seuil doux (x^8 par
+  multiplications), flou séparable, ajout. Fait avant l'impact frame et le HUD.
+- **Texte** : `glBitmap` (polices de `make_font`) est très lent sur certains pilotes (12 ms/image sur macOS). Au
+  démarrage, `make_font_atlas` dessine les 224 glyphes une fois, les relit (`glReadPixels`, par lots si la fenêtre
+  est petite) dans un atlas `GL_ALPHA` ; `text` dessine ensuite des quads texturés, au pixel près.
+- **Mesurer** : `--shot bench_dm.bmp` (ou `bench_dm_equipes.bmp`…) écrit `bench_dm.bmp.txt` : ms/image avec et sans
+  bloom/ombres, puis le détail par étape (`BT(k)` dans `render`). Référence (MacBook Air, 1372×891) : ~1,9 ms/image.
+- **Bots cachés** (`--hidden`, ceux de « contre des bots ») : aucun rendu ni lightmap, boucle limitée à ~250 Hz.
 
 ## 4. Réseau LAN
 
@@ -747,7 +801,7 @@ Une version différente rend simplement les parties invisibles l'une à l'autre.
 | `PVP_SCALE` | 0,7 | dégâts contre les joueurs = 70 % des dégâts contre les monstres |
 | `KILL_HEAL` | 30 PV | soin du tueur |
 | `NET_MAGIC` | `0x564C4F43` | signature des paquets (« VLOC ») |
-| `NET_VER` | 11 | version du protocole (voir §4) |
+| `NET_VER` | 12 | version du protocole (voir §4) ; 12 = équipes dans `PkSnap` / `PkAnnounce` |
 | `MAXSPEC` | 4 | spectateurs en direct sur l'hôte |
 | `MAXFOUND` | 12 | parties mémorisées (LAN + en ligne ; 7 affichées) |
 | `LOBBY_DEFAULT` | `velocity-lobby.velocity-void.workers.dev` | adresse du lobby déployé (`lobby=` dans `velocity.ini` la remplace) |
@@ -781,6 +835,9 @@ main tout de suite : utilisez `start /wait`.
   `pickup_tick`, `host_handle`, `bot_think` + `game_tick`, `cfg_save`/`cfg_load`…).
 - Chaque ligne écrit les valeurs mesurées puis `(attendu ...)` : **la comparaison est à faire à la
   main** (rien ne signale automatiquement un échec).
+- Équipes et éclairage : lignes `equipes …` (arrivée équilibrée, tir allié annulé, cibles, spawns, victoire
+  d'équipe, snapshot, rééquilibrage) et `eclairage …` (ombre de la tour). Match en équipes :
+  `--bot host --teams 2` puis 3 `--bot join` (pour ne pas publier sur le vrai lobby : `--lobby 127.0.0.1:9`).
 - Scénarios actuels : escalier, jump pads est et nord, bhop + air-strafe, rocket jump, grappin vers un
   mur, lâcher en vol, grappin sur un drone, épée à 0 et 20 m/s, parry d'une orbe, chaîne de tir,
   recharges, pièces (1 et 2 ricochets), vitesse du grappin, puis un **LAN simulé** sans socket
@@ -814,13 +871,17 @@ Ouvre la fenêtre sans l'activer, prépare une scène, la dessine une fois (`ren
 | `rail` (avec la scène par défaut) | la même, arme en main = railgun |
 | `impact` | kill au rail à pleine vitesse, capturé pendant l'impact frame |
 | `fx` | idem, 14 ticks plus tard sans l'impact frame (éclats, chiffres de dégâts, lignes de vitesse) |
+| `arene` / `arene2` | vue d'ensemble de la carte (lightmaps, ombres portées, ciel) |
+| `heberger` | écran HEBERGER UNE PARTIE (2v2, bots normaux) |
+| `dm_equipes` | scène de deathmatch en 2v2 (HUD d'équipes, allié marqué) ; `_fin` : fin de match ; `_bas` : regard vers le sol (ombres des joueurs) |
+| `sansbloom` / `sansombre` | (à combiner) coupe le bloom / les ombres dynamiques pour comparer |
 
 Pas de son, `velocity.ini` n'est ni lu ni écrit.
 
 ### Mode bot : `--bot host|join`
 
 ```
-velocity.exe --bot host|join [--name N] [--time S] [--log fichier.txt] [--botshot fichier.bmp]
+velocity.exe --bot host|join [--name N] [--time S] [--log fichier.txt] [--botshot fichier.bmp] [--teams N]
 ```
 
 - `--bot host` → `botMode = 1` : héberge automatiquement (`ACT_HOST`). Tout autre mot → `botMode = 2` :
@@ -829,6 +890,9 @@ velocity.exe --bot host|join [--name N] [--time S] [--log fichier.txt] [--botsho
   (20 par défaut). `--log` : journal (`netlog`). `--botshot` : capture BMP à la fin.
 - Fenêtres réduites à 800 × 450, l'hôte à gauche, le client à droite ; souris jamais capturée ;
   `velocity.ini` jamais lu ni écrit.
+- **Visée** : un tirage par tir (`bot_roll_aim`) : cadré avec la probabilité `botHitP[niveau]` (18 / 38 / 60 %,
+  moins de loin), sinon le tir **frôle** la cible (0,55 à 1,2 m sur le côté). `run_tests` garde l'ancienne visée
+  sinusoïdale (`botAimTest`) pour rester déterministe.
 - `bot_think` joue « comme un humain » : bhop permanent, air-strafe en balançant la vue, cross-up
   (saut, double saut, dash par-dessus, tir dans le dos), dash et grappin pour réduire la distance,
   recherche de cellules quand le rail est vide, pièces + tir dedans à pleine vitesse, contre-tir sur les
