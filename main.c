@@ -127,6 +127,25 @@ static V3 rand_dir(void) {
 #define COIN_MULT       1.5f    /* chaque ricochet multiplie les degats */
 #define COIN_GRAVITY    16.0f
 #define COIN_SEEK_RANGE 90.0f
+
+/* Competences : l'emplacement de la piece (touche A_SKILL) recoit une competence au choix du LOADOUT
+ * (docs/COMPETENCES_MARKSMAN.md). Charges et recharge par competence : skillDef. */
+enum { SK_COIN, SK_MARK, SK_CHARGE, SK_RICOCHET, SK_ALLIN, SK_DECOY, SK_COUNT };
+#define MARK_T            4.0f    /* MARQUE : duree de la marque */
+#define MARK_RANGE        90.0f
+#define MARK_MULT         1.25f   /* toute touche du marqueur sur une cible marquee */
+#define CHARGE_HOLD       0.6f    /* CHARGE : maintenir la touche */
+#define CHARGE_WINDOW     2.0f    /* puis fenetre ouverte pour la prochaine touche */
+#define CHARGE_MULT       1.5f
+#define CHARGE_GRACE      0.05f   /* une fois declenchee, les autres touches du meme tir en profitent (perforation, plombs) */
+#define RIC_BOUNCES       3       /* RICOCHET : rebonds du prochain projectile */
+#define RIC_MAX_LEN       120.0f  /* portee totale d'un rail reflechi */
+#define RIC_ROCKET_SLOW   0.8f    /* vitesse gardee par une roquette a chaque rebond */
+#define ALLIN_SPREAD_BASE 0.8f    /* ALL IN ONE : demi-angle de l'eventail (degres) */
+#define ALLIN_SPREAD_PER  0.7f    /* par munition au-dela de la premiere */
+#define ALLIN_SPREAD_MAX  6.0f
+#define DECOY_T           3.0f    /* MIRAGE : duree du leurre */
+#define DECOY_MULT        1.0f    /* un de mes rails qui le traverse ricoche sans bonus */
 #define RAIL_DMG       100.0f
 #define ROCKET_CD      0.75f
 #define ROCKET_SPEED   38.0f
@@ -465,6 +484,18 @@ static const AmmoDef ammoDef[WP_COUNT] = {
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "YOYO", "IMPULSION", "EGIDE" };
 static unsigned char wpReady[WP_COUNT] = { 1, 1, 1, 1, 1, 1, 1 };   /* chaque arme codee passe sa case a 1 */
 static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 1, 1, 1 };
+/* competences : nom, charges max, secondes par charge, couleur, description (LOADOUT) */
+typedef struct { const char *name; int max; float recharge; float r, g, b; const char *desc; } SkillDef;
+static const SkillDef skillDef[SK_COUNT] = {
+    { "PIECE",      COIN_MAX, COIN_RECHARGE, 1.00f, 0.82f, 0.30f, "lance une piece : le rail qui la touche ricoche (x1,5)" },
+    { "MARQUE",     2, 6,  0.85f, 0.35f, 1.00f, "marque une cible 4 s, visible a travers les murs : tes touches x1,25" },
+    { "CHARGE",     1, 8,  1.00f, 0.55f, 0.20f, "maintenir 0,6 s : ta prochaine touche dans les 2 s fait x1,5 (perdue si touche)" },
+    { "RICOCHET",   1, 15, 0.40f, 1.00f, 0.70f, "le prochain rail / elan / roquette rebondit 3 fois sur le decor" },
+    { "ALL IN ONE", 1, 20, 1.00f, 0.30f, 0.30f, "tire toute la munition de l'arme en main d'un coup, en eventail" },
+    { "MIRAGE",     2, 7,  0.40f, 0.85f, 1.00f, "leurre immobile 3 s : absorbe un tir adverse, ton rail y ricoche" },
+};
+static int wantSkill = SK_COIN;
+static int botSkillSet;                                   /* --skill / --loadout a,b,m,s : competence imposee au bot */
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, MINE_CD, 0.1f };  /* barre de recharge du HUD */
 
 /* ------------------------------------------------------------------ */
@@ -1293,7 +1324,10 @@ typedef struct {
     float meleeCd, meleeT;
     float parryWin;                                       /* temps restant de la fenetre de parry */
     int swingLanded;                                      /* ce coup a-t-il touche ou pare quelque chose ? */
-    float coins;                                          /* charges de pieces (0..COIN_MAX) */
+    float skillCh;                                        /* charges de la competence (0..skillDef[skill].max) */
+    int skill;                                            /* SK_* */
+    int ricArmed;                                         /* RICOCHET : le prochain projectile rebondit */
+    float chargeHold, chargeT;                            /* CHARGE : maintien en cours, fenetre ouverte restante */
     int hookPlayer;                                       /* 0 = aucun, sinon id du joueur accroche + 1 (LAN) */
     int loadout[2];                                       /* deux WP_* distincts ; weapon = WP_* en main */
     int meleeKind;                                        /* MK_* */
@@ -1351,12 +1385,14 @@ enum { PR_ROCKET, PR_ORB, PR_PARRIED, PR_SAW,
 
 /* Tesla : teslaT > 0 = relais actif (temps restant), prochaine impulsion du relais, joueur qui l'a active */
 /* Fleau : flailStruck = 1 si la piece a ete frappee au fleau (vol droit, sans gravite) */
-typedef struct { V3 pos, vel; float life, spin; int alive, owner; unsigned int netId; float teslaT, teslaPulse; int teslaBy; int flailStruck; } Coin;
+typedef struct { V3 pos, vel; float life, spin; int alive, owner; unsigned int netId; float teslaT, teslaPulse; int teslaBy; int flailStruck;
+                 int decoy; } Coin;                     /* decoy : MIRAGE (leurre immobile, sans gravite) */
 #define MAXCOIN 24
 static Coin CO[MAXCOIN];
 static int lastChain;                                     /* longueur du dernier ricochet (tests, journal) */
 typedef struct {
     V3 pos, vel; float life, mult; int kind, alive, owner, parries, orb; unsigned int netId;
+    int ricLeft;                                          /* RICOCHET : rebonds restants (roquette) */
     /* Scie (kind == PR_SAW) : etat SAW_*, temps dans l'etat, rotation, normale de la face (plantee), axe du disque,
      * qui l'a paree (-1), boite ou elle est plantee (-1), renvois consecutifs, pieces relancees (bits),
      * minuterie (reemission si plantee, vrombissement en vol) */
@@ -1479,6 +1515,27 @@ static V3 shield_front_ofs(int i) {                       /* devant le torse de 
 }
 /* --- fin Egide --- */
 
+/* --- Competences : bonus de degats du joueur local (MARQUE, CHARGE), applique a chaque point d'entree des degats --- */
+static float markP[MAXP], markE[MAXE];                   /* cibles que j'ai marquees : temps restant */
+static float markedMeT;                                   /* un adversaire m'a marque (HUD) */
+static int skillUse[SK_COUNT], skillBonus;                /* journal : utilisations, touches bonifiees */
+static float lastHpSeen = 100;                            /* CHARGE : PV du tick precedent (perdue si touche) */
+static int allinActive;                                   /* ALL IN ONE en cours : un seul armement de RICOCHET pour l'eventail */
+static float skill_out(int player, int enemy, float dmg) {
+    float m = 1;
+    if (player >= 0 && player < MAXP && markP[player] > 0) m *= MARK_MULT;
+    if (enemy >= 0 && enemy < MAXE && markE[enemy] > 0) m *= MARK_MULT;
+    if (P.chargeT > 0) { m *= CHARGE_MULT; if (P.chargeT > CHARGE_GRACE) P.chargeT = CHARGE_GRACE; }
+    if (m > 1) skillBonus++;
+    return dmg * m;
+}
+static int ric_take(void) {                               /* RICOCHET arme : rebonds du projectile tire maintenant */
+    if (!P.ricArmed) return 0;
+    if (!allinActive) P.ricArmed = 0;
+    return RIC_BOUNCES;
+}
+/* --- fin Competences --- */
+
 static int botMode;                                       /* 1 = bot hote, 2 = bot client (tests reseau) */
 static int botLevel = 1;                                  /* difficulte du bot : 0 facile, 1 normal, 2 difficile */
 static int botLocal, botHidden;                           /* --local : le bot rejoint 127.0.0.1 ; --hidden : fenetre reduite et muette */
@@ -1541,7 +1598,7 @@ enum { K_LMB = 256, K_RMB, K_MMB, K_X1, K_X2, K_WHEEL, K_COUNT };
 static unsigned char keys[K_COUNT], latch[K_COUNT];
 
 /* Actions du jeu, chacune liee a deux touches au plus (0 = aucune). Le jeu ne lit que les actions. */
-enum { A_FWD, A_BACK, A_LEFT, A_RIGHT, A_JUMP, A_CROUCH, A_DASH, A_FIRE, A_MELEE, A_HOOK, A_COIN,
+enum { A_FWD, A_BACK, A_LEFT, A_RIGHT, A_JUMP, A_CROUCH, A_DASH, A_FIRE, A_MELEE, A_HOOK, A_SKILL,
        A_WEAP1, A_WEAP2, A_SWAP, A_SCORES,
        A_DETONATE_ALL, A_DETONATE_ONE,                    /* Ventouse : toutes mes mines / la plus ancienne */
        A_COUNT };
@@ -2215,6 +2272,7 @@ static void kill_enemy(int i, int byPlayer) {
 static void damage_enemy(int i, float dmg, V3 knock) {
     Enemy *e = &E[i];
     if (!e->alive) return;
+    dmg = skill_out(-1, i, dmg);                          /* Competences : MARQUE, CHARGE */
     e->hp -= dmg; e->flash = 0.12f;
     dmg_number(e->pos, dmg);
     e->vel = vadd(e->vel, knock);
@@ -2363,6 +2421,8 @@ static void tesla_reset(void);                            /* Tesla : definie ave
 static void loadout_apply(void) {                         /* (re)spawn : munitions de depart, jauges vides, arme 1 en main */
     if (!loadout_valid(wantLoadout, wantMelee)) { wantLoadout[0] = WP_RAIL; wantLoadout[1] = WP_ROCKET; wantMelee = MK_SWORD; }
     P.loadout[0] = wantLoadout[0]; P.loadout[1] = wantLoadout[1]; P.meleeKind = wantMelee;
+    if (wantSkill < 0 || wantSkill >= SK_COUNT) wantSkill = SK_COIN;
+    P.skill = wantSkill; P.ricArmed = 0; P.chargeT = P.chargeHold = 0;
     for (int w = 0; w < WP_COUNT; w++) { P.ammo[w] = ammoDef[w].start; P.ammoGauge[w] = 0; }
     P.weapon = P.loadout[0]; P.switchT = 0; P.undoPts[0] = P.undoPts[1] = 0;
     P.kinT = 0; P.kinDashT = 1; P.kinPreDash = 0;          /* Elan : ni fenetre de dash-tir ni malus */
@@ -3456,8 +3516,8 @@ static void throw_coin(void) {
         Coin *c = &CO[i];
         if (c->alive) continue;
         V3 f = view_dir();
-        P.coins -= 1;
-        c->alive = 1; c->owner = myId; c->life = 4; c->spin = 0; c->teslaT = 0; c->flailStruck = 0;
+        P.skillCh -= 1;
+        c->alive = 1; c->owner = myId; c->life = 4; c->spin = 0; c->teslaT = 0; c->flailStruck = 0; c->decoy = 0;
         c->pos = vadd(eye_pos(), vadd(vmul(f, 0.7f), v3(0, -0.2f, 0)));
         c->vel = vadd(P.vel, vadd(vmul(f, 9), v3(0, 6, 0)));   /* la piece garde ta vitesse : elle reste devant toi */
         c->netId = ((unsigned int)(myId + 1) << 24) | (++coinCounter & 0xFFFFFF);
@@ -3472,6 +3532,10 @@ static void coin_tick(float dt) {
     for (int i = 0; i < MAXCOIN; i++) {
         Coin *c = &CO[i];
         if (!c->alive) continue;
+        if (c->decoy) {                                   /* MIRAGE : immobile, sans gravite, puis se dissipe */
+            if ((c->life -= dt) <= 0) { c->alive = 0; burst(c->pos, v3(0.4f, 0.85f, 1), 18, 4, 0.35f, 0.08f); }
+            continue;
+        }
         if (c->teslaT > 0) {                              /* --- Tesla : relais, la piece flotte et frappe tout autour --- */
             c->teslaT -= dt; c->spin += dt * 3;
             if ((c->teslaPulse -= dt) <= 0.5f * TICK) {
@@ -3518,7 +3582,14 @@ static int ricochet(int ci, float dmg, int depth) {
     int stolen = c->owner != myId;                        /* contre-jeu : la piece d'un adversaire se retourne contre lui */
     c->alive = 0;
     if (dmMode) net_fx_coin(1, c->netId, o, v3(0, 0, 0));
-    dmg *= stolen ? 1.0f : COIN_MULT;                     /* piece volee : renvoie le tir, mais sans bonus */
+    if (c->decoy && stolen) {                             /* MIRAGE adverse : le leurre absorbe le tir */
+        burst(o, v3(0.4f, 0.85f, 1), 30, 7, 0.4f, 0.1f);
+        play(S_PARRY, 0.5f, 0.7f);
+        snprintf(popText, sizeof popText, "LEURRE !"); popT = 1.0f;
+        if (botMode) netlog("mirage : tir absorbe par un leurre");
+        return 0;
+    }
+    dmg *= c->decoy ? DECOY_MULT : stolen ? 1.0f : COIN_MULT;   /* piece volee : renvoie le tir, mais sans bonus */
     lastChain = depth + 1;
     for (int k = 0; k < 20; k++) add_part(o, vmul(rand_dir(), 6), v3(1, 0.85f, 0.3f), 0.35f, 0.1f, 0);
     play(S_PARRY, 0.55f, 1.5f + 0.15f * depth);
@@ -3596,10 +3667,11 @@ static int ricochet(int ci, float dmg, int depth) {
 
 /* trajet hitscan perforant (rail, Elan) : piece (le tir s'y arrete), ennemis, joueurs LAN ; renvoie 1 si touche.
  * dmg : degats PvE (deja multiplies par la chaine), knockE / knockP : recul PvE / PvP, w : W_* des touches LAN */
-static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut, V3 *nOut) {
-    V3 eye = eye_pos(), d = view_dir(), n;
-    float tw = ray_world(eye, d, 400, &n);
-    int hit = 0, coinHit = -1;
+static int hitscan_seg(V3 eye, V3 d, float maxLen, int selfHit, float dmg, float knockE, float knockP, int w,
+                       V3 *endOut, V3 *nOut, int *stop) {
+    V3 n;
+    float tw = ray_world(eye, d, maxLen, &n);
+    int hit = 0, coinHit = -1, shieldStop = 0, wall = tw < maxLen - 0.01f;
     for (int i = 0; i < MAXCOIN; i++) {                   /* une de mes pieces sur la trajectoire ? le tir s'y arrete */
         float t;
         if (CO[i].alive && ray_sphere(eye, d, CO[i].pos, COIN_RADIUS, tw, &t)) { tw = t; coinHit = i; }
@@ -3613,7 +3685,7 @@ static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut
         V3 mn, mx; float t;
         if (!np_target(i) || !shield_faces(i, d, SHB_DIRECT)) continue;
         np_aabb(i, 0.05f, &mn, &mx);
-        if (ray_box(eye, d, mn, mx, tw, &t, NULL) && t < tw) { tw = t; coinHit = mineHit = -1; }
+        if (ray_box(eye, d, mn, mx, tw, &t, NULL) && t < tw) { tw = t; coinHit = mineHit = -1; shieldStop = 1; }
     }
     for (int i = 0; i < MAXE; i++) {
         float t;
@@ -3644,7 +3716,38 @@ static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut
         popT = 1.0f;
         if (botMode) netlog("tir dans une mine (%s), %d touche(s)", foreign ? "volee" : "a moi", h);
     }                                                     /* --- fin Ventouse --- */
+    if (selfHit && !P.dead) {                             /* RICOCHET : a partir du 2e rebond, le tir peut revenir sur moi */
+        V3 mn, mx; float t;
+        paabb(P.pos, pheight(), &mn, &mx);
+        if (ray_box(eye, d, mn, mx, tw, &t, NULL)) {
+            damage_player(dmMode ? fminf(dmg * PVP_SCALE, PVP_HIT_CAP) : dmg * 0.5f);
+            if (botMode) netlog("ricochet : le rail revient sur le tireur");
+        }
+    }
     *endOut = vadd(eye, vmul(d, tw)); *nOut = n;
+    *stop = coinHit >= 0 || mineHit >= 0 || shieldStop || !wall;
+    return hit;
+}
+static int ricStat[2];                                    /* journal : tirs reflechis, rebonds */
+static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut, V3 *nOut) {
+    V3 o = eye_pos(), d = view_dir();
+    int stop, bounces = ric_take();
+    int hit = hitscan_seg(o, d, 400, 0, dmg, knockE, knockP, w, endOut, nOut, &stop);
+    V3 a = *endOut, n = *nOut;
+    float left = RIC_MAX_LEN - vlen(vsub(a, o));
+    if (bounces) ricStat[0]++;
+    for (int b = 1; b <= bounces && !stop && left > 0.5f; b++) {   /* RICOCHET : reflexion r = d - 2 (d.n) n */
+        V3 e2, n2;
+        d = vnorm(vsub(d, vmul(n, 2 * vdot(d, n))));
+        o = vadd(a, vmul(n, 0.02f));
+        hit |= hitscan_seg(o, d, left, b >= 2, dmg, knockE, knockP, w, &e2, &n2, &stop);
+        add_beam(o, e2, v3(0.4f, 1, 0.7f), 0.5f);
+        if (dmMode) net_fx_rail(o, e2, 0);
+        for (int k = 0; k < 8; k++) add_part(a, vadd(vmul(n, 3), vmul(rand_dir(), 3)), v3(0.4f, 1, 0.7f), 0.35f, 0.08f, 8);
+        left -= vlen(vsub(e2, o));
+        a = e2; n = n2;
+        ricStat[1]++;
+    }
     return hit;
 }
 
@@ -4253,6 +4356,7 @@ static unsigned int rocketCounter;
 static void fire_rocket(void) {
     if (P.ammo[WP_ROCKET] > 0) P.ammo[WP_ROCKET]--;      /* limitees : un rocket jump coute une roquette */
     Proj *p = spawn_proj(PR_ROCKET, eye_pos(), vmul(view_dir(), ROCKET_SPEED));
+    if (p) p->ricLeft = ric_take();                       /* RICOCHET */
     if (p && dmMode) {
         p->netId = ((unsigned int)(myId + 1) << 24) | (++rocketCounter & 0xFFFFFF);
         net_fx_rocket(p->pos, p->vel, p->netId);
@@ -4867,6 +4971,16 @@ static void proj_tick(float dt) {
                 } else np_aabb(j, 0.2f, &mn, &mx);
                 if (ray_box(p->pos, dir, mn, mx, t, &te, NULL) && te < t) { t = te; hitPlayer = j; }
             }
+            if (p->ricLeft > 0 && p->kind == PR_ROCKET && t < len && hitEnemy < 0 && hitPlayer < 0 && p->life > 0) {
+                V3 at = vadd(p->pos, vmul(dir, t));       /* RICOCHET : le decor renvoie la roquette */
+                p->vel = vmul(vsub(p->vel, vmul(n, 2 * vdot(p->vel, n))), RIC_ROCKET_SLOW);
+                p->pos = vadd(at, vmul(n, 0.05f));
+                p->ricLeft--;
+                burst(at, v3(0.4f, 1, 0.7f), 14, 5, 0.3f, 0.09f);
+                play(S_LAND, 0.5f * atten(at), 1.6f);
+                if (mine) ricStat[1]++;
+                continue;
+            }
             if (t < len || p->life <= 0) {
                 V3 c = vadd(vadd(p->pos, vmul(dir, t)), vmul(n, 0.15f));
                 p->alive = 0;
@@ -5028,8 +5142,9 @@ static void reset_game(void) {
     P.hp = 100; P.dashCharge = 2; P.airJumps = 1; P.eyeH = EYE_STAND; P.fovCur = fovBase;
     loadout_apply();
     anvil_reset();
-    P.coins = COIN_MAX;
+    P.skillCh = (float)skillDef[P.skill].max;
     memset(CO, 0, sizeof CO);
+    memset(markP, 0, sizeof markP); memset(markE, 0, sizeof markE); markedMeT = 0; lastHpSeen = 100;
     for (int i = 0; i < npu; i++) PU[i].t = PU[i].pending = 0;
     memset(E, 0, sizeof E); memset(PR, 0, sizeof PR); memset(PA, 0, sizeof PA); memset(BM, 0, sizeof BM);
     memset(TR, 0, sizeof TR);
@@ -5048,7 +5163,7 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   11
+#define NET_VER   12
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
@@ -5059,7 +5174,8 @@ enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KIL
        EV_TESLA = 18,                                     /* Tesla : relais (0) ou decharge renvoyee (1) */
        EV_SHIELD = 19,                                    /* Egide : sub = SHE_* (revendication du tireur, decisions de l'hote) */
        EV_LANCE = 20,                                    /* Lance : choc de joute, emis par l'hote seulement */
-       EV_SLAM = 21 };                                    /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
+       EV_SLAM = 21,                                      /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
+       EV_SKILL = 22 };                                   /* Competences : sub = SK_*, target = cible marquee */
 
 #pragma pack(push, 1)
 typedef struct { unsigned int magic; unsigned char type, from, ver, pad; } PkHead;
@@ -5267,6 +5383,7 @@ static NetEvent ev_new(int kind) {
 }
 
 static void net_hit(int target, float dmg, V3 knock, int weapon) {
+    if (target != myId) dmg = skill_out(target, -1, dmg);   /* Competences : MARQUE, CHARGE */
     if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
     flail_combo_check(target, weapon);                    /* Fleau : combo fleau -> rail (visuel) */
     NetEvent e = ev_new(EV_HIT);
@@ -5285,9 +5402,11 @@ static void net_fx_kinetic(V3 a, V3 b, float e) {          /* Elan : EV_RAIL sou
     ev.sub = 1; ev.actor = (unsigned char)(clampf(e, 0, 1) * 255);
     net_emit(&ev);
 }
+static Proj *find_proj(unsigned int netId);
 static void net_fx_rocket(V3 pos, V3 vel, unsigned int netId) {
     NetEvent e = ev_new(EV_ROCKET);
     e.netId = netId; vf(e.f, pos); vf(e.f + 3, vel);
+    { Proj *p = find_proj(netId); if (p) e.sub = (unsigned char)p->ricLeft; }   /* RICOCHET : la copie rebondit aussi */
     net_emit(&e);
 }
 static void net_fx_rocket_end(unsigned int netId, V3 pos) {
@@ -5303,6 +5422,13 @@ static void net_fx_parry(unsigned int netId, V3 pos, V3 vel, float mult, int par
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel) {
     NetEvent e = ev_new(EV_COIN);
     e.sub = (unsigned char)sub; e.netId = netId; vf(e.f, pos); vf(e.f + 3, vel);
+    net_emit(&e);
+}
+/* Competences : EV_SKILL, sub = SK_*, target = joueur marque (255 : aucun), f[0..2] / f[3..5] = trace ou centre */
+static void net_fx_skill(int sub, int target, V3 a, V3 b) {
+    NetEvent e = ev_new(EV_SKILL);
+    e.sub = (unsigned char)sub; e.target = (unsigned char)(target < 0 ? 255 : target);
+    vf(e.f, a); vf(e.f + 3, b);
     net_emit(&e);
 }
 static void net_fx_melee(V3 pos, V3 dir, float sp) {
@@ -5341,6 +5467,7 @@ static void net_fx_saw(int sub, Proj *p, int target, int actor) {
 }
 /* comme net_hit, avec f[4] = nombre de renvois de la scie (journal de l'hote) */
 static void net_hit_saw(int target, float dmg, V3 knock, int w, int bounces) {
+    if (target != myId) dmg = skill_out(target, -1, dmg);
     if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
     NetEvent e = ev_new(EV_HIT);
     e.target = (unsigned char)target; e.sub = (unsigned char)w;
@@ -5373,6 +5500,7 @@ static void net_fx_mine(int sub, unsigned int netId, V3 a, V3 b, int target, flo
 }
 /* comme net_hit, avec le netId de l'objet source : l'hote ignore les touches d'une mine dont il a donne le sort a un autre */
 static void net_hit_id(int target, float dmg, V3 knock, int weapon, unsigned int netId) {
+    if (target != myId) dmg = skill_out(target, -1, dmg);
     if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
     NetEvent e = ev_new(EV_HIT);
     e.target = (unsigned char)target; e.sub = (unsigned char)weapon; e.netId = netId;
@@ -5404,6 +5532,7 @@ static int shield_intercept(int i, V3 dir, float dmg, V3 knock, int w, int blast
 }
 static int hit_player_ex(int i, float dmg, V3 knock, int w, V3 dir, int blast, unsigned int netId, float f4, float f5, float f6) {
     if (shield_intercept(i, dir, dmg, knock, w, blast, netId)) return 0;
+    if (i != myId) dmg = skill_out(i, -1, dmg);           /* Competences : MARQUE, CHARGE */
     if (i != myId && i < MAXP) dmg_number(np_center(i), fminf(dmg, PVP_HIT_CAP));
     flail_combo_check(i, w);                              /* Fleau : combo fleau -> rail (visuel) */
     NetEvent e = ev_new(EV_HIT);
@@ -5725,7 +5854,7 @@ static void apply_event(const NetEvent *ev) {
     }
     case EV_ROCKET: {
         Proj *p = spawn_proj(PR_ROCKET, a, b);
-        if (p) { p->owner = ev->from; p->netId = ev->netId; }
+        if (p) { p->owner = ev->from; p->netId = ev->netId; p->ricLeft = ev->sub; }
         play(S_ROCKET, 0.7f * atten(a), 1.0f);
         break;
     }
@@ -5882,7 +6011,7 @@ static void apply_event(const NetEvent *ev) {
             P.dashCharge = 2; P.airJumps = 1; P.crouch = P.sliding = P.wallrun = 0;
             loadout_apply();
             anvil_reset();
-            P.coins = COIN_MAX;
+            P.skillCh = (float)skillDef[P.skill].max; P.ricArmed = 0; P.chargeT = P.chargeHold = 0;
             P.yaw = atan2f(-a.x, a.z); P.pitch = 0; P.eyeH = EYE_STAND; P.roll = 0;
             shotStreak = 0;
         }
@@ -5907,12 +6036,31 @@ static void apply_event(const NetEvent *ev) {
             netlog("fin du match, gagnant : %s", pname(ev->target));
         }
         break;
+    case EV_SKILL:                                        /* Competences d'un autre joueur */
+        if (ev->sub == SK_MARK) {
+            add_beam(a, b, v3(0.85f, 0.35f, 1), 0.3f);
+            if (ev->target == myId) {
+                markedMeT = MARK_T;
+                snprintf(popText, sizeof popText, "TU ES MARQUE"); popT = 1.2f;
+                play(S_HIT, 0.6f, 0.6f);
+            }
+        } else if (ev->sub == SK_CHARGE) burst(a, v3(1, 0.55f, 0.2f), 30, 5, 0.4f, 0.1f);
+        else if (ev->sub == SK_ALLIN) { play(S_EXPLO, 0.5f * atten(a), 1.5f); }
+        break;
     case EV_COIN:                                         /* piece d'un autre joueur : visible, mais pas a nous */
-        if (ev->sub == 0) {
+        if (ev->sub == 4) {                               /* MIRAGE : leurre immobile (f[3] = orientation) */
+            for (int i = 0; i < MAXCOIN; i++)
+                if (!CO[i].alive) {
+                    memset(&CO[i], 0, sizeof CO[i]);
+                    CO[i].alive = 1; CO[i].decoy = 1; CO[i].owner = ev->from; CO[i].netId = ev->netId;
+                    CO[i].pos = a; CO[i].life = DECOY_T; CO[i].spin = ev->f[3];
+                    break;
+                }
+        } else if (ev->sub == 0) {
             for (int i = 0; i < MAXCOIN; i++)
                 if (!CO[i].alive) {
                     CO[i].alive = 1; CO[i].owner = ev->from; CO[i].netId = ev->netId;
-                    CO[i].pos = a; CO[i].vel = b; CO[i].life = 4; CO[i].spin = 0; CO[i].teslaT = 0; CO[i].flailStruck = 0;
+                    CO[i].pos = a; CO[i].vel = b; CO[i].life = 4; CO[i].spin = 0; CO[i].teslaT = 0; CO[i].flailStruck = 0; CO[i].decoy = 0;
                     break;
                 }
         } else if (ev->sub == 1 && ev->f[3] == 1) {       /* Eventail : piece eclatee par un plomb */
@@ -7881,10 +8029,10 @@ static void bot_think(float dt) {
 
     static int coinPlan;                                  /* a pleine vitesse : piece, puis tir dedans */
     static float coinPlanT, nextCoin;
-    if (!coinPlan && see && bd > 10 && bd < 55 && hs > 11 && P.coins >= 1 && P.ammo[WP_RAIL] > 0 && P.weapon == WP_RAIL &&
+    if (!coinPlan && see && bd > 10 && bd < 55 && hs > 11 && P.skillCh >= 1 && P.ammo[WP_RAIL] > 0 && P.weapon == WP_RAIL &&
         P.fireCd < 0.3f && botT > nextCoin) {
         P.yaw = aimYaw; P.pitch = aimPitch;
-        botPress[A_COIN] = 1;
+        botPress[A_SKILL] = 1;
         coinPlan = 1; coinPlanT = 0; nextCoin = botT + 2.5f;
     } else if (coinPlan) {
         coinPlanT += dt;
@@ -7978,7 +8126,7 @@ static void bot_think(float dt) {
         static float teslaCoinT;
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch;
         botHeld[A_FIRE] = 1;
-        if (bd < 12 && P.coins >= 1 && botT > teslaCoinT) { botPress[A_COIN] = 1; teslaCoinT = botT + 2.5f; netlog("tesla : piece relais lancee"); }
+        if (bd < 12 && P.skillCh >= 1 && botT > teslaCoinT) { botPress[A_SKILL] = 1; teslaCoinT = botT + 2.5f; netlog("tesla : piece relais lancee"); }
     }
 
     /* Elan : tire quand sa vitesse suffit ; sinon dash-tir, fenetre reussie une fois sur deux
@@ -8052,9 +8200,9 @@ static void bot_think(float dt) {
         if (best >= 0 && P.meleeCd <= 0 && bd < flail_range(rel_speed(np_vel(best))) + 0.3f && (see || bd < 2.5f)) {
             P.yaw = aimYaw; P.pitch = aimPitch;           /* au contact aussi : c'est la seule melee (jauges) */
             botPress[A_MELEE] = 1;
-        } else if (!fcPlan && !coinPlan && best >= 0 && see && bd > 8 && bd < 25 && P.coins >= 1 && P.meleeCd <= 0 && botT > fcNext) {
+        } else if (!fcPlan && !coinPlan && best >= 0 && see && bd > 8 && bd < 25 && P.skillCh >= 1 && P.meleeCd <= 0 && botT > fcNext) {
             P.yaw = aimYaw; P.pitch = aimPitch;
-            botPress[A_COIN] = 1;
+            botPress[A_SKILL] = 1;
             fcPlan = 1; fcT = 0; fcNext = botT + 3;
         } else if (fcPlan) {
             fcT += dt;
@@ -8168,6 +8316,122 @@ static void loadout_cycle(int slot) {                     /* ecran de mort : arm
     cfg_save();
 }
 
+/* --- Competences : utilisation (touche A_SKILL) ------------------------- */
+static void net_fx_skill(int sub, int target, V3 a, V3 b);
+static void skill_mark(void) {                            /* MARQUE : tir sans degats, la premiere cible touchee est marquee */
+    V3 eye = eye_pos(), d = view_dir(), n;
+    float tw = ray_world(eye, d, MARK_RANGE, &n), t;
+    int te = -1, tp = -1;
+    for (int i = 0; i < MAXE; i++)
+        if (E[i].alive && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type) + 0.3f, tw, &t)) { tw = t; te = i; tp = -1; }
+    for (int i = 0; i < MAXP; i++) {
+        V3 mn, mx;
+        if (!np_target(i)) continue;
+        np_aabb(i, 0.3f, &mn, &mx);
+        if (ray_box(eye, d, mn, mx, tw, &t, NULL)) { tw = t; tp = i; te = -1; }
+    }
+    V3 end = vadd(eye, vmul(d, tw));
+    P.skillCh -= 1; skillUse[SK_MARK]++;
+    add_beam(muzzle(), end, v3(0.85f, 0.35f, 1), 0.3f);
+    play(S_HIT, 0.45f, 0.7f);
+    if (te >= 0) markE[te] = MARK_T;
+    if (tp >= 0) markP[tp] = MARK_T;
+    if (te >= 0 || tp >= 0) {
+        burst(end, v3(0.85f, 0.35f, 1), 24, 5, 0.4f, 0.1f);
+        snprintf(popText, sizeof popText, "MARQUE !"); popT = 0.8f;
+    }
+    if (botMode) netlog("marque : %s", tp >= 0 ? pname(tp) : te >= 0 ? "drone" : "ratee");
+    if (dmMode) net_fx_skill(SK_MARK, tp, muzzle(), end);
+}
+static int allin_ok(int w) { return w == WP_RAIL || w == WP_ROCKET || w == WP_SHOTGUN || w == WP_KINETIC; }
+static float allin_half(int n) {                          /* ALL IN ONE : demi-angle de l'eventail (radians) */
+    return fminf(ALLIN_SPREAD_BASE + ALLIN_SPREAD_PER * (n - 1), ALLIN_SPREAD_MAX) * PI / 180;
+}
+static void fire_weapon(void);
+static int allinLast;                                     /* projectiles du dernier ALL IN ONE (tests, journal) */
+static void skill_allin(void) {                           /* toute la munition de l'arme en main, en eventail regulier */
+    int w = P.weapon, n = P.ammo[w];
+    if (!allin_ok(w) || n < 2 || P.switchT > 0) {
+        play(S_HIT, 0.5f, 0.45f);
+        snprintf(popText, sizeof popText, allin_ok(w) ? "ALL IN ONE : 2 MUNITIONS MINIMUM" : "ALL IN ONE : ARME INCOMPATIBLE");
+        popT = 1.0f;
+        return;
+    }
+    P.skillCh -= 1; skillUse[SK_ALLIN]++;
+    float half = allin_half(n), gap = 2 * half / (n - 1), y0 = P.yaw, p0 = P.pitch;
+    float jit = (frand() - 0.5f) * gap * 0.5f;            /* decalage commun d'au plus la moitie de l'ecart */
+    allinActive = 1;
+    for (int k = 0; k < n; k++) {
+        P.yaw = y0 + (-half + gap * k + jit) / fmaxf(cosf(p0), 0.3f);
+        P.pitch = p0;
+        P.ammo[w] = n - k;
+        fire_weapon();
+    }
+    allinActive = 0; P.ricArmed = 0;                      /* RICOCHET : un seul armement pour tout l'eventail */
+    P.yaw = y0; P.pitch = p0;
+    P.ammo[w] = 0; allinLast = n;
+    shake += 0.2f; P.recoil = 2;
+    snprintf(popText, sizeof popText, "ALL IN ONE x%d", n); popT = 1.0f;
+    if (botMode) netlog("all in one : %d projectiles (%s)", n, ammoDef[w].name);
+    if (dmMode) net_fx_skill(SK_ALLIN, -1, eye_pos(), v3((float)n, 0, 0));
+}
+static void skill_decoy(void) {                           /* MIRAGE : leurre a ma place, je repars */
+    for (int i = 0; i < MAXCOIN; i++) {
+        Coin *c = &CO[i];
+        if (c->alive) continue;
+        memset(c, 0, sizeof *c);
+        c->alive = 1; c->decoy = 1; c->owner = myId; c->life = DECOY_T; c->spin = P.yaw;
+        c->pos = v3(P.pos.x, P.pos.y + pheight() * 0.5f, P.pos.z);
+        c->netId = ((unsigned int)(myId + 1) << 24) | (++coinCounter & 0xFFFFFF);
+        P.skillCh -= 1; skillUse[SK_DECOY]++;
+        burst(c->pos, v3(0.4f, 0.85f, 1), 20, 4, 0.3f, 0.1f);
+        play(S_DASH, 0.5f, 1.4f);
+        if (dmMode) net_fx_coin(4, c->netId, c->pos, v3(P.yaw, 0, 0));
+        return;
+    }
+}
+static void skill_tick(float dt, int press, int held) {
+    const SkillDef *d = &skillDef[P.skill];
+    if (!P.ricArmed && P.skillCh < d->max) P.skillCh = fminf((float)d->max, P.skillCh + dt / d->recharge);
+    for (int i = 0; i < MAXP; i++) if (markP[i] > 0) markP[i] -= dt;
+    for (int i = 0; i < MAXE; i++) if (markE[i] > 0) { markE[i] -= dt; if (!E[i].alive) markE[i] = 0; }
+    if (markedMeT > 0) markedMeT -= dt;
+    if (P.chargeT > 0) P.chargeT -= dt;
+    if (P.hp < lastHpSeen - 0.5f && (P.chargeT > 0 || P.chargeHold > 0)) {   /* CHARGE : perdue si on est touche */
+        P.chargeT = P.chargeHold = 0;
+        snprintf(popText, sizeof popText, "CHARGE PERDUE"); popT = 0.8f;
+    }
+    lastHpSeen = P.hp;
+    if (P.dead) { P.chargeT = P.chargeHold = 0; return; }
+    switch (P.skill) {
+    case SK_COIN:  if (press && P.skillCh >= 1) { throw_coin(); skillUse[SK_COIN]++; } break;
+    case SK_MARK:  if (press && P.skillCh >= 1) skill_mark(); break;
+    case SK_ALLIN: if (press && P.skillCh >= 1) skill_allin(); break;
+    case SK_DECOY: if (press && P.skillCh >= 1) skill_decoy(); break;
+    case SK_RICOCHET:
+        if (press && P.skillCh >= 1 && !P.ricArmed) {     /* la recharge ne repart qu'au tir */
+            P.skillCh -= 1; P.ricArmed = 1; skillUse[SK_RICOCHET]++;
+            play(S_PAD, 0.5f, 2.0f);
+            snprintf(popText, sizeof popText, "RICOCHET ARME"); popT = 0.8f;
+        }
+        break;
+    case SK_CHARGE:
+        if (held && P.skillCh >= 1 && P.chargeT <= 0) {
+            P.chargeHold += dt;
+            if (P.chargeHold >= CHARGE_HOLD) {
+                P.skillCh -= 1; P.chargeHold = 0; P.chargeT = CHARGE_WINDOW; skillUse[SK_CHARGE]++;
+                play(S_PAD, 0.6f, 1.3f);
+                burst(pcenter(), v3(1, 0.55f, 0.2f), 30, 5, 0.4f, 0.1f);
+                snprintf(popText, sizeof popText, "CHARGE !"); popT = 0.8f;
+                if (dmMode) net_fx_skill(SK_CHARGE, -1, pcenter(), v3(0, 0, 0));
+            }
+        } else P.chargeHold = 0;
+        break;
+    }
+}
+/* --- fin Competences --- */
+
+static void cfg_save(void);
 static void game_tick(float dt) {
     /* hitstop : le monde se fige un instant sur les gros coups (les entrees attendent) */
     if (hitstop > 0) { hitstop -= dt; P.prevPos = P.pos; return; }
@@ -8177,7 +8441,7 @@ static void game_tick(float dt) {
     input_poll();
     int jp = actP[A_JUMP], dp = actP[A_DASH];
     int w1 = actP[A_WEAP1], w2 = actP[A_WEAP2];
-    int lmbp = actP[A_FIRE], swap = actP[A_SWAP], meleePress = actP[A_MELEE], coinPress = actP[A_COIN];
+    int lmbp = actP[A_FIRE], swap = actP[A_SWAP], meleePress = actP[A_MELEE], coinPress = actP[A_SKILL];
     hookPressIn = actP[A_HOOK];
     hookHeldIn = act[A_HOOK];
 
@@ -8190,6 +8454,7 @@ static void game_tick(float dt) {
         if (w1) loadout_cycle(0);
         if (w2) loadout_cycle(1);
         if (meleePress) { do wantMelee = (wantMelee + 1) % MK_COUNT; while (!mkReady[wantMelee]); cfg_save(); }
+        if (coinPress) { wantSkill = (wantSkill + 1) % SK_COUNT; cfg_save(); }   /* Competences : la touche fait defiler */
     } else {
         int nw = P.weapon;
         if (w1) nw = P.loadout[0];
@@ -8200,8 +8465,7 @@ static void game_tick(float dt) {
 
     player_tick(dt, jp, dp);
 
-    if (P.coins < COIN_MAX) P.coins = fminf(COIN_MAX, P.coins + dt / COIN_RECHARGE);
-    if (!P.dead && coinPress && P.coins >= 1) throw_coin();
+    skill_tick(dt, coinPress, act[A_SKILL]);              /* Competences (la piece en est une) */
     coin_tick(dt);
 
     P.meleeCd -= dt; P.meleeT -= dt;
@@ -9618,7 +9882,7 @@ static void cfg_save(void) {
             myName, sens, fovBase, masterVol, musicVol, invertY, showFps, fullscreen);
     fprintf(f, "impact_frames=%d" "\n" "screen_fx=%d" "\n", impactFrames, screenFx);
     fprintf(f, "online=%d" "\n" "update_check=%d" "\n", onlineOn, updCheck);
-    fprintf(f, "loadout=%d,%d" "\n" "melee=%d" "\n", wantLoadout[0], wantLoadout[1], wantMelee);
+    fprintf(f, "loadout=%d,%d" "\n" "melee=%d" "\n" "skill=%d" "\n", wantLoadout[0], wantLoadout[1], wantMelee, wantSkill);
     if (strcmp(lobbyAddr, LOBBY_DEFAULT)) fprintf(f, "lobby=%s" "\n", lobbyAddr);   /* le defaut peut changer avec une mise a jour */
     for (int a = 0; a < A_COUNT; a++) fprintf(f, "bind_%s=%d,%d" "\n", actId[a], binds[a][0], binds[a][1]);
     fclose(f);
@@ -9649,6 +9913,7 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
         else if (!strcmp(line, "fullscreen")) fs = atoi(v) != 0;
         else if (!strcmp(line, "loadout")) sscanf(v, "%d,%d", &wantLoadout[0], &wantLoadout[1]);
         else if (!strcmp(line, "melee")) wantMelee = atoi(v);
+        else if (!strcmp(line, "skill")) wantSkill = atoi(v) >= 0 && atoi(v) < SK_COUNT ? atoi(v) : SK_COIN;
         else if (!strncmp(line, "bind_", 5))
             for (int a = 0; a < A_COUNT; a++)
                 if (!strcmp(line + 5, actId[a])) {
@@ -9832,16 +10097,21 @@ static void loadout_pick(int slot, int w) {               /* choisir pour un emp
 static void draw_loadout(float cx, float cy) {
     char buf[128];
     rect(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.85f);
-    text_c(2, cx, cy - 300, "LOADOUT", 0.5f, 0.9f, 1.0f, 1);
-    text_c(0, cx, cy - 266, "1 arme de melee + 2 armes a distance ; la melee remplit les jauges de munitions",
+    text_c(2, cx, cy - 330, "LOADOUT", 0.5f, 0.9f, 1.0f, 1);
+    text_c(0, cx, cy - 296, "1 arme de melee + 1 competence + 2 armes a distance ; la melee remplit les jauges de munitions",
            0.7f, 0.75f, 0.85f, 1);
     float bw = winW < 1300 ? 118.0f : 150.0f, step = bw + 10, x0 = cx - step * WP_COUNT * 0.5f;
-    text(1, x0, cy - 215, "MELEE", 0.5f, 0.9f, 1.0f, 1);
+    text(1, x0, cy - 245, "MELEE", 0.5f, 0.9f, 1.0f, 1);
     for (int m = 0; m < MK_COUNT; m++)
-        if (sel_button(x0 + m * step, cy - 195, bw, 44, meleeNames[m], m == wantMelee, mkReady[m], v3(1, 0.85f, 0.4f)))
+        if (sel_button(x0 + m * step, cy - 225, bw, 44, meleeNames[m], m == wantMelee, mkReady[m], v3(1, 0.85f, 0.4f)))
             wantMelee = m;
+    text(1, x0, cy - 150, "COMPETENCE", 0.5f, 0.9f, 1.0f, 1);
+    for (int k = 0; k < SK_COUNT; k++)                    /* Competences : la piece est l'une d'elles */
+        if (sel_button(x0 + k * step, cy - 130, bw, 44, skillDef[k].name, k == wantSkill, 1,
+                       v3(skillDef[k].r, skillDef[k].g, skillDef[k].b)))
+            wantSkill = k;
     for (int s = 0; s < 2; s++) {
-        float y = cy - 70 + s * 112.0f;
+        float y = cy - 40 + s * 100.0f;
         text(1, x0, y - 22, s ? "ARME 2" : "ARME 1", 0.5f, 0.9f, 1.0f, 1);
         for (int w = 0; w < WP_COUNT; w++)
             if (sel_button(x0 + w * step, y, bw, 44, ammoDef[w].name, w == wantLoadout[s], wpReady[w],
@@ -9853,22 +10123,26 @@ static void draw_loadout(float cx, float cy) {
         if (d->gauge <= 0) snprintf(buf, sizeof buf, "%s : objet unique, a recuperer", d->name);
         else snprintf(buf, sizeof buf, "%s : %d au spawn, %d max, %.0f pts par tir (%.1f coups d'epee)", d->name, d->start,
                       d->max, d->gauge, d->gauge / meleePts[MK_SWORD]);
-        text(0, x0, cy + 120 + s * 24.0f, buf, 0.8f, 0.82f, 0.9f, 1);
+        text(0, x0, cy + 125 + s * 22.0f, buf, 0.8f, 0.82f, 0.9f, 1);
     }
     snprintf(buf, sizeof buf, "%s : %d pts par coup qui touche%s, +%d par kill, +%d par parry ; cellules : %d ou %d pts",
              meleeNames[wantMelee], meleePts[wantMelee], wantMelee == MK_FIST ? " (50 max par combo)" : "",   /* Poings */
              PTS_MELEE_KILL, PTS_PARRY, PICKUP_SMALL, PICKUP_BIG);
-    text(0, x0, cy + 168, buf, 1, 0.85f, 0.5f, 1);
-    if (appState == APP_GAME) text(0, x0, cy + 194, "pris en compte au prochain respawn", 0.6f, 0.6f, 0.7f, 1);
-    if (button(cx - 105, cy + 220, 210, 50, "VALIDER")) { loadoutOpen = 0; cfg_save(); }
+    text(0, x0, cy + 169, buf, 1, 0.85f, 0.5f, 1);
+    snprintf(buf, sizeof buf, "%s : %s ; %d charge%s, %.0f s par charge", skillDef[wantSkill].name, skillDef[wantSkill].desc,
+             skillDef[wantSkill].max, skillDef[wantSkill].max > 1 ? "s" : "", skillDef[wantSkill].recharge);
+    text(0, x0, cy + 191, buf, skillDef[wantSkill].r, skillDef[wantSkill].g, skillDef[wantSkill].b, 1);
+    if (appState == APP_GAME) text(0, x0, cy + 213, "pris en compte au prochain respawn", 0.6f, 0.6f, 0.7f, 1);
+    if (button(cx - 105, cy + 235, 210, 50, "VALIDER")) { loadoutOpen = 0; cfg_save(); }
     if (uiClick) uiClick = 0;
 }
 
 /* ecran de mort : les touches d'arme et de melee font defiler le loadout du prochain respawn */
 static void draw_death_loadout(float cx, float y) {
     char buf[160];
-    snprintf(buf, sizeof buf, "[%s] < %s >    [%s] < %s >    [%s] < %s >", bind_text(A_WEAP1), ammoDef[wantLoadout[0]].name,
-             bind_text(A_WEAP2), ammoDef[wantLoadout[1]].name, bind_text(A_MELEE), meleeNames[wantMelee]);
+    snprintf(buf, sizeof buf, "[%s] < %s >    [%s] < %s >    [%s] < %s >    [%s] < %s >", bind_text(A_WEAP1),
+             ammoDef[wantLoadout[0]].name, bind_text(A_WEAP2), ammoDef[wantLoadout[1]].name, bind_text(A_MELEE),
+             meleeNames[wantMelee], bind_text(A_SKILL), skillDef[wantSkill].name);
     text_c(0, cx, y, "LOADOUT DU PROCHAIN RESPAWN", 0.5f, 0.9f, 1.0f, 1);
     text_c(1, cx, y + 32, buf, 1, 0.9f, 0.6f, 1);
 }
@@ -10817,15 +11091,33 @@ static void draw_hud(void) {
     draw_saw_hud(cx, cy);                                 /* Scie */
     if (P.weapon == WP_TESLA && !P.dead) draw_tesla_hud(cx, cy);   /* Tesla */
     draw_mine_hud(cx, cy);                                /* Ventouse */
-    for (int i = 0; i < COIN_MAX; i++) {                 /* pieces disponibles */
-        float fill = clampf(P.coins - i, 0, 1), x = winW - 30.0f - (COIN_MAX - i) * 20.0f, y = winH - 96.0f;
-        rect(x, y, 14, 14, 0.15f, 0.12f, 0.05f, 0.7f);
-        rect(x, y + 14 * (1 - fill), 14, 14 * fill, 1, 0.82f, 0.3f, fill >= 1 ? 1.0f : 0.5f);
-    }
-    {
-        char kb[40];
-        snprintf(kb, sizeof kb, "[%s]", bind_text(A_COIN));
-        text(0, winW - 36.0f - COIN_MAX * 20.0f - fontW[0] * (float)strlen(kb), winH - 83.0f, kb, 0.8f, 0.7f, 0.4f, 0.9f);
+    {                                                     /* Competences : charges, nom, etat */
+        const SkillDef *sd = &skillDef[P.skill];
+        char kb[64];
+        for (int i = 0; i < sd->max; i++) {
+            float fill = clampf(P.skillCh - i, 0, 1), x = winW - 30.0f - (sd->max - i) * 20.0f, y = winH - 96.0f;
+            rect(x, y, 14, 14, sd->r * 0.15f, sd->g * 0.15f, sd->b * 0.15f, 0.7f);
+            rect(x, y + 14 * (1 - fill), 14, 14 * fill, sd->r, sd->g, sd->b, fill >= 1 ? 1.0f : 0.5f);
+        }
+        snprintf(kb, sizeof kb, "%s [%s]", sd->name, bind_text(A_SKILL));
+        text(0, winW - 36.0f - sd->max * 20.0f - fontW[0] * (float)strlen(kb), winH - 83.0f, kb, sd->r * 0.8f, sd->g * 0.8f, sd->b * 0.8f, 0.9f);
+        const char *st = P.ricArmed ? "RICOCHET ARME" : P.chargeT > 0 ? "CHARGE PRETE x1,5" : NULL;
+        if (st) text_c(0, cx, cy + 74, st, sd->r, sd->g, sd->b, 0.6f + 0.4f * sinf(gameTime * 12));
+        if (P.chargeHold > 0) {                           /* CHARGE : jauge de maintien */
+            rect(cx - 40, cy + 62, 80, 4, 0.1f, 0.1f, 0.15f, 0.7f);
+            rect(cx - 40, cy + 62, 80 * clampf(P.chargeHold / CHARGE_HOLD, 0, 1), 4, sd->r, sd->g, sd->b, 0.9f);
+        }
+        if (markedMeT > 0) text_c(1, cx, 120, "MARQUE : TU ES VISIBLE", 0.85f, 0.35f, 1, 0.5f + 0.5f * sinf(gameTime * 10));
+        for (int i = 0; i < MAXP + MAXE; i++) {          /* MARQUE : losange au-dessus des cibles, a travers les murs */
+            float sx, sy, mt = i < MAXP ? markP[i] : markE[i - MAXP];
+            if (mt <= 0) continue;
+            if (i < MAXP && !np_target(i)) continue;
+            V3 at = i < MAXP ? vadd(np_center(i), v3(0, 1.4f, 0)) : vadd(E[i - MAXP].pos, v3(0, 1.2f, 0));
+            if (!project(at, &sx, &sy)) continue;
+            float r = 9 + 3 * sinf(gameTime * 8);
+            rect(sx - r * 0.5f, sy - r * 0.5f, r, r, 0.85f, 0.35f, 1, 0.9f);
+            rect(sx - r * 0.25f, sy - r * 0.25f, r * 0.5f, r * 0.5f, 1, 1, 1, 0.9f);
+        }
     }
     {                                                     /* le viseur s'allume sur une piece : doree = la mienne, rouge = adverse */
         V3 eye = eye_pos(), vd = view_dir();
@@ -10857,7 +11149,7 @@ static void draw_hud(void) {
             }
             x += gw + fontW[0] * 3;
         }
-        if (wantLoadout[0] != P.loadout[0] || wantLoadout[1] != P.loadout[1] || wantMelee != P.meleeKind)
+        if (wantLoadout[0] != P.loadout[0] || wantLoadout[1] != P.loadout[1] || wantMelee != P.meleeKind || wantSkill != P.skill)
             text(0, winW - 30.0f - fontW[0] * 32, winH - 120.0f, "nouveau loadout au prochain respawn", 0.6f, 0.6f, 0.65f, 0.8f);
     }
 
@@ -11074,6 +11366,18 @@ static void render(float alpha, float frameDt) {
     glDisable(GL_LIGHTING);
     for (int i = 0; i < MAXCOIN; i++) {                  /* pieces : disques dores qui tournent */
         if (!CO[i].alive) continue;
+        if (CO[i].decoy) {                                /* MIRAGE : silhouette du lanceur, qui clignote en se dissipant */
+            const float *pc = pcol[CO[i].owner < MAXP ? CO[i].owner : 0];
+            float k = CO[i].life < 0.6f && fmodf(CO[i].life * 12, 1) < 0.5f ? 0.4f : 0.85f;
+            glPushMatrix();
+            glTranslatef(CO[i].pos.x, CO[i].pos.y, CO[i].pos.z);
+            glRotatef(-CO[i].spin * 180 / PI, 0, 1, 0);
+            glColor3f(pc[0] * k, pc[1] * k, pc[2] * k);
+            box_faces(v3(-HW, -0.9f, -HW * 0.6f), v3(HW, 0.55f, HW * 0.6f));
+            box_faces(v3(-0.22f, 0.55f, -0.22f), v3(0.22f, 0.9f, 0.22f));
+            glPopMatrix();
+            continue;
+        }
         glPushMatrix();
         glTranslatef(CO[i].pos.x, CO[i].pos.y, CO[i].pos.z);
         glRotatef(CO[i].spin * 900, 0, 1, 0);
@@ -11182,6 +11486,7 @@ static void render(float alpha, float frameDt) {
     }
     for (int i = 0; i < MAXCOIN; i++) {                  /* reflet des pieces */
         if (!CO[i].alive) continue;
+        if (CO[i].decoy) { glColor4f(0.4f, 0.85f, 1, 0.25f + 0.15f * sinf(gameTime * 20)); billboard(CO[i].pos, 2.4f); continue; }
         if (CO[i].teslaT > 0) glColor4f(0.45f, 0.7f, 1, 0.6f + 0.4f * sinf(CO[i].spin * 40));   /* Tesla : lueur bleue */
         else glColor4f(1, 0.85f, 0.4f, 0.5f + 0.4f * sinf(CO[i].spin * 25));
         billboard(CO[i].pos, 0.7f);
@@ -11808,7 +12113,7 @@ static void run_tests(const char *path) {
         V3 d = vsub(CO[c0].pos, eye_pos());
         P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
         lastChain = 0;
-        float coinsLeft = P.coins;
+        float coinsLeft = P.skillCh;
         fire_rail();
         fprintf(f, "piece%s : chaine %d, degats au drone %.0f (attendu %.0f), pieces restantes %.0f" "\n",
                 pass ? "s x2" : "", lastChain, 1000 - E[0].hp, pass ? RAIL_DMG * 2.25f : RAIL_DMG * 1.5f, coinsLeft);
@@ -12794,7 +13099,7 @@ static void run_tests(const char *path) {
         NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Bot");
         NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
         NP[1].disp = v3(-20, 0, 28); vf(NP[1].st.pos, NP[1].disp);
-        P.dashCharge = 0; P.coins = 0;
+        P.dashCharge = 0; P.skillCh = 0;
         P.loadout[0] = WP_RAIL; P.loadout[1] = WP_TESLA; P.weapon = WP_RAIL;
         FILE *savedLog = botLog;
         botLog = NULL;                                     /* journal du bot hors des resultats */
@@ -13843,12 +14148,12 @@ static void run_tests(const char *path) {
         int savedBot = botMode;
         botMode = 0;                                      /* les bots ne sauvegardent jamais : on simule un joueur */
         snprintf(cfgPath, sizeof cfgPath, "cfg_test.ini");
-        binds[A_COIN][1] = K_X2; sens = 0.003f; fovBase = 115; invertY = 1;
+        binds[A_SKILL][1] = K_X2; sens = 0.003f; fovBase = 115; invertY = 1;
         cfg_save();
         memcpy(binds, bindDefault, sizeof binds); sens = 0.0022f; fovBase = 105; invertY = 0;
         cfg_load();
         fprintf(f, "reglages : piece -> %d (attendu %d), sens %.4f, fov %.0f, axe Y inverse %d (attendu 0.0030, 115, 1)%s",
-                binds[A_COIN][1], K_X2, sens, fovBase, invertY, "\n");
+                binds[A_SKILL][1], K_X2, sens, fovBase, invertY, "\n");
         remove(cfgPath);
         cfgPath[0] = 0;
         botMode = savedBot;
@@ -14172,11 +14477,13 @@ static int velocity_main(const char *cmd) {
             else if (!strcmp(t, "--hidden")) botHidden = 1;
             else if (!strcmp(t, "--updated")) updAfter = 1;
             else if (!strcmp(t, "--level") && (t = strtok(NULL, " "))) botLevel = atoi(t) < 0 ? 0 : atoi(t) > 2 ? 2 : atoi(t);
-            else if (!strcmp(t, "--loadout") && (t = strtok(NULL, " "))) {   /* --loadout arme1,arme2[,melee] (WP_*, WP_*, MK_*) */
-                int l0, l1, mk, n = sscanf(t, "%d,%d,%d", &l0, &l1, &mk);
+            else if (!strcmp(t, "--loadout") && (t = strtok(NULL, " "))) {   /* --loadout arme1,arme2[,melee[,competence]] (WP_*, WP_*, MK_*, SK_*) */
+                int l0, l1, mk, sk, n = sscanf(t, "%d,%d,%d,%d", &l0, &l1, &mk, &sk);
                 if (n >= 2) { wantLoadout[0] = l0; wantLoadout[1] = l1; }
-                if (n == 3) wantMelee = mk;
+                if (n >= 3) wantMelee = mk;
+                if (n == 4) { wantSkill = sk >= 0 && sk < SK_COUNT ? sk : SK_COIN; botSkillSet = 1; }
             }
+            else if (!strcmp(t, "--skill") && (t = strtok(NULL, " "))) { wantSkill = atoi(t) >= 0 && atoi(t) < SK_COUNT ? atoi(t) : SK_COIN; botSkillSet = 1; }
         }
     }
 
@@ -14269,7 +14576,7 @@ static int velocity_main(const char *cmd) {
             updInfo.build = VELOCITY_BUILD + 5; updState = updSeen = UPD_DOWNLOADING; updTotal = 1000; updGot = 630;
             set_status("nouvelle version disponible : build 5");
         }
-        if (strstr(shotPath, "settings")) { settingsOpen = 1; waitAct = A_COIN; waitSlot = 1; }
+        if (strstr(shotPath, "settings")) { settingsOpen = 1; waitAct = A_SKILL; waitSlot = 1; }
         if (strstr(shotPath, "loadout")) loadoutOpen = 1;
         render(1, TICK);
         save_bmp(shotPath);
