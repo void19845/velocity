@@ -103,6 +103,10 @@ static V3 rand_dir(void) {
 #define WALLRUN_MAX    1.8f
 #define BASE_HFOV      105.0f
 
+#define AIMASSIST_CONE  0.07f  /* rayon (rad, ~4 deg) du cone pres du viseur ou l'aimant agit */
+#define AIMASSIST_RATE  1.4f   /* vitesse de correction au centre du cone (s'annule au bord) ; faible expres */
+#define AIMASSIST_RANGE 60.0f  /* portee max */
+
 #define GRAPPLE_RANGE    55.0f   /* portee max du crochet */
 #define GRAPPLE_SPEED    120.0f  /* vitesse de vol du crochet */
 #define GRAPPLE_PULL     70.0f   /* acceleration vers le point d'accroche */
@@ -1483,8 +1487,8 @@ static HANDLE botProc;                                    /* processus du bot ad
 static pid_t botProc;
 #endif
 static const char *botLevelNames[3] = { "FACILE", "NORMAL", "DIFFICILE" };
-static const float botAimMul[3]  = { 2.8f, 1.0f, 0.45f };   /* imprecision de visee */
-static const float botReactT[3]  = { 0.7f, 0.3f, 0.14f };   /* delai avant de tirer apres avoir vu la cible */
+static const float botAimMul[3]  = { 6.5f, 1.3f, 0.45f };   /* imprecision de visee */
+static const float botReactT[3]  = { 1.1f, 0.32f, 0.14f };  /* delai avant de tirer apres avoir vu la cible */
 static const float botParryP[3]  = { 0.15f, 0.5f, 0.85f };  /* chance de tenter un parry quand l'epee adverse arrive */
 static void netlog(const char *fmt, ...);
 static void net_hit(int target, float dmg, V3 knock, int weapon);
@@ -1725,7 +1729,10 @@ static void move_axis(int ax, float d, int canStep) {
             else { P.pos.y = b->mn.y - h - 0.001f; if (P.vel.y > 0) P.vel.y = 0; }
         } else {
             float rise = b->mx.y - P.pos.y;
-            if (canStep && rise > 0 && rise <= STEP_H) {
+            /* un jump pad se monte meme en l'air (bhop) : sinon ses 0,3 m de haut agissent comme un mur plein
+             * tant qu'on n'est pas deja au sol (canStep), et a vitesse elevee on arrive dessus en l'air la
+             * plupart du temps -> on se fait arreter a son bord au lieu de monter dessus et de le declencher */
+            if ((canStep || b->kind == B_PAD) && rise > 0 && rise <= STEP_H) {
                 V3 np = P.pos; np.y = b->mx.y + 0.001f;
                 if (pos_free(np, h)) { P.stepOfs -= rise; P.pos = np; P.stairT = STAIR_RAMP_T; continue; }
             }
@@ -2070,10 +2077,12 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     float stairSp = hlen(P.vel);
     int steps = (int)(vlen(P.vel) * dt / 0.3f) + 1;
     P.grounded = 0;
-    for (int s = 0; s < steps; s++) {
+    int onPad = 0;                                   /* verifie a chaque sous-pas (pas seulement a la fin du tick) */
+    for (int s = 0; s < steps && !onPad; s++) {
         move_axis(0, P.vel.x * dt / steps, wasG);
         move_axis(2, P.vel.z * dt / steps, wasG);
         move_axis(1, P.vel.y * dt / steps, 0);
+        if (P.grounded && boxes[P.groundBox].kind == B_PAD) onPad = 1;
     }
     if (wasG && !P.grounded && P.stairT > 0 && alive && P.hook != HOOK_ATTACHED) {   /* haut de l'escalier : decollage de rampe */
         float ramp = stairSp * STAIR_SLOPE;
@@ -2082,7 +2091,6 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     }
 
     /* Enclume : contact direct en l'air, puis onde de choc a l'atterrissage (avant le jump pad) */
-    int onPad = P.grounded && boxes[P.groundBox].kind == B_PAD;
     int slammed = 0;
     if (diving && alive) slam_contact();
     if (P.grounded && !wasG && P.anvilState == ANVIL_DIVE && alive) { slam_land(-prevVy); slammed = 1; }
@@ -7385,6 +7393,52 @@ static int swing_start(int i) {
     return m >= 150;
 }
 
+/* Aimant de visee : quand le viseur passe pres d'une cible valide (ennemi solo ou joueur en LAN), tire
+ * tres doucement le viseur vers son centre. Rayon et vitesse volontairement faibles (voir les #define
+ * AIMASSIST_*) : ca doit aider sans que le joueur le remarque consciemment. */
+static void aim_assist(float dt) {
+    if (P.dead) return;
+    V3 eye = eye_pos();
+    int haveTarget = 0;
+    float bestAng = AIMASSIST_CONE;
+    V3 bestC = v3(0, 0, 0);
+    for (int i = 0; i < MAXE; i++) {
+        if (!E[i].alive) continue;
+        V3 d = vsub(E[i].pos, eye);
+        float dist = vlen(d);
+        if (dist < 1 || dist > AIMASSIST_RANGE) continue;
+        float dyaw = atan2f(d.x, -d.z) - P.yaw;
+        while (dyaw > PI) dyaw -= 2 * PI;
+        while (dyaw < -PI) dyaw += 2 * PI;
+        float dpitch = asinf(clampf(d.y / dist, -1, 1)) - P.pitch;
+        float ang = sqrtf(dyaw * dyaw + dpitch * dpitch);
+        if (ang < bestAng && los(eye, E[i].pos)) { bestAng = ang; bestC = E[i].pos; haveTarget = 1; }
+    }
+    if (dmMode)
+        for (int i = 0; i < MAXP; i++) {
+            if (!np_target(i)) continue;
+            V3 c = np_center(i), d = vsub(c, eye);
+            float dist = vlen(d);
+            if (dist < 1 || dist > AIMASSIST_RANGE) continue;
+            float dyaw = atan2f(d.x, -d.z) - P.yaw;
+            while (dyaw > PI) dyaw -= 2 * PI;
+            while (dyaw < -PI) dyaw += 2 * PI;
+            float dpitch = asinf(clampf(d.y / dist, -1, 1)) - P.pitch;
+            float ang = sqrtf(dyaw * dyaw + dpitch * dpitch);
+            if (ang < bestAng && los(eye, c)) { bestAng = ang; bestC = c; haveTarget = 1; }
+        }
+    if (!haveTarget) return;
+    V3 d = vsub(bestC, eye);
+    float dist = fmaxf(vlen(d), 0.01f);
+    float dyaw = atan2f(d.x, -d.z) - P.yaw;
+    while (dyaw > PI) dyaw -= 2 * PI;
+    while (dyaw < -PI) dyaw += 2 * PI;
+    float dpitch = asinf(clampf(d.y / dist, -1, 1)) - P.pitch;
+    float w = fminf(0.5f, dt * AIMASSIST_RATE) * (1 - bestAng / AIMASSIST_CONE);   /* plus fort pres du centre */
+    P.yaw += dyaw * w;
+    P.pitch = clampf(P.pitch + dpitch * w, -1.55f, 1.55f);
+}
+
 /* Le bot joue comme un joueur de movement shooter : bhop permanent, air-strafe en balancant
  * la vue autour de la cible (en tenant le strafe du cote ou il tourne), dash et grappin pour
  * combler la distance, visee recalee au moment de tirer, corps a corps au contact. */
@@ -7649,7 +7703,9 @@ static void bot_think(float dt) {
         float d = vlen(vsub(NP[i].disp, P.pos));
         if (d < bd) { bd = d; best = i; }
     }
-    botHeld[A_JUMP] = 1;                                   /* bhop : on ne touche jamais le sol longtemps */
+    /* bhop : on ne touche jamais le sol longtemps -- sauf en facile, qui perd son chainage une bonne partie
+     * du temps (sinon, meme avec une mauvaise visee, un bot qui garde un bhop parfait reste trop fuyant) */
+    botHeld[A_JUMP] = botLevel > 0 || fmodf(botT, 1.4f) < 0.8f;
     static float searchYaw, stuckT, escapeT, escapeDir = 1;
     static int escapeHook;
     static float seeT;
@@ -8302,24 +8358,22 @@ static void fx_tick(float dt) {
 /* ------------------------------------------------------------------ */
 /* Rendu                                                               */
 /* ------------------------------------------------------------------ */
-static GLuint texGrid, texDot, worldList, fontBase[3];
+static GLuint texGrid, texWall, texGrime, texDot, worldList, fontBase[3];
 static int fontW[3], fontH[3];
 static V3 camR, camU, camEye;
 static float fps;
 
-static void make_textures(void) {
-    int N = 128;
-    unsigned char *img = (unsigned char *)malloc(N * N * 3);
-    for (int y = 0; y < N; y++)
-        for (int x = 0; x < N; x++) {
-            float v = 0.84f + frange(-0.025f, 0.025f);
-            if (x < 3 || y < 3 || x >= N - 2 || y >= N - 2) v = 0.5f;
-            else if (x == 63 || x == 64 || y == 63 || y == 64) v = 0.7f;
-            unsigned char c = (unsigned char)(clampf(v, 0, 1) * 255);
-            img[(y * N + x) * 3 + 0] = img[(y * N + x) * 3 + 1] = img[(y * N + x) * 3 + 2] = c;
-        }
-    glGenTextures(1, &texGrid);
-    glBindTexture(GL_TEXTURE_2D, texGrid);
+/* generateur local, isole du rng de jeu : les textures doivent rester reproductibles sans
+ * jamais toucher a la graine qui sert a placer les blocs de couverture de la carte */
+static float tnoise(unsigned int *s) {
+    *s = *s * 1664525u + 1013904223u;
+    return (float)(*s >> 8) * (1.0f / 16777216.0f);
+}
+
+/* envoie une image RGB a OpenGL avec des mipmaps faits main (filtre boite) ; modifie/consomme img */
+static void upload_rgb_mip(GLuint *tex, unsigned char *img, int N) {
+    glGenTextures(1, tex);
+    glBindTexture(GL_TEXTURE_2D, *tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -8337,7 +8391,109 @@ static void make_textures(void) {
                 }
         s = h;
     }
-    free(img);
+}
+
+static void make_textures(void) {
+    unsigned int s;
+
+    /* --- sol/plafond : dalles biseautees, boulons, taches d'usure ---------------------- */
+    {
+        int N = 256, panel = 64;
+        unsigned char *img = (unsigned char *)malloc(N * N * 3);
+        float stx[10], sty[10], str[10], stp[10];
+        s = 0xA17Eu;
+        for (int i = 0; i < 10; i++) {
+            stx[i] = tnoise(&s) * N; sty[i] = tnoise(&s) * N;
+            str[i] = 10 + tnoise(&s) * 22; stp[i] = 0.08f + tnoise(&s) * 0.14f;
+        }
+        for (int y = 0; y < N; y++)
+            for (int x = 0; x < N; x++) {
+                int px = x % panel, py = y % panel;
+                float dx = (float)(px < panel - px ? px : panel - px), dy = (float)(py < panel - py ? py : panel - py);
+                float v = 0.80f;
+                v += sinf(x * 0.045f + 1.3f) * cosf(y * 0.037f + 0.7f) * 0.05f;       /* grain large */
+                v += sinf(x * 0.21f + py * 0.3f) * cosf(y * 0.17f) * 0.015f;          /* ondulation fine */
+                v += (tnoise(&s) * 2 - 1) * 0.035f;                                  /* grain fin */
+                /* joint biseaute en degrade (pas de marches nettes = moins "dessine") */
+                v -= 0.15f * fmaxf(expf(-dx * dx / 1.3f), expf(-dy * dy / 1.3f));            /* fond du joint */
+                v += 0.08f * fmaxf(expf(-(dx - 2.4f) * (dx - 2.4f) / 1.1f),
+                                    expf(-(dy - 2.4f) * (dy - 2.4f) / 1.1f));                  /* arete eclairee */
+                {                                                                     /* un boulon par dalle, en degrade */
+                    float bx = (float)px - 9, by = (float)py - 9, br2 = bx * bx + by * by;
+                    v -= 0.12f * expf(-br2 / 5.0f);
+                    v += 0.17f * expf(-br2 / 0.6f);
+                }
+                for (int i = 0; i < 10; i++) {                                       /* taches, repetition sans couture */
+                    float ddx = x - stx[i], ddy = y - sty[i];
+                    if (fabsf(ddx) > N * 0.5f) ddx -= (ddx > 0 ? (float)N : -(float)N);
+                    if (fabsf(ddy) > N * 0.5f) ddy -= (ddy > 0 ? (float)N : -(float)N);
+                    float d = sqrtf(ddx * ddx + ddy * ddy);
+                    if (d < str[i]) { float k = 1 - d / str[i]; v -= stp[i] * k * k; }
+                }
+                float warm = sinf(x * 0.013f + y * 0.021f + 4.0f) * 0.02f;   /* teinte minerale tres legere */
+                img[(y * N + x) * 3 + 0] = (unsigned char)(clampf(v + warm, 0, 1) * 255);
+                img[(y * N + x) * 3 + 1] = (unsigned char)(clampf(v, 0, 1) * 255);
+                img[(y * N + x) * 3 + 2] = (unsigned char)(clampf(v - warm, 0, 1) * 255);
+            }
+        upload_rgb_mip(&texGrid, img, N);
+        free(img);
+    }
+
+    /* --- murs : plaques metalliques boulonnees, brossage vertical, haut de plaque eclaire --- */
+    {
+        int N = 256, panelX = 128, panelY = 64;
+        unsigned char *img = (unsigned char *)malloc(N * N * 3);
+        float colTint[256];
+        s = 0x5EEDu;
+        for (int x = 0; x < N; x++) colTint[x] = (tnoise(&s) * 2 - 1) * 0.03f;        /* stries de brossage */
+        for (int y = 0; y < N; y++)
+            for (int x = 0; x < N; x++) {
+                int panelI = x / panelX, panelJ = y / panelY;
+                unsigned int ph = (unsigned int)(panelI * 97 + panelJ * 193 + 71);
+                ph = ph * 1664525u + 1013904223u;
+                float tint = ((float)(ph >> 8) * (1.0f / 16777216.0f) * 2 - 1) * 0.045f;  /* teinte par plaque */
+                int px = x % panelX, py = y % panelY;
+                float dx = (float)(px < panelX - px ? px : panelX - px), dy = (float)(py < panelY - py ? py : panelY - py);
+                float v = 0.62f + tint + colTint[x];
+                /* joint en degrade, comme le sol : evite l'effet "trait d'encre" */
+                v -= 0.14f * fmaxf(expf(-dx * dx / 1.3f), expf(-dy * dy / 1.3f));
+                v += 0.09f * fmaxf(expf(-(dx - 2.4f) * (dx - 2.4f) / 1.1f),
+                                    expf(-(dy - 2.4f) * (dy - 2.4f) / 1.1f));
+                if (py > 2 && py < 7) v += 0.05f;                                     /* le haut accroche la lumiere */
+                {                                                                      /* boulons aux 4 coins de la plaque */
+                    int cx = px < panelX / 2 ? 8 : panelX - 9, cy = py < panelY / 2 ? 8 : panelY - 9;
+                    float bdx = (float)(px - cx), bdy = (float)(py - cy), br2 = bdx * bdx + bdy * bdy;
+                    v -= 0.11f * expf(-br2 / 4.5f);
+                    v += 0.16f * expf(-br2 / 0.55f);
+                }
+                v += (tnoise(&s) * 2 - 1) * 0.02f;
+                float warm = tint * 0.5f;                     /* plaques legerement plus froides ou rouillees entre elles */
+                img[(y * N + x) * 3 + 0] = (unsigned char)(clampf(v + warm, 0, 1) * 255);
+                img[(y * N + x) * 3 + 1] = (unsigned char)(clampf(v, 0, 1) * 255);
+                img[(y * N + x) * 3 + 2] = (unsigned char)(clampf(v - warm * 1.4f, 0, 1) * 255);
+            }
+        upload_rgb_mip(&texWall, img, N);
+        free(img);
+    }
+
+    /* --- grain fin, 2e passe multiplicative pour casser la repetition vue de pres --------- */
+    {
+        int N = 64;
+        unsigned char *img = (unsigned char *)malloc(N * N * 3);
+        s = 0xC0FFEEu;
+        for (int y = 0; y < N; y++)
+            for (int x = 0; x < N; x++) {
+                float v = 0.92f;
+                v += sinf(x * 0.5f + 2.1f) * cosf(y * 0.41f) * 0.03f;
+                v -= tnoise(&s) * 0.22f;                                             /* poussiere/micro-rayures */
+                float sp = tnoise(&s);                                               /* quelques specks, bord adouci */
+                if (sp < 0.04f) v -= 0.14f * (1 - sp / 0.04f);
+                unsigned char c = (unsigned char)(clampf(v, 0.55f, 1) * 255);
+                img[(y * N + x) * 3 + 0] = img[(y * N + x) * 3 + 1] = img[(y * N + x) * 3 + 2] = c;
+            }
+        upload_rgb_mip(&texGrime, img, N);
+        free(img);
+    }
 
     int D = 32;
     unsigned char *dot = (unsigned char *)malloc(D * D * 4);
@@ -8380,6 +8536,37 @@ static void box_faces(V3 a, V3 b) {
     glEnd();
 }
 
+/* comme box_faces, mais choix des faces (masque FACE_*) et echelle de texture : sert au rendu du
+ * monde en plusieurs passes (sol/mur separes, puis grain de pres) sans toucher a box_faces, utilise
+ * partout ailleurs (armes, ennemis) a l'echelle fixe 0.5 */
+enum { FACE_PX = 1, FACE_NX = 2, FACE_PY = 4, FACE_NY = 8, FACE_PZ = 16, FACE_NZ = 32,
+       FACE_SIDES = FACE_PX | FACE_NX | FACE_PZ | FACE_NZ, FACE_UD = FACE_PY | FACE_NY,
+       FACE_ALL = FACE_SIDES | FACE_UD };
+
+static void quad_tex(V3 n, V3 a, V3 b, V3 c, V3 d, float scale) {
+    V3 vs[4] = { a, b, c, d };
+    glNormal3f(n.x, n.y, n.z);
+    for (int i = 0; i < 4; i++) {
+        V3 p = vs[i]; float u, v;
+        if (fabsf(n.x) > 0.5f) { u = p.z; v = p.y; }
+        else if (fabsf(n.y) > 0.5f) { u = p.x; v = p.z; }
+        else { u = p.x; v = p.y; }
+        glTexCoord2f(u * scale, v * scale);
+        glVertex3f(p.x, p.y, p.z);
+    }
+}
+
+static void box_faces_m(V3 a, V3 b, int mask, float scale) {
+    glBegin(GL_QUADS);
+    if (mask & FACE_PX) quad_tex(v3(1, 0, 0),  v3(b.x, a.y, a.z), v3(b.x, b.y, a.z), v3(b.x, b.y, b.z), v3(b.x, a.y, b.z), scale);
+    if (mask & FACE_NX) quad_tex(v3(-1, 0, 0), v3(a.x, a.y, a.z), v3(a.x, a.y, b.z), v3(a.x, b.y, b.z), v3(a.x, b.y, a.z), scale);
+    if (mask & FACE_PY) quad_tex(v3(0, 1, 0),  v3(a.x, b.y, a.z), v3(a.x, b.y, b.z), v3(b.x, b.y, b.z), v3(b.x, b.y, a.z), scale);
+    if (mask & FACE_NY) quad_tex(v3(0, -1, 0), v3(a.x, a.y, a.z), v3(b.x, a.y, a.z), v3(b.x, a.y, b.z), v3(a.x, a.y, b.z), scale);
+    if (mask & FACE_PZ) quad_tex(v3(0, 0, 1),  v3(a.x, a.y, b.z), v3(b.x, a.y, b.z), v3(b.x, b.y, b.z), v3(a.x, b.y, b.z), scale);
+    if (mask & FACE_NZ) quad_tex(v3(0, 0, -1), v3(a.x, a.y, a.z), v3(a.x, b.y, a.z), v3(b.x, b.y, a.z), v3(b.x, a.y, a.z), scale);
+    glEnd();
+}
+
 static void box_edges(V3 a, V3 b) {
     float xs[2] = { a.x, b.x }, ys[2] = { a.y, b.y }, zs[2] = { a.z, b.z };
     glBegin(GL_LINES);
@@ -8392,18 +8579,69 @@ static void box_edges(V3 a, V3 b) {
     glEnd();
 }
 
+/* prisme a facettes le long de z (cylindre/cone selon r0/r1), centre c, n faces, bouts fermes si
+ * cap0/cap1 : sert aux canons ronds, bagues, lunettes... des armes (modeles bien plus anguleux sinon,
+ * fait uniquement de boites) */
+static void prism_z(V3 c, float z0, float z1, float r0, float r1, int n, int cap0, int cap1) {
+    glBegin(GL_QUADS);
+    for (int i = 0; i < n; i++) {
+        float a0 = i * (2 * PI / n), a1 = (i + 1) * (2 * PI / n);
+        float cx0 = cosf(a0), sx0 = sinf(a0), cx1 = cosf(a1), sx1 = sinf(a1);
+        V3 nrm = vnorm(v3(cx0 + cx1, sx0 + sx1, 0));
+        glNormal3f(nrm.x, nrm.y, nrm.z);
+        glVertex3f(c.x + cx0 * r0, c.y + sx0 * r0, c.z + z0);
+        glVertex3f(c.x + cx1 * r0, c.y + sx1 * r0, c.z + z0);
+        glVertex3f(c.x + cx1 * r1, c.y + sx1 * r1, c.z + z1);
+        glVertex3f(c.x + cx0 * r1, c.y + sx0 * r1, c.z + z1);
+    }
+    glEnd();
+    if (cap0 && r0 > 0.0001f) {
+        glBegin(GL_TRIANGLE_FAN);
+        glNormal3f(0, 0, -1);
+        glVertex3f(c.x, c.y, c.z + z0);
+        for (int i = n; i >= 0; i--) { float a = i * (2 * PI / n); glVertex3f(c.x + cosf(a) * r0, c.y + sinf(a) * r0, c.z + z0); }
+        glEnd();
+    }
+    if (cap1 && r1 > 0.0001f) {
+        glBegin(GL_TRIANGLE_FAN);
+        glNormal3f(0, 0, 1);
+        glVertex3f(c.x, c.y, c.z + z1);
+        for (int i = 0; i <= n; i++) { float a = i * (2 * PI / n); glVertex3f(c.x + cosf(a) * r1, c.y + sinf(a) * r1, c.z + z1); }
+        glEnd();
+    }
+}
+
 static void build_world_list(void) {
     worldList = glGenLists(1);
     glNewList(worldList, GL_COMPILE);
+    glEnable(GL_CULL_FACE);                                   /* normales sortantes verifiees : la face interieure de
+                                                                * chaque boite (jamais vue) n'est pas dessinee */
+    glCullFace(GL_BACK);
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(1, 1);
     glEnable(GL_LIGHTING);
     glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, texGrid);
+    glBindTexture(GL_TEXTURE_2D, texGrid);                    /* passe 1 : sol/plafond (faces horizontales) */
     for (int i = 0; i < nb; i++) {
         glColor3f(boxes[i].col.x, boxes[i].col.y, boxes[i].col.z);
-        box_faces(boxes[i].mn, boxes[i].mx);
+        box_faces_m(boxes[i].mn, boxes[i].mx, FACE_UD, 0.5f);
     }
+    glBindTexture(GL_TEXTURE_2D, texWall);                    /* passe 2 : murs (faces verticales) */
+    for (int i = 0; i < nb; i++) {
+        glColor3f(boxes[i].col.x, boxes[i].col.y, boxes[i].col.z);
+        box_faces_m(boxes[i].mn, boxes[i].mx, FACE_SIDES, 0.5f);
+    }
+    glDepthFunc(GL_LEQUAL);                                   /* passe 3 : grain fin, meme profondeur que 1/2 */
+    glBindTexture(GL_TEXTURE_2D, texGrime);
+    glColor3f(1, 1, 1);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_FOG);                                        /* sinon le brouillard se multiplierait deux fois */
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_DST_COLOR, GL_ZERO);
+    for (int i = 0; i < nb; i++) box_faces_m(boxes[i].mn, boxes[i].mx, FACE_ALL, 2.37f);
+    glDisable(GL_BLEND);
+    glEnable(GL_FOG);
+    glDepthFunc(GL_LESS);
     glDisable(GL_POLYGON_OFFSET_FILL);
     glDisable(GL_TEXTURE_2D);
     glDisable(GL_LIGHTING);
@@ -8416,6 +8654,7 @@ static void build_world_list(void) {
         box_edges(boxes[i].mn, boxes[i].mx);
     }
     glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);                                  /* n'affecte que ce display list, pas le reste du rendu */
     glEndList();
 }
 
@@ -8453,6 +8692,14 @@ static void rect(float x, float y, float w, float h, float r, float g, float b, 
     glColor4f(r, g, b, a);
     glBegin(GL_QUADS);
     glVertex2f(x, y); glVertex2f(x + w, y); glVertex2f(x + w, y + h); glVertex2f(x, y + h);
+    glEnd();
+}
+/* meme chose, mais alpha different en haut et en bas (ex : assombrir vers le haut, laisser voir le
+ * decor vers le bas) */
+static void rect_vgrad(float x, float y, float w, float h, float r, float g, float b, float aTop, float aBot) {
+    glBegin(GL_QUADS);
+    glColor4f(r, g, b, aTop); glVertex2f(x, y); glVertex2f(x + w, y);
+    glColor4f(r, g, b, aBot); glVertex2f(x + w, y + h); glVertex2f(x, y + h);
     glEnd();
 }
 
@@ -8999,8 +9246,9 @@ static void draw_viewmodel(float aspect) {
     glRotatef(-P.roll * 0.5f, 0, 0, 1);
     if (P.sliding) glRotatef(-10, 0, 0, 1);
 
-    GLfloat lp[4] = { -0.3f, 1, 0.6f, 0 };
+    GLfloat lp[4] = { -0.3f, 1, 0.6f, 0 }, lp1[4] = { 0.3f, -0.4f, -0.6f, 0 };
     glLightfv(GL_LIGHT0, GL_POSITION, lp);
+    glLightfv(GL_LIGHT1, GL_POSITION, lp1);
     glEnable(GL_LIGHTING);
     if (P.meleeKind == MK_ANVIL) draw_anvil_vm();
     else if (P.meleeKind == MK_LANCE) draw_lance_vm();    /* Lance : toujours visible */
@@ -9050,16 +9298,32 @@ static void draw_viewmodel(float aspect) {
     }
     float ready = P.fireCd <= 0 ? 1.0f : 0.35f;
     if (P.weapon == WP_SAW) ready = P.sawCd <= 0 ? 1.0f : 0.35f;
-    if (P.weapon == WP_RAIL) {
+    if (P.weapon == WP_RAIL) {                            /* Rail : canon rond a facettes, frein de bouche, lunette */
+        V3 bc = v3(0, 0.005f, 0);                         /* axe du canon */
         glColor3f(0.25f, 0.27f, 0.32f);
-        box_faces(v3(-0.05f, -0.06f, -0.42f), v3(0.05f, 0.04f, 0.12f));
+        box_faces(v3(-0.05f, -0.06f, -0.42f), v3(0.05f, 0.04f, 0.12f));      /* carcasse */
+        box_faces(v3(-0.03f, -0.16f, 0.0f), v3(0.03f, -0.06f, 0.07f));      /* poignee */
+        for (int r = 0; r < 2; r++) {                     /* nervures de prise sur la poignee */
+            glColor3f(0.12f, 0.12f, 0.15f);
+            box_faces(v3(-0.031f, -0.14f + r * 0.035f, 0.005f), v3(0.031f, -0.13f + r * 0.035f, 0.065f));
+        }
         glColor3f(0.18f, 0.19f, 0.22f);
-        box_faces(v3(-0.025f, -0.02f, -0.62f), v3(0.025f, 0.03f, -0.42f));
-        box_faces(v3(-0.03f, -0.16f, 0.0f), v3(0.03f, -0.06f, 0.07f));
+        prism_z(bc, -0.64f, -0.40f, 0.024f, 0.032f, 8, 0, 0);               /* canon octogonal */
+        glColor3f(0.08f, 0.08f, 0.09f);
+        prism_z(bc, -0.637f, -0.634f, 0.014f, 0.012f, 8, 1, 0);             /* fond de l'ame, bouche sombre */
+        glColor3f(0.15f, 0.16f, 0.19f);
+        prism_z(bc, -0.60f, -0.555f, 0.034f, 0.034f, 8, 1, 1);              /* frein de bouche */
+        glColor3f(0.2f, 0.21f, 0.24f);                     /* petites ailettes de refroidissement */
+        box_faces(v3(-0.034f, 0.016f, -0.535f), v3(0.034f, 0.026f, -0.515f));
+        box_faces(v3(-0.034f, 0.016f, -0.50f), v3(0.034f, 0.026f, -0.48f));
+        glColor3f(0.2f, 0.21f, 0.25f);                     /* lunette : tube octogonal sur un petit support */
+        box_faces(v3(-0.006f, 0.04f, -0.26f), v3(0.006f, 0.05f, -0.2f));
+        prism_z(v3(0, 0.062f, -0.25f), -0.30f, -0.16f, 0.013f, 0.013f, 6, 1, 1);
         glDisable(GL_LIGHTING);
         glColor3f(0.3f * ready, 0.85f * ready, 1.0f * ready);
-        box_faces(v3(-0.055f, -0.012f, -0.4f), v3(0.055f, 0.0f, 0.05f));
-        box_faces(v3(-0.03f, 0.03f, -0.6f), v3(0.03f, 0.036f, -0.43f));
+        prism_z(bc, -0.435f, -0.405f, 0.037f, 0.037f, 8, 1, 1);             /* bague d'energie, lumineuse */
+        box_faces(v3(-0.016f, 0.031f, -0.58f), v3(0.016f, 0.036f, -0.40f)); /* rail lumineux sur le dessus */
+        prism_z(v3(0, 0.062f, -0.30f), -0.301f, -0.299f, 0.0105f, 0.0105f, 6, 0, 1);   /* reflet de la lentille */
     } else if (P.weapon == WP_KINETIC) {                  /* Elan : corps trapu, trois anneaux = compteur de vitesse */
         float back = P.kinT > 0 ? P.kinT * 0.1f : 0;      /* decharge : recul vers l'arriere */
         glPushMatrix();
@@ -9438,10 +9702,20 @@ static void draw_death_loadout(float cx, float y) {
 }
 
 static void draw_main_menu(float cx, float cy) {
-    rect(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.7f);
+    /* assombri surtout en haut (lisibilite du titre) ; vers le bas, le decor (sol, arene) reste visible */
+    rect_vgrad(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.78f, 0.30f);
+    for (int k = 0; k < 7; k++) {                             /* halo doux derriere le titre (passes decalees, faux flou) */
+        float t = (float)nowT;                                /* gameTime est gele hors partie : horloge murale */
+        float a = k * (2 * PI / 7) + t * 0.3f, rr = 3.5f + 1.5f * sinf(t * 0.7f + k);
+        text_c(2, cx + cosf(a) * rr, cy - 300 + sinf(a) * rr, "V E L O C I T Y", 0.4f, 0.85f, 1.0f, 0.05f);
+    }
     text_c(2, cx, cy - 300, "V E L O C I T Y", 0.5f, 0.9f, 1.0f, 1);
     text_c(0, cx, cy - 268, "movement shooter en C", 0.7f, 0.7f, 0.8f, 1);
+    rect(cx - 220, cy - 252, 440, 2, 0.5f, 0.9f, 1.0f, 0.5f);   /* trait d'accent sous le sous-titre */
     float bx = cx - 620, bw = 420, y = cy - 200;
+    rect(bx - 30, y - 30, bw + 60, 512, 0.03f, 0.04f, 0.08f, 0.55f);        /* panneau derriere les boutons */
+    rect(bx - 30, y - 30, bw + 60, 2, 0.5f, 0.9f, 1.0f, 0.5f);
+    rect(bx - 30, y + 480, bw + 60, 2, 0.5f, 0.9f, 1.0f, 0.25f);
     field(bx, y, bw, 48, "PSEUDO", myName, 1);
     y += 76;
     if (button(bx, y, bw, 52, "SOLO  -  VAGUES")) pendingAction = ACT_SOLO;
@@ -10563,6 +10837,9 @@ static void render(float alpha, float frameDt) {
     glLightfv(GL_LIGHT0, GL_POSITION, lp);
     glLightModelfv(GL_LIGHT_MODEL_AMBIENT, amb);
     glLightfv(GL_LIGHT0, GL_DIFFUSE, dif);
+    GLfloat lp1[4] = { -0.4f, 0.3f, -0.5f, 0 }, dif1[4] = { 0.16f, 0.18f, 0.24f, 1 };   /* lumiere d'appoint, froide */
+    glLightfv(GL_LIGHT1, GL_POSITION, lp1);
+    glLightfv(GL_LIGHT1, GL_DIFFUSE, dif1);
     {                                                     /* etoiles et soleil, accroches a la camera */
         glDisable(GL_FOG); glDisable(GL_DEPTH_TEST);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE);
@@ -11188,6 +11465,23 @@ static void run_tests(const char *path) {
     for (int i = 0; i < 360; i++) player_tick(TICK, 0, 0);
     fprintf(f, "jump pad nord : final x=%.2f y=%.2f z=%.2f (attendu y=7, z entre 39 et 62)\n", P.pos.x, P.pos.y, P.pos.z);
 
+    reset_game();                                         /* jump pad aborde au sol a grande vitesse (bhop) : meme vecteur attendu */
+    P.pos = P.prevPos = v3(ms(16) - 6, 0, 0); P.yaw = PI * 0.5f; P.vel = v3(45, 0, 0); P.grounded = 1;
+    act[A_FWD] = 1;                                       /* tenu seulement le temps de l'approche (20 ticks ~0,17 s @ 45 m/s) */
+    for (int i = 0; i < 20; i++) player_tick(TICK, 0, 0);
+    act[A_FWD] = 0;
+    maxY = 0;
+    for (int i = 0; i < 360; i++) { player_tick(TICK, 0, 0); maxY = fmaxf(maxY, P.pos.y); }
+    fprintf(f, "jump pad a grande vitesse au sol : apogee=%.2f final x=%.2f y=%.2f (attendu proches de la vitesse normale : apogee=8.55 x=46.73)\n",
+            maxY, P.pos.x, P.pos.y);
+
+    reset_game();                                         /* jump pad aborde EN L'AIR (bhop qui retombe dessus) : meme chose doit marcher */
+    P.pos = P.prevPos = v3(ms(16) - 1.2f, 0.15f, 0); P.yaw = PI * 0.5f; P.vel = v3(45, -3, 0); P.grounded = 0;
+    maxY = 0;
+    for (int i = 0; i < 360; i++) { player_tick(TICK, 0, 0); maxY = fmaxf(maxY, P.pos.y); }
+    fprintf(f, "jump pad a grande vitesse en l'air : apogee=%.2f final x=%.2f y=%.2f (attendu proches de la vitesse normale : apogee=8.55 x=46.73)\n",
+            maxY, P.pos.x, P.pos.y);
+
     reset_game();                                         /* bhop + air-strafe */
     P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = PI * 0.5f;
     act[A_FWD] = 1;
@@ -11204,6 +11498,19 @@ static void run_tests(const char *path) {
     }
     memset(act, 0, sizeof act);
     fprintf(f, "bhop : vitesse depart=%.1f max=%.1f (attendu max > %.1f)\n", startSpeed, maxSpeed, RUN_SPEED + 3);
+
+    reset_game();                                         /* aimant de visee : doit corriger un petit ecart, doucement */
+    P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0; P.grounded = 1;   /* couloir degage des tests */
+    for (int i = 0; i < MAXE; i++) E[i].alive = 0;
+    V3 eyeNow = eye_pos();
+    E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(eyeNow.x + 0.7f, eyeNow.y, eyeNow.z - 20);
+    aim_assist(TICK);
+    float yawOneTick = P.yaw;
+    for (int i = 0; i < 60; i++) aim_assist(TICK);
+    float targetYaw = atan2f(0.7f, 20.0f);
+    fprintf(f, "aimant de visee : apres 1 tick=%.5f (attendu petit, < 0.01), apres 0.5 s=%.4f sur %.4f vise (attendu entre 0 et %.4f, sans depasser)\n",
+            yawOneTick, P.yaw, targetYaw, targetYaw);
+    E[0].alive = 0;
 
     reset_game();                                         /* rocket jump */
     P.pos = P.prevPos = v3(-20, 0, 40); P.pitch = -1.5f;
@@ -13721,8 +14028,16 @@ static int velocity_main(const char *cmd) {
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_LIGHT0);
+    glEnable(GL_LIGHT1);                                      /* lumiere d'appoint froide, cf. render/draw_viewmodel */
     glEnable(GL_COLOR_MATERIAL);
     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+    {                                                          /* leger reflet specular, decors et armes */
+        GLfloat spec[4] = { 0.22f, 0.22f, 0.25f, 1 };
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, spec);
+        glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 20);
+        GLfloat noSpec[4] = { 0, 0, 0, 1 };
+        glLightfv(GL_LIGHT1, GL_SPECULAR, noSpec);            /* le reflet ne vient que du soleil (LIGHT0) */
+    }
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     glHint(GL_FOG_HINT, GL_NICEST);
     make_font(0, 18); make_font(1, 28); make_font(2, 56);
@@ -13993,6 +14308,7 @@ static int velocity_main(const char *cmd) {
                     P.pitch = clampf(P.pitch - mdy * sens * (invertY ? -1.0f : 1.0f), -1.55f, 1.55f);
                     P.swayX = clampf(P.swayX - mdx * 0.00004f, -0.04f, 0.04f);
                     P.swayY = clampf(P.swayY + mdy * 0.00004f, -0.04f, 0.04f);
+                    if (!botMode) aim_assist(dt);             /* bots visent deja parfaitement, pas besoin */
                 }
                 P.swayX *= expf(-dt * 10); P.swayY *= expf(-dt * 10);
             }

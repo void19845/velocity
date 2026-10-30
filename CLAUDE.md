@@ -11,6 +11,7 @@ Le propriétaire est francophone : réponses, commentaires et docs **en françai
 - Parties en ligne (lobby Cloudflare gratuit, STUN, perçage de NAT, spectateurs) : **`docs/PLAN_EN_LIGNE.md`**
   et §4 de `docs/CODE.md`. Le lobby est dans **`worker/`** (`node test.js` pour ses tests, `node dev-server.js`
   pour un lobby local ; le déploiement `npx wrangler deploy` est à faire par le propriétaire).
+- Mode équipes 3v3 (plan, pas encore implémenté) : **`docs/PLAN_EQUIPES.md`**
 
 ## Branches
 
