@@ -24,8 +24,8 @@ Chaque phase se termine par un build propre, `--test`, les captures et un commit
 | 1 | Saut plus haut | S | — | non (mais réglage partagé : même exe pour tous) |
 | 1b | Refonte de l'onde de l'Enclume (taille, hauteur, portée) | M | 1 | oui : `EV_SLAM` grossit, `NET_VER` |
 | 2 | Menus : tout proportionnel à la fenêtre, aucune valeur fixe | M-L | — | non |
-| 3 | Infrastructure des cartes (`MapDef`) + kill zone | M | 2 (bouton de carte) | oui : `NET_VER` |
-| 4 | Nouvelles cartes : Le Puits, Le Canyon, La Boucle, Le Dojo | S chacune | 3 | oui : `NET_VER` |
+| 3 | Infrastructure des cartes (`MapDef`) + kill zone — **fait** (`NET_VER` 13, voir `CODE.md` §3.12) | M | 2 (bouton de carte) | oui : `NET_VER` |
+| 4 | Nouvelles cartes : Le Puits, Le Canyon, La Boucle, Le Dojo — **fait** (v1) | S chacune | 3 | oui : `NET_VER` |
 | 5 | Modificateurs qui tombent du ciel (personnels + de partie) | L | 3 | oui : événements + `PkSnap` + `NET_VER` |
 | 6 | *Plus tard* — Mode roguelike (solo), non prioritaire | L | 3, 4, 5 | non |
 
@@ -350,6 +350,12 @@ du roguelike) directement avec les nouveaux outils.
 
 ## 3. Infrastructure des cartes et kill zone
 
+> **État : fait** (branche des cartes, `NET_VER` 13). Écarts avec le plan ci-dessous : le choix de carte est dans
+> le menu principal (ligne « CARTE < NOM > » + bouton ROTATION, sous le pseudo), pas dans un sous-écran EN LIGNE ;
+> `MapDef` a en plus `start`, `enemyFloor`, `specUp`, `sky`, `fog` ; le lobby en ligne ne transmet pas la carte
+> (le client la reçoit dans `PkWelcome`) ; pas de son grave à l'approche du vide (vignette seulement) ; les mines
+> sous `killY` disparaissent simplement. Détails : `CODE.md` §3.12.
+
 ### 3.1 `MapDef`
 Reprend le §4.7 de `IDEES_ARMES_CARTES.md`, mis à jour :
 ```c
@@ -414,6 +420,12 @@ static int curMap;
 ---
 
 ## 4. Nouvelles cartes
+
+> **État : v1 faite.** Le Puits (spirale de 8 plateformes reliées par des pads, plutôt que 6 étages espacés de
+> 12 m : le saut ne monte que de 1,5 m), Le Canyon (piliers de 6 × 6 m, pads bord → îlot → îlot central),
+> La Boucle (`B_SPEED`), Le Dojo (sans verre destructible). Toutes utilisent la musique « Arène ». Match bot
+> sur Le Puits (90 s) : 0 chute, ~90 grappins de secours, 9 kills. Reste : verre destructible du Dojo,
+> plafonner la portée de mêlée sur La Boucle si les mesures le demandent, musiques propres.
 
 Conception déjà décrite dans `IDEES_ARMES_CARTES.md` §4 ; ordre recommandé :
 

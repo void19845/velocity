@@ -119,6 +119,12 @@ static V3 rand_dir(void) {
 #define RAIL_CD        0.85f
 #define PICKUP_RESPAWN  12.0f
 
+/* Cartes (MapDef, docs/CODE.md) : bande d'acceleration de La Boucle, plan de mort des cartes ouvertes */
+#define SPEED_ACCEL     30.0f   /* B_SPEED : poussee (m/s2) dans le sens de la bande, sans friction */
+#define SPEED_MAX       28.0f   /* B_SPEED : vitesse jusqu'a laquelle la bande pousse */
+#define VOID_CREDIT_T   4.0f    /* chute dans le vide moins de 4 s apres une touche : kill au dernier attaquant */
+#define VOID_WARN_H     8.0f    /* vignette rouge sous killY + 8 m quand on tombe */
+
 /* Pieces facon Marksman (Ultrakill) : on lance une piece, un tir de rail qui la touche ricoche
  * tout seul vers la cible la plus proche. Pense pour viser a pleine vitesse. */
 #define COIN_MAX        4
@@ -271,7 +277,7 @@ enum { ANVIL_IDLE, ANVIL_DIVE, ANVIL_STUN };
 #define SAW_BOUNCE_CHAIN 3       /* renvois consecutifs max sans rattraper la scie */
 #define SAW_RETURN_PARRY_DMG_MULT 0.9f /* renvoi par parry : lancer + renvoi ne tue plus une cible immobile (choix du 27/10) */
 #define SAW_LOST_T       3.0f    /* sous le plan de mort : revient apres 3 s */
-#define SAW_LOST_Y       -20.0f  /* plan de mort (les cartes n'en definissent pas encore) */
+#define SAW_LOST_Y       -20.0f  /* plan de mort des cartes fermees (sinon killY de la carte, map_lost_y) */
 #define SAW_FLY_MAX      12.0f   /* garde-fou : vol trop long = perdue */
 #define SAW_RESYNC       2.0f    /* reemission periodique de l'etat plante (joueurs arrives en cours) */
 #define SAW_WHIRR        0.18f   /* vrombissement rejoue en vol */
@@ -1125,7 +1131,7 @@ static void audio_init(void) {
 /* ------------------------------------------------------------------ */
 /* Monde : une liste d'AABB                                            */
 /* ------------------------------------------------------------------ */
-enum { B_SOLID, B_PAD };
+enum { B_SOLID, B_PAD, B_SPEED };                        /* B_SPEED : bande d'acceleration (launch = sens x vitesse max) */
 typedef struct { V3 mn, mx, col, launch; int kind; } Box;
 #define MAXB 256
 static Box boxes[MAXB];
@@ -1167,7 +1173,8 @@ static void addpickup(float x, float y, float z, int pts) {
     npu++;
 }
 
-static void build_level(void) {
+/* Arene : la carte d'origine, inchangee (run_tests depend du couloir x = -20 et des coordonnees des pads) */
+static void build_map_arene(void) {
     float W = ms(56);
     nb = 0; npu = 0;
     addbox(-W, -2, -W, W, 0, W, 0.52f, 0.54f, 0.60f);              /* sol */
@@ -1236,6 +1243,228 @@ static void build_level(void) {
     }
     rng = (unsigned)GetTickCount();
 }
+
+/* --- elements des nouvelles cartes (coordonnees du monde, sans MAP_S) --- */
+static void addpad_at(float x, float y, float z, V3 launch) {   /* pad pose sur une plateforme de hauteur y */
+    addbox(x - 1.5f, y, z - 1.5f, x + 1.5f, y + 0.3f, z + 1.5f, 0.2f, 0.9f, 1.0f);
+    boxes[nb - 1].kind = B_PAD;
+    boxes[nb - 1].launch = launch;
+}
+/* vitesse de lancement d'un pad en `from` (dessus du pad) pour retomber sur `to` avec une vitesse verticale vy */
+static V3 pad_aim(V3 from, V3 to, float vy) {
+    float disc = vy * vy - 2 * GRAVITY * (to.y - from.y);
+    float t = (vy + sqrtf(fmaxf(disc, 0))) / GRAVITY;
+    return v3((to.x - from.x) / t, vy, (to.z - from.z) / t);
+}
+static void addpad_to(float x, float y, float z, V3 to, float vy) { addpad_at(x, y, z, pad_aim(v3(x, y + 0.3f, z), to, vy)); }
+/* bande d'acceleration au sol y : rectangle x0..x1, z0..z1, poussee vers (dx, dz) jusqu'a SPEED_MAX */
+static void addspeed(float x0, float z0, float x1, float z1, float y, float dx, float dz) {
+    addbox(x0, y, z0, x1, y + 0.12f, z1, 0.95f, 0.2f, 0.7f);
+    boxes[nb - 1].kind = B_SPEED;
+    boxes[nb - 1].launch = vmul(vnorm(v3(dx, 0, dz)), SPEED_MAX);
+}
+static void addanchor(float x, float y, float z) {      /* ancre de grappin : petit cube flottant, couleur dediee */
+    addbox(x - 0.6f, y - 0.6f, z - 0.6f, x + 0.6f, y + 0.6f, z + 0.6f, 1.0f, 0.85f, 0.2f);
+}
+static void addcell(float x, float y, float z, int pts) {   /* addpickup sans l'agrandissement MAP_S */
+    if (npu >= MAXPICK) return;
+    PU[npu].pos = v3(x, y + 0.9f, z);
+    PU[npu].t = PU[npu].pending = 0;
+    PU[npu].pts = pts;
+    npu++;
+}
+
+/* Le Puits : puits de 40 x 40 m, vide au fond (killY -30), spirale de 8 plateformes reliees par des pads,
+ * plateforme du sommet (y 50) avec les grandes cellules, 12 ancres au centre, 2 ilots de secours en bas */
+static const float puitsPlat[8][3] = {                   /* centre x, z et dessus de chaque plateforme 8 x 8 */
+    { 16, 16, 0 }, { 0, 16, 6 }, { -16, 16, 12 }, { -16, 0, 18 }, { -16, -16, 24 }, { 0, -16, 30 }, { 16, -16, 36 }, { 16, 0, 42 },
+};
+static void build_map_puits(void) {
+    addbox(-22, -34, -22, 22, 70, -20, 0.16f, 0.20f, 0.36f);   /* parois : wall-run sur toute la hauteur */
+    addbox(-22, -34, 20, 22, 70, 22, 0.16f, 0.20f, 0.36f);
+    addbox(-22, -34, -20, -20, 70, 20, 0.19f, 0.23f, 0.40f);
+    addbox(20, -34, -20, 22, 70, 20, 0.19f, 0.23f, 0.40f);
+    for (int i = 0; i < 8; i++) {
+        const float *p = puitsPlat[i];
+        float t = (float)i / 7;
+        addbox(p[0] - 4, p[2] - 1, p[1] - 4, p[0] + 4, p[2], p[1] + 4, 0.28f + 0.1f * t, 0.38f + 0.12f * t, 0.62f + 0.1f * t);
+    }
+    addbox(-6, 49, -6, 6, 50, 6, 0.55f, 0.62f, 0.88f);       /* sommet */
+    addbox(-1, 50, 3.5f, 1, 51.2f, 4.5f, 0.42f, 0.48f, 0.72f); /* couvertures du sommet */
+    addbox(-1, 50, -4.5f, 1, 51.2f, -3.5f, 0.42f, 0.48f, 0.72f);
+    for (int i = 0; i < 8; i++) {                         /* pads : chaque plateforme lance vers la suivante (la 8e vers le sommet) */
+        const float *p = puitsPlat[i];
+        V3 next = i < 7 ? v3(puitsPlat[i + 1][0], puitsPlat[i + 1][2], puitsPlat[i + 1][1]) : v3(0, 50, 0);
+        V3 d = vnorm(v3(next.x - p[0], 0, next.z - p[1]));
+        V3 land = i < 7 ? vsub(next, vmul(d, 2.5f)) : v3(3, 50, 0);
+        addpad_to(p[0] + d.x * 2, p[2], p[1] + d.z * 2, land, 24);
+    }
+    addbox(3.5f, -11, 3.5f, 8.5f, -10, 8.5f, 0.40f, 0.26f, 0.52f);     /* ilots de secours au fond, pads vers le bas de la spirale */
+    addbox(-8.5f, -11, 3.5f, -3.5f, -10, 8.5f, 0.40f, 0.26f, 0.52f);
+    addpad_to(6, -10, 6, v3(17, 0, 13), 26);
+    addpad_to(-6, -10, 6, v3(2, 6, 14), 30);
+    for (int k = 0; k < 4; k++)                           /* 12 ancres suspendues au centre */
+        for (int j = 0; j < 3; j++) {
+            float a = k * 0.5f + j * 2.0944f;
+            addanchor(cosf(a) * 6, 10 + 10.0f * k, sinf(a) * 6);
+        }
+    addcell(puitsPlat[1][0], puitsPlat[1][2], puitsPlat[1][1], PICKUP_SMALL);   /* recharges : surtout en haut */
+    addcell(puitsPlat[3][0], puitsPlat[3][2], puitsPlat[3][1], PICKUP_SMALL);
+    addcell(puitsPlat[5][0], puitsPlat[5][2], puitsPlat[5][1], PICKUP_SMALL);
+    addcell(puitsPlat[7][0], puitsPlat[7][2], puitsPlat[7][1] + 2.5f, PICKUP_SMALL);
+    addcell(3, 50, 3, PICKUP_BIG); addcell(-3, 50, -3, PICKUP_BIG);
+}
+static const float puitsSpawns[][3] = {
+    { 17.8f, 0, 17.8f }, { 0, 6, 18.5f }, { -17.8f, 12, 17.8f }, { -18.5f, 18, 0 }, { -17.8f, 24, -17.8f },
+    { 0, 30, -18.5f }, { 17.8f, 36, -17.8f }, { 18.5f, 42, 0 }, { -3, 50, 0 },
+};
+
+/* Le Canyon : deux falaises (y 20) separees par un gouffre de 70 m (killY -15), 6 ilots-piliers,
+ * des ancres espacees de 20 m au plus, des pads au bord qui lancent vers les ilots */
+static void build_map_canyon(void) {
+    for (int s = -1; s <= 1; s += 2) {                    /* s = -1 : falaise ouest, +1 : falaise est (miroir) */
+        float e = (float)s;
+        addbox(s < 0 ? -75.0f : 35.0f, -40, -30, s < 0 ? -35.0f : 75.0f, 20, 30, 0.60f, 0.40f, 0.24f);   /* falaise */
+        addbox(s < 0 ? -77.0f : 75.0f, 20, -30, s < 0 ? -75.0f : 77.0f, 28, 30, 0.50f, 0.33f, 0.20f);    /* mur du fond (wall-run) */
+        addbox(s < 0 ? -75.0f : 35.0f, 20, 29.4f, s < 0 ? -35.0f : 75.0f, 21, 30, 0.55f, 0.37f, 0.22f);  /* parapets */
+        addbox(s < 0 ? -75.0f : 35.0f, 20, -30, s < 0 ? -35.0f : 75.0f, 21, -29.4f, 0.55f, 0.37f, 0.22f);
+        addbox(e * 60 - 3, 20, -3, e * 60 + 3, 30, 3, 0.48f, 0.30f, 0.19f);                  /* tour de tir (10 m) */
+        addpad_to(e * 52.5f, 20, 0, v3(e * 58.5f, 30, 0), 24);
+        for (int z = -1; z <= 1; z += 2) {
+            float fz = (float)z;
+            addbox(s < 0 ? -52.0f : 44.0f, 20, z < 0 ? -18.0f : 12.0f, s < 0 ? -44.0f : 52.0f, 24, z < 0 ? -12.0f : 18.0f, 0.70f, 0.53f, 0.36f);  /* abris */
+            addbox(s < 0 ? -70.0f : 64.0f, 20, z < 0 ? -22.0f : 14.0f, s < 0 ? -64.0f : 70.0f, 26, z < 0 ? -14.0f : 22.0f, 0.66f, 0.49f, 0.33f);
+            addbox(e * 20 - 3, -40, fz * 12 - 3, e * 20 + 3, 16, fz * 12 + 3, 0.54f, 0.35f, 0.21f);   /* ilots exterieurs */
+            addpad_to(e * 38, 20, fz * 12, v3(e * 21.5f, 16, fz * 12), 26);                     /* bord -> ilot */
+            addpad_to(e * 18.5f, 16, fz * 12, v3(e * 1.5f, 18, fz * 12), 26);                   /* ilot -> ilot central */
+        }
+        addbox(s < 0 ? -42.0f : 41.0f, 20, -5, s < 0 ? -41.0f : 42.0f, 21.2f, 5, 0.66f, 0.49f, 0.33f);    /* muret au bord */
+    }
+    addbox(-3, -40, -15, 3, 18, -9, 0.58f, 0.38f, 0.23f);  /* ilots centraux */
+    addbox(-3, -40, 9, 3, 18, 15, 0.58f, 0.38f, 0.23f);
+    addanchor(-28, 30, 0); addanchor(28, 30, 0);           /* ancres : on traverse toujours en 3 accroches */
+    addanchor(-10, 31, 0); addanchor(10, 31, 0);
+    addanchor(0, 33, -20); addanchor(0, 33, 20);
+    for (int s = -1; s <= 1; s += 2)                      /* recharges : 6 sur les ilots, 2 par falaise */
+        for (int z = -1; z <= 1; z += 2) addcell(s * 21.5f, 16, z * 12.0f, PICKUP_BIG);
+    addcell(-1.5f, 18, -12, PICKUP_BIG); addcell(-1.5f, 18, 12, PICKUP_BIG);
+    addcell(-67, 20, 0, PICKUP_SMALL); addcell(-60.5f, 30, 0, PICKUP_SMALL);
+    addcell(67, 20, 0, PICKUP_SMALL); addcell(60.5f, 30, 0, PICKUP_SMALL);
+}
+static const float canyonSpawns[][3] = {
+    { -60, 20, 10 }, { 60, 20, -10 }, { -60, 20, -10 }, { 60, 20, 10 }, { -47, 20, 0 }, { 47, 20, 0 }, { -72, 20, 0 }, { 72, 20, 0 },
+};
+
+/* La Boucle : anneau de 120 x 60 m autour d'un bloc de 10 m (coupe au milieu), deux voies par ligne droite
+ * avec des bandes d'acceleration a contresens, passerelles a 10 m, pads de coin et pads vers le toit */
+static void build_map_boucle(void) {
+    addbox(-62, -2, -32, 62, 0, 32, 0.20f, 0.19f, 0.30f);    /* sol */
+    addbox(-62, 0, 30, 62, 8, 32, 0.22f, 0.16f, 0.36f);      /* murs exterieurs (wall-run dans les virages) */
+    addbox(-62, 0, -32, 62, 8, -30, 0.22f, 0.16f, 0.36f);
+    addbox(60, 0, -30, 62, 8, 30, 0.26f, 0.18f, 0.40f);
+    addbox(-62, 0, -30, -60, 8, 30, 0.26f, 0.18f, 0.40f);
+    addbox(-45, 0, -15, -5, 10, 15, 0.30f, 0.22f, 0.46f);    /* bloc central, coupe en x = -5..5 */
+    addbox(5, 0, -15, 45, 10, 15, 0.30f, 0.22f, 0.46f);
+    addbox(-5, 9, -15, 5, 10, 15, 0.85f, 0.55f, 0.15f);      /* toit de la coupe */
+    addbox(-3, 9, 15, 3, 10, 30, 0.90f, 0.60f, 0.15f);       /* passerelles a 10 m */
+    addbox(-3, 9, -30, 3, 10, -15, 0.90f, 0.60f, 0.15f);
+    for (int s = -1; s <= 1; s += 2) {
+        float e = (float)s;
+        for (int k = 0; k < 5; k++) {                     /* separateurs bas (1 m) entre les deux voies */
+            float x0 = -42 + 18.0f * k;
+            addbox(x0, 0, e * 22.5f - 0.3f, x0 + 12, 1, e * 22.5f + 0.3f, 0.2f, 0.85f, 0.8f);
+        }
+        /* bandes : voie exterieure vers +x au nord, -x au sud ; voie interieure a contresens */
+        addspeed(-36, s > 0 ? 24.0f : -29.0f, -16, s > 0 ? 29.0f : -24.0f, 0, e, 0);
+        addspeed(16, s > 0 ? 24.0f : -29.0f, 36, s > 0 ? 29.0f : -24.0f, 0, e, 0);
+        addspeed(-36, s > 0 ? 16.0f : -21.0f, -16, s > 0 ? 21.0f : -16.0f, 0, -e, 0);
+        addspeed(16, s > 0 ? 16.0f : -21.0f, 36, s > 0 ? 21.0f : -16.0f, 0, -e, 0);
+        addpad_to(e * 52.5f, 0, 0, v3(e * 41, 10, 0), 24);    /* pads vers le toit */
+        addbox(e * 25 - 1, 10, -3, e * 25 + 1, 11.5f, 3, 0.3f, 0.25f, 0.45f);   /* couvertures du toit */
+        addbox(e * 36 - 3, 10, -9, e * 36 + 3, 11.5f, -8, 0.3f, 0.25f, 0.45f);
+    }
+    addpad_to(53, 0, 23, v3(30, 0, 18.5f), 14);              /* pads de coin : on coupe le virage vers la voie suivante */
+    addpad_to(-53, 0, -23, v3(-30, 0, -18.5f), 14);
+    addpad_to(-53, 0, 23, v3(-30, 0, 26.5f), 14);
+    addpad_to(53, 0, -23, v3(30, 0, -26.5f), 14);
+    addcell(0, 0, 26, PICKUP_SMALL); addcell(0, 0, -26, PICKUP_SMALL);    /* milieu des lignes droites, */
+    addcell(0, 10, 22, PICKUP_BIG); addcell(0, 10, -22, PICKUP_BIG);      /* passerelles, */
+    addcell(32, 10, 0, PICKUP_BIG); addcell(-32, 10, 0, PICKUP_BIG);      /* toit, */
+    addcell(55, 0, 12, PICKUP_SMALL); addcell(-55, 0, -12, PICKUP_SMALL); /* bouts de l'anneau */
+}
+static const float boucleSpawns[][3] = {
+    { 10, 0, 26 }, { -10, 0, -26 }, { -10, 0, 26 }, { 10, 0, -26 }, { 55, 0, 5 }, { -55, 0, -5 }, { 55, 0, -5 }, { -55, 0, 5 },
+};
+
+/* Le Dojo : salle de 36 x 36 m, plafond a 7 m, 16 piliers, ring central sureleve de 0,5 m, aucune cellule */
+static void build_map_dojo(void) {
+    addbox(-20, -2, -20, 20, 0, 20, 0.52f, 0.36f, 0.21f);    /* plancher */
+    addbox(-20, 0, -20, 20, 7, -18, 0.40f, 0.27f, 0.17f);    /* murs */
+    addbox(-20, 0, 18, 20, 7, 20, 0.40f, 0.27f, 0.17f);
+    addbox(-20, 0, -18, -18, 7, 18, 0.44f, 0.30f, 0.19f);
+    addbox(18, 0, -18, 20, 7, 18, 0.44f, 0.30f, 0.19f);
+    addbox(-20, 7, -20, 20, 9, 20, 0.30f, 0.20f, 0.13f);     /* plafond : on s'y accroche au grappin */
+    addbox(-6, 0, -6, 6, 0.5f, 6, 0.78f, 0.64f, 0.42f);      /* ring */
+    for (int sx = -1; sx <= 1; sx += 2)
+        for (int sz = -1; sz <= 1; sz += 2) {
+            addbox(sx * 5.8f - 0.2f, 0.5f, sz * 5.8f - 0.2f, sx * 5.8f + 0.2f, 2.0f, sz * 5.8f + 0.2f, 0.85f, 0.2f, 0.15f);   /* poteaux du ring */
+            addbox(sx * 9.0f - 1, 0, sz * 9.0f - 1, sx * 9.0f + 1, 7, sz * 9.0f + 1, 0.34f, 0.21f, 0.13f);
+        }
+    static const float g[4] = { -13.5f, -4.5f, 4.5f, 13.5f };
+    for (int i = 0; i < 4; i++)                           /* piliers : grille 4 x 4 sans les 4 du ring, + 4 en diagonale */
+        for (int j = 0; j < 4; j++) {
+            if (fabsf(g[i]) < 5 && fabsf(g[j]) < 5) continue;
+            addbox(g[i] - 1, 0, g[j] - 1, g[i] + 1, 7, g[j] + 1, 0.34f, 0.21f, 0.13f);
+        }
+}
+static const float dojoSpawns[][3] = {
+    { 16, 0, 0 }, { -16, 0, 0 }, { 0, 0, 16 }, { 0, 0, -16 }, { 16, 0, 16 }, { -16, 0, -16 }, { -16, 0, 16 }, { 16, 0, -16 },
+};
+
+/* Arene : points de depart (anciennement dans pick_spawn, agrandis par MAP_S) */
+#define MS(v) ((v) * MAP_S)
+static const float areneSpawns[][3] = {
+    { 0, 0, MS(24) }, { 0, 0, MS(-24) }, { MS(24), 0, 0 }, { MS(-24), 0, 0 }, { MS(-30), 0, MS(-30) }, { MS(30), 0, MS(-30) },
+    { MS(30), 0, MS(30) }, { MS(-30), 0, MS(30) }, { MS(36), 7, 0 }, { MS(-36), 7, 0 }, { 0, 7, MS(36) }, { 0, 7, MS(-36) },
+    { MS(5), 4, MS(5) }, { MS(-46), 0, 0 }, { MS(46), 0, 0 },
+};
+
+/* Description d'une carte. killY : plan de mort (-1000 = carte fermee). Les drones du solo apparaissent entre
+ * enemyRMin et enemyRMax du centre, entre enemyMinY et enemyMaxY, et ne descendent jamais sous enemyFloor. */
+typedef struct {
+    const char *name;                                     /* sans accents */
+    void (*build)(void);
+    const float (*spawns)[3]; int nspawns;
+    V3 start;                                             /* depart du solo (reset_game) */
+    float killY;
+    float enemyMinY, enemyMaxY, enemyRMin, enemyRMax, enemyFloor;
+    V3 menuCam; float menuPitch, specUp;                  /* camera du menu ; spectateur : specUp plus haut */
+    int solo, music;
+    float sky[3], fog[3];                                 /* haut du ciel ; horizon et brouillard */
+} MapDef;
+#define NSP(a) (int)(sizeof a / sizeof a[0])
+static const MapDef maps[] = {
+    { "ARENE", build_map_arene, areneSpawns, NSP(areneSpawns), { 0, 0, 24 }, -1000,
+      9, 18, MS(28), MS(48), 1.0f, { 0, 7, MS(36) }, -0.12f, 5, 1, 0, { 0.04f, 0.05f, 0.12f }, { 0.34f, 0.30f, 0.44f } },
+    { "LE PUITS", build_map_puits, puitsSpawns, NSP(puitsSpawns), { 17.8f, 0, 17.8f }, -30,
+      10, 40, 4, 14, -8, { 0, 25, 0 }, -0.3f, 5, 0, 0, { 0.01f, 0.02f, 0.07f }, { 0.07f, 0.11f, 0.24f } },
+    { "LE CANYON", build_map_canyon, canyonSpawns, NSP(canyonSpawns), { -60, 20, 10 }, -15,
+      24, 34, 10, 50, 18, { 0, 30, 0 }, -0.25f, 5, 0, 0, { 0.18f, 0.11f, 0.09f }, { 0.72f, 0.46f, 0.30f } },
+    { "LA BOUCLE", build_map_boucle, boucleSpawns, NSP(boucleSpawns), { 10, 0, 26 }, -1000,
+      12, 18, 20, 50, 1.0f, { 0, 24, 0 }, -0.5f, 4, 1, 0, { 0.03f, 0.0f, 0.08f }, { 0.30f, 0.08f, 0.40f } },
+    { "LE DOJO", build_map_dojo, dojoSpawns, NSP(dojoSpawns), { 0, 0.5f, 4 }, -1000,
+      2.5f, 5.5f, 6, 15, 1.0f, { 0, 5, 15 }, -0.15f, 0, 1, 0, { 0.10f, 0.07f, 0.05f }, { 0.24f, 0.17f, 0.11f } },
+};
+#define NMAPS NSP(maps)
+static int curMap;                                        /* carte chargee */
+static int menuMap, mapRotate;                            /* choix du menu (velocity.ini : map=, map_rotate=) */
+static float map_lost_y(void) { return maps[curMap].killY > -999 ? maps[curMap].killY : SAW_LOST_Y; }
+
+static void build_level(int m) {
+    nb = 0; npu = 0;
+    maps[m >= 0 && m < NMAPS ? m : 0].build();
+}
+static void load_map(int m);                              /* reconstruit aussi la liste d'affichage (apres le rendu) */
 
 static int box_overlap(V3 mn, V3 mx, const Box *b) {
     return mn.x < b->mx.x && mx.x > b->mn.x && mn.y < b->mx.y && mx.y > b->mn.y && mn.z < b->mx.z && mx.z > b->mn.z;
@@ -1449,7 +1678,7 @@ static char msg[64], popText[32];
 enum { NET_OFF, NET_HOST, NET_CLIENT };
 enum { APP_MENU, APP_JOIN, APP_GAME };
 enum { W_RAIL, W_ROCKET, W_MELEE, W_HOOK, W_PARRY, W_SELF, W_COIN, W_SLAM, W_LANCE, W_FLAIL, W_FIST,
-       W_SHIELD, W_SHOTGUN, W_KINETIC, W_SAW, W_MINE, W_TESLA, W_COUNT };
+       W_SHIELD, W_SHOTGUN, W_KINETIC, W_SAW, W_MINE, W_TESLA, W_VOID, W_COUNT };   /* W_VOID : chute sous killY */
 enum { NF_CROUCH = 1, NF_SLIDE = 2, NF_WALLRUN = 4, NF_HOOK = 8, NF_DEAD = 16, NF_PARRY = 32 };
 
 typedef struct {                  /* ce que chaque joueur envoie de lui-meme */
@@ -1478,6 +1707,7 @@ typedef struct {
     /* --- Egide : derniere fois vu bouclier leve (hote) ; jauge, brise, arrache (hote : autorite ; clients : miroir) --- */
     double lastShieldT;
     float shieldGauge, shieldBrokenT, shieldRipT;
+    int lastHitBy; double lastHitT;                       /* kill zone (hote) : dernier attaquant et heure de sa touche */
     struct sockaddr_in addr;      /* hote seulement */
 } NetPlayer;
 
@@ -2074,7 +2304,7 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     grapple_tick(dt, alive && hookPressIn && !diving && !stun, alive && hookHeldIn);
 
     /* friction (aucune quand le grappin tire) */
-    if (P.grounded && P.hook != HOOK_ATTACHED) {
+    if (P.grounded && P.hook != HOOK_ATTACHED && boxes[P.groundBox].kind != B_SPEED) {   /* bande : aucune friction */
         float sp = hlen(P.vel);
         if (sp > 1e-4f) {
             float fr = P.sliding ? SLIDE_FRICTION : (hasWish ? FRICTION * FRICTION_MOVE : FRICTION);
@@ -2170,6 +2400,11 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
         P.fovKick += 6;
         burst(P.pos, v3(0.3f, 0.9f, 1.0f), 30, 6, 0.6f, 0.15f);
         play(S_PAD, 0.8f, 1.0f);
+    }
+    if (P.grounded && boxes[P.groundBox].kind == B_SPEED && alive) {   /* bande d'acceleration : poussee dans son sens */
+        V3 L = boxes[P.groundBox].launch, d = vnorm(L);
+        float along = vdot(P.vel, d), cap = vlen(L);
+        if (along < cap) P.vel = vadd(P.vel, vmul(d, fminf(SPEED_ACCEL * dt, cap - along)));
     }
 
     wall_check();
@@ -3532,6 +3767,7 @@ static void coin_tick(float dt) {
     for (int i = 0; i < MAXCOIN; i++) {
         Coin *c = &CO[i];
         if (!c->alive) continue;
+        if (c->pos.y < maps[curMap].killY - 2) { c->alive = 0; continue; }   /* tombee dans le vide */
         if (c->decoy) {                                   /* MIRAGE : immobile, sans gravite, puis se dissipe */
             if ((c->life -= dt) <= 0) { c->alive = 0; burst(c->pos, v3(0.4f, 0.85f, 1), 18, 4, 0.35f, 0.08f); }
             continue;
@@ -4657,7 +4893,7 @@ static void saw_tick(Proj *p, float dt) {
         }
         p->pos = vadd(p->pos, step);
         if (mine && p->sawState == SAW_PARRIED && vlen(vsub(p->pos, home)) < SAW_CATCH_R) { saw_catch(p, SAW_HOW_PARRIED); return; }
-        if (p->pos.y < SAW_LOST_Y || p->sawT > SAW_FLY_MAX) {
+        if (p->pos.y < map_lost_y() || p->sawT > SAW_FLY_MAX) {
             p->sawState = SAW_LOST; p->sawT = 0;
             if (mine) { sawStat[SS_LOST]++; if (botMode) netlog("scie : perdue"); }
             return;
@@ -4947,6 +5183,7 @@ static void proj_tick(float dt) {
     for (int i = 0; i < MAXPR; i++) {
         Proj *p = &PR[i];
         if (!p->alive) continue;
+        if (p->kind != PR_SAW && p->pos.y < maps[curMap].killY - 2) { p->alive = 0; continue; }   /* tombe dans le vide */
         if (p->kind == PR_SAW) { saw_tick(p, dt); continue; }   /* Scie : sa propre machine a etats */
         if (p->kind == PR_MINE) { mine_tick(p, dt); continue; } /* Ventouse */
         p->life -= dt;
@@ -5054,8 +5291,9 @@ static void spawn_enemy(void) {
         e->fireT = frange(1.5f, 3.0f);
         e->t = frange(0, 10);
         for (int tries = 0; tries < 20; tries++) {
-            float ang = frange(0, 2 * PI), rad = frange(ms(28), ms(48));
-            e->pos = v3(cosf(ang) * rad, frange(9, 18), sinf(ang) * rad);
+            const MapDef *md = &maps[curMap];
+            float ang = frange(0, 2 * PI), rad = frange(md->enemyRMin, md->enemyRMax);
+            e->pos = v3(cosf(ang) * rad, frange(md->enemyMinY, md->enemyMaxY), sinf(ang) * rad);
             if (vlen(vsub(e->pos, P.pos)) > 22) break;
         }
         sphere_pushout(&e->pos, &e->vel, enemy_radius(e->type));
@@ -5108,7 +5346,8 @@ static void enemy_tick(float dt) {
         }
         e->pos = vadd(e->pos, vmul(e->vel, dt));
         sphere_pushout(&e->pos, &e->vel, enemy_radius(e->type));
-        if (e->pos.y < 1.0f) { e->pos.y = 1.0f; if (e->vel.y < 0) e->vel.y = 0; }
+        float floorY = maps[curMap].enemyFloor;          /* plancher des drones (au-dessus du vide) */
+        if (e->pos.y < floorY) { e->pos.y = floorY; if (e->vel.y < 0) e->vel.y = 0; }
     }
 }
 
@@ -5138,7 +5377,7 @@ static void wave_tick(float dt) {
 
 static void reset_game(void) {
     memset(&P, 0, sizeof P);
-    P.pos = P.prevPos = v3(0, 0, 24);
+    P.pos = P.prevPos = maps[curMap].start;
     P.hp = 100; P.dashCharge = 2; P.airJumps = 1; P.eyeH = EYE_STAND; P.fovCur = fovBase;
     loadout_apply();
     anvil_reset();
@@ -5163,7 +5402,7 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   12
+#define NET_VER   13      /* 13 : carte dans WELCOME / ANNOUNCE / EV_MATCH, arme W_VOID */
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
@@ -5198,6 +5437,7 @@ typedef struct {
     char name[16]; struct sockaddr_in addr; int players, maxp; double seen;
     int online, spec;                                     /* online : salon du lobby (addr = ip:port public) ; spec : spectateurs */
     char id[8];                                           /* identifiant du salon chez le lobby */
+    int map;                                              /* carte annoncee (LAN), -1 = inconnue (salon en ligne) */
 } Found;
 #define MAXFOUND 12
 static Found found[MAXFOUND];
@@ -6021,6 +6261,12 @@ static void apply_event(const NetEvent *ev) {
     }
     case EV_MATCH:
         if (ev->sub == 0) {
+            if (ev->target < NMAPS && ev->target != curMap) {   /* changement de carte entre deux matchs */
+                load_map(ev->target);
+                if (!spectating) { P.pos = P.prevPos = maps[curMap].start; P.vel = v3(0, 0, 0); }
+                else { P.pos = P.prevPos = vadd(maps[curMap].menuCam, v3(0, maps[curMap].specUp, 0)); }
+                netlog("carte : %s", maps[curMap].name);
+            }
             matchOver = 0;
             for (int i = 0; i < MAXPR; i++) if (PR[i].kind == PR_MINE) PR[i].alive = 0;   /* Ventouse : nouveau match */
             memset(kfeed, 0, sizeof kfeed);
@@ -6264,6 +6510,7 @@ static void host_kill(int killer, int victim, int kind) {
 }
 
 static int hitCount[W_COUNT], parryCount;                       /* statistiques pour le journal du bot */
+static int voidCredited, voidSuicides;                    /* kill zone (hote) : chutes creditees a un attaquant / suicides */
 static double lifeFirstHitT[MAXP], ttkSum;                /* temps pour tuer : du premier degat (a pleine vie) au kill */
 static int ttkN, oneShots, meleeParries, clashes;
 static int slamParried, slamRailCombos;                   /* Enclume : ondes parees, onde puis rail sur la meme cible */
@@ -6388,7 +6635,8 @@ static void host_take_pickup(int i, int who) {
 /* degats arbitres : PV, plafond par touche, temps pour tuer, kill (EV_HIT, et les decisions du bouclier) */
 static void host_apply_damage(int from, int v, float dmgIn, int w) {
     float before = NP[v].hp;
-    float dmg = w == W_SELF ? dmgIn : fminf(dmgIn, PVP_HIT_CAP);   /* plafond par touche */
+    float dmg = (w == W_SELF || w == W_VOID) ? dmgIn : fminf(dmgIn, PVP_HIT_CAP);   /* plafond par touche */
+    if (w != W_SELF && w != W_VOID && from != v && from < MAXP) { NP[v].lastHitBy = from; NP[v].lastHitT = nowT; }   /* kill zone */
     if (before >= 99.9f) lifeFirstHitT[v] = nowT;
     if (w == W_SLAM) { slamLastHitT[v] = nowT; slamLastBy[v] = from; }   /* onde puis rail : le combo vise */
     else if (w == W_RAIL && slamLastHitT[v] > 0 && slamLastBy[v] == from && nowT - slamLastHitT[v] < 1.5) {
@@ -6396,6 +6644,14 @@ static void host_apply_damage(int from, int v, float dmgIn, int w) {
     }
     NP[v].hp -= dmg;
     if (NP[v].hp <= 0 && NP[v].alive) {
+        if (w == W_VOID) {                                /* chute : kill au dernier attaquant s'il a touche moins de 4 s avant */
+            int k = NP[v].lastHitBy;
+            int credit = NP[v].lastHitT > 0 && nowT - NP[v].lastHitT < VOID_CREDIT_T && k >= 0 && k < MAXP && k != v && NP[k].active;
+            if (credit) voidCredited++; else voidSuicides++;
+            netlog("vide : %s tombe%s%s", pname(v), credit ? ", kill a " : " (suicide)", credit ? pname(k) : "");
+            host_kill(credit ? k : v, v, W_VOID);
+            return;
+        }
         if (w != W_SELF) {
             ttkSum += nowT - lifeFirstHitT[v]; ttkN++;
             if (before >= 99.9f) oneShots++;              /* tue d'un seul coup a pleine vie */
@@ -6547,7 +6803,7 @@ static int host_handle(const NetEvent *ev) {
         if (v >= MAXP || !NP[v].active || !NP[v].alive || matchOver) return 1;
         if (ev->sub == W_TESLA && ev->from < MAXP && tesla_host_reflect(v, ev->from)) return 1;   /* Tesla : decharge renvoyee */
         int shieldFace = 1;                               /* --- Egide : face exigee pour parer, renvoi du hitscan, conversion --- */
-        if ((NP[v].st.pad & 0x0F) == MK_SHIELD && ev->sub != W_SELF && ev->from < MAXP) {
+        if ((NP[v].st.pad & 0x0F) == MK_SHIELD && ev->sub != W_SELF && ev->sub != W_VOID && ev->from < MAXP) {
             V3 sd = vnorm(vsub(np_center(v), np_center(ev->from)));   /* ligne attaquant -> victime vue par l'hote */
             int perfect = host_shield_perfect(v), face = vdot(sd, np_face(v)) < SHIELD_COS;
             if (is_parryable_w(ev->sub) && ev->sub != W_SLAM) shieldFace = face;   /* l'onde se pare toujours au timing */
@@ -6577,14 +6833,11 @@ static int host_handle(const NetEvent *ev) {
 }
 
 static V3 pick_spawn(int who) {
-    static const float pts[][3] = {
-        { 0, 0, 24 }, { 0, 0, -24 }, { 24, 0, 0 }, { -24, 0, 0 }, { -30, 0, -30 }, { 30, 0, -30 }, { 30, 0, 30 },
-        { -30, 0, 30 }, { 36, 7, 0 }, { -36, 7, 0 }, { 0, 7, 36 }, { 0, 7, -36 }, { 5, 4, 5 }, { -46, 0, 0 }, { 46, 0, 0 },
-    };
+    const MapDef *md = &maps[curMap];                    /* points de depart de la carte (coordonnees du monde) */
     float best = -1;
-    V3 bp = v3(0, 0, 24);
-    for (int k = 0; k < (int)(sizeof pts / sizeof pts[0]); k++) {
-        V3 p = v3(ms(pts[k][0]), pts[k][1], ms(pts[k][2]));
+    V3 bp = md->start;
+    for (int k = 0; k < md->nspawns; k++) {
+        V3 p = v3(md->spawns[k][0], md->spawns[k][1], md->spawns[k][2]);
         if (!pos_free(p, H_STAND)) continue;
         float md = 200;                                   /* le plus loin possible des autres */
         for (int i = 0; i < MAXP; i++) {
@@ -6601,6 +6854,7 @@ static V3 pick_spawn(int who) {
 static void host_respawn(int i) {
     V3 p = pick_spawn(i);
     NP[i].alive = 1; NP[i].hp = 100;
+    NP[i].lastHitT = 0; NP[i].lastHitBy = -1;            /* kill zone : une nouvelle vie ne doit rien a personne */
     NetEvent e = ev_new(EV_RESPAWN);
     e.target = (unsigned char)i; vf(e.f, p);
     net_emit(&e);
@@ -6611,6 +6865,7 @@ static void host_start_match(void) {
     matchOver = 0; matchT = 0;
     for (int i = 0; i < MAXP; i++) NP[i].kills = NP[i].deaths = 0;
     NetEvent e = ev_new(EV_MATCH);
+    e.target = (unsigned char)(mapRotate ? (curMap + 1) % NMAPS : curMap);   /* ROTATION : carte suivante a chaque match */
     net_emit(&e);
     apply_event(&e);
     for (int i = 0; i < MAXP; i++) if (NP[i].active) host_respawn(i);
@@ -6667,7 +6922,7 @@ static void host_on_join(const PkJoin *pj, const struct sockaddr_in *from) {
         for (int i = 0; i < MAXSPEC; i++) if (SP[i].active && same_addr(&SP[i].addr, from)) k = i;
         for (int i = 0; i < MAXSPEC && k < 0; i++) if (!SP[i].active) k = i;
         PkWelcome w;
-        head(&w.h, PK_WELCOME); w.id = MAXP; w.refused = k < 0; w.pad[0] = w.pad[1] = 0;
+        head(&w.h, PK_WELCOME); w.id = MAXP; w.refused = k < 0; w.pad[0] = (unsigned char)curMap; w.pad[1] = 0;
         net_send(&w, sizeof w, from);
         if (k >= 0) {
             if (!SP[k].active) netlog("spectateur %d arrive", k);
@@ -6681,7 +6936,7 @@ static void host_on_join(const PkJoin *pj, const struct sockaddr_in *from) {
         for (int i = 1; i < MAXP; i++) if (!NP[i].active) { id = i; break; }
         if (id < 0) {
             PkWelcome w;
-            head(&w.h, PK_WELCOME); w.id = 0; w.refused = 1; w.pad[0] = w.pad[1] = 0;
+            head(&w.h, PK_WELCOME); w.id = 0; w.refused = 1; w.pad[0] = (unsigned char)curMap; w.pad[1] = 0;
             net_send(&w, sizeof w, from);
             return;
         }
@@ -6698,7 +6953,7 @@ static void host_on_join(const PkJoin *pj, const struct sockaddr_in *from) {
         apply_event(&e);
     }
     PkWelcome w;
-    head(&w.h, PK_WELCOME); w.id = (unsigned char)id; w.refused = 0; w.pad[0] = w.pad[1] = 0;
+    head(&w.h, PK_WELCOME); w.id = (unsigned char)id; w.refused = 0; w.pad[0] = (unsigned char)curMap; w.pad[1] = 0;
     net_send(&w, sizeof w, from);
     host_send_roster();
 }
@@ -6724,7 +6979,7 @@ static void host_recv(PkHead *h, int n, struct sockaddr_in *from) {
         for (int i = 0; i < MAXP; i++) count += NP[i].active;
         head(&a.h, PK_ANNOUNCE);
         memcpy(a.name, myName, 16);
-        a.players = (unsigned char)count; a.maxp = MAXP; a.pad[0] = a.pad[1] = 0;
+        a.players = (unsigned char)count; a.maxp = MAXP; a.pad[0] = (unsigned char)curMap; a.pad[1] = 0;   /* carte */
         net_send(&a, sizeof a, from);
         break;
     }
@@ -6794,9 +7049,10 @@ static void net_shutdown(void) {
 }
 
 static void menu_backdrop(void) {
+    if (curMap != menuMap) load_map(menuMap);             /* le menu montre la carte choisie */
     reset_game();
-    P.pos = P.prevPos = v3(0, 7, ms(36));
-    P.pitch = -0.12f;
+    P.pos = P.prevPos = maps[curMap].menuCam;
+    P.pitch = maps[curMap].menuPitch;
 }
 
 static void net_disconnect_to_menu(const char *why) {
@@ -6814,7 +7070,9 @@ static void on_welcome(int id) {
     lastSnapT = nowT;
     memset(NP, 0, sizeof NP);
     dm_local_start();
-    if (spectating) { P.pos = P.prevPos = v3(0, 12, ms(36)); P.pitch = -0.2f; P.yaw = 0; }   /* vue d'ensemble de la carte */
+    if (spectating) {                                     /* vue d'ensemble de la carte */
+        P.pos = P.prevPos = vadd(maps[curMap].menuCam, v3(0, maps[curMap].specUp, 0)); P.pitch = maps[curMap].menuPitch - 0.08f; P.yaw = 0;
+    }
     appState = APP_GAME;
 #ifdef _WIN32
     if (!botMode && GetForegroundWindow() == hwnd) set_capture(1);
@@ -6858,6 +7116,7 @@ static void found_add(const PkAnnounce *a, const struct sockaddr_in *from) {
     found[k].name[15] = 0;
     found[k].addr = *from;
     found[k].players = a->players; found[k].maxp = a->maxp;
+    found[k].map = a->pad[0] < NMAPS ? a->pad[0] : -1;
     found[k].seen = nowT;
 }
 
@@ -6871,7 +7130,10 @@ static void client_recv(PkHead *h, int n, struct sockaddr_in *from) {
         if (joining && n >= (int)sizeof(PkWelcome)) {
             const PkWelcome *w = (const PkWelcome *)h;
             if (w->refused) { joining = 0; set_status(joinSpec ? "plus de place pour les spectateurs" : "partie pleine (8 joueurs max)"); }
-            else on_welcome(w->id);
+            else {
+                if (w->pad[0] < NMAPS && w->pad[0] != curMap) load_map(w->pad[0]);   /* la carte de l'hote, avant de demarrer */
+                on_welcome(w->id);
+            }
         }
         break;
     case PK_SNAP:
@@ -7025,6 +7287,7 @@ static int net_host_start(void) {
     NP[0].active = 1;
     memcpy(NP[0].name, myName, 16);
     find_local_ip();
+    if (curMap != menuMap) load_map(menuMap);             /* carte choisie dans le menu (ou --map) */
     dm_local_start();
     matchOver = 0; matchT = 0;
     fragLimit = hostQuick ? FRAG_LIMIT_QUICK : FRAG_LIMIT; hostQuick = 0;
@@ -7390,7 +7653,7 @@ static void lb_room(const char *id, int players, int maxp, int spec, const char 
     snprintf(found[k].id, sizeof found[k].id, "%s", id);
     snprintf(found[k].name, sizeof found[k].name, "%s", name);
     found[k].addr = a; found[k].players = players; found[k].maxp = maxp; found[k].spec = spec;
-    found[k].online = 1; found[k].seen = nowT;
+    found[k].online = 1; found[k].seen = nowT; found[k].map = -1;
 }
 
 static void lb_line(const char *s) {
@@ -8432,6 +8695,103 @@ static void skill_tick(float dt, int press, int held) {
 /* --- fin Competences --- */
 
 static void cfg_save(void);
+/* kill zone : sous le plan de mort de la carte, on meurt (solo : tout de suite ; LAN : l'hote arbitre et credite le kill) */
+static double voidSentT;
+static int voidPending, voidFalls;                        /* demande en cours ; mes chutes (journal du bot) */
+static void void_check(void) {
+    float ky = maps[curMap].killY;
+    if (ky < -999 || spectating) return;
+    if (P.dead) {                                         /* le corps s'arrete sous le plan : la camera ne tombe pas sans fin */
+        if (P.pos.y < ky - 6) { P.pos.y = ky - 6; P.prevPos = P.pos; P.vel = v3(0, 0, 0); }
+        return;
+    }
+    if (P.pos.y >= ky) { voidPending = 0; return; }
+    if (!voidPending) { voidPending = 1; voidFalls++; voidSentT = -1; if (botMode) netlog("chute dans le vide"); }
+    if (!dmMode) { damage_player(999); return; }
+    if (nowT - voidSentT > 0.5) {                         /* renvoyee tant que l'hote n'a pas tranche */
+        voidSentT = nowT;
+        net_hit(myId, 999, v3(0, 0, 0), W_VOID);
+    }
+}
+
+/* --- bots et kill zone : trajectoire balistique (sans air-strafe) ; retombe-t-elle sur un sol avant killY ? --- */
+static int bot_lands(V3 p, V3 v, float ky) {
+    const float st = 1.0f / 30;
+    int air = 0;                                          /* a-t-on quitte le sol ? */
+    for (int i = 0; i < 90; i++) {                        /* 3 s */
+        v.y -= GRAVITY * st;
+        V3 q = vadd(p, vmul(v, st));
+        if (!pos_free(v3(q.x, p.y + 0.3f, q.z), 1.2f)) { v.x = v.z = 0; q.x = p.x; q.z = p.z; }   /* mur : on glisse le long */
+        float drop = p.y - q.y + 0.4f;
+        int ground = v.y <= 0 && ray_world(v3(q.x, p.y + 0.2f, q.z), v3(0, -1, 0), drop, 0) < drop;
+        if (ground) {
+            if (air || i * st > 0.35f) return 1;          /* retombe sur un sol, ou reste au sol assez longtemps */
+            q.y = p.y; v.y = 0;                           /* encore au sol : on continue de glisser (sans friction : prudent) */
+        } else air = 1;
+        if (q.y < ky + 1) return 0;
+        p = q;
+    }
+    return 1;
+}
+/* apres bot_think : annule un saut ou un dash qui part dans le vide, freine au bord, et grappin d'urgence vers le decor
+ * le plus proche (au-dessus de nous) quand la chute ne retombe sur rien */
+static void bot_void_guard(float dt) {
+    static float rescueT;
+    float ky = maps[curMap].killY;
+    if (ky < -999 || appState != APP_GAME || P.dead || spectating) { rescueT = 0; return; }
+    V3 v = P.vel, f = v3(sinf(P.yaw), 0, -cosf(P.yaw)), r = v3(cosf(P.yaw), 0, sinf(P.yaw));
+    V3 wish = vnorm(vadd(vmul(f, (float)(botHeld[A_FWD] - botHeld[A_BACK])), vmul(r, (float)(botHeld[A_RIGHT] - botHeld[A_LEFT]))));
+    if (vlen(wish) < 0.5f) wish = f;
+    if (botPress[A_DASH] && P.dashCharge >= 1) {          /* dash : meme vitesse que player_tick */
+        float sp = fmaxf(hlen(v) + 3, DASH_SPEED), vy = sinf(P.pitch) * sp;
+        V3 dv = v3(wish.x * sp, P.grounded ? fmaxf(v.y, vy) : (vy > 2 ? vy : vy < 0 ? vy : 2), wish.z * sp);
+        if (!bot_lands(P.pos, dv, ky) && bot_lands(P.pos, v, ky)) botPress[A_DASH] = 0;
+    }
+    if (P.grounded) {
+        rescueT = 0;
+        int onPad = boxes[P.groundBox].kind == B_PAD;
+        if ((botPress[A_JUMP] || botHeld[A_JUMP]) && !onPad && !bot_lands(P.pos, v3(v.x, JUMP_V, v.z), ky))
+            botPress[A_JUMP] = botHeld[A_JUMP] = 0;       /* saut vers le vide : non */
+        V3 ah = vadd(P.pos, v3(v.x * 0.25f + wish.x * 0.6f, 0.3f, v.z * 0.25f + wish.z * 0.6f));
+        if (!onPad && ray_world(ah, v3(0, -1, 0), 2.5f, 0) >= 2.5f && !bot_lands(P.pos, v3(v.x, JUMP_V, v.z), ky)) {
+            memset(botHeld, 0, sizeof botHeld);           /* bord : on freine, dos au vide */
+            botPress[A_JUMP] = botPress[A_DASH] = 0;
+            if (hlen(v) > 0.5f) { P.yaw = atan2f(v.x, -v.z); botHeld[A_BACK] = 1; }
+        }
+        return;
+    }
+    if (P.hook == HOOK_ATTACHED && rescueT > 0) {         /* tire par le grappin de secours : on tient tant que ca ne retombe sur rien */
+        rescueT -= dt;
+        botHeld[A_HOOK] = !bot_lands(P.pos, v, ky) || v.y < 0;
+        return;
+    }
+    if (P.hook != HOOK_NONE || bot_lands(P.pos, v, ky)) { if (P.hook == HOOK_FLYING && rescueT > 0) botHeld[A_HOOK] = 1; return; }
+    if (P.airJumps > 0 && bot_lands(P.pos, v3(v.x, JUMP_V, v.z), ky)) { botPress[A_JUMP] = 1; return; }   /* le double saut suffit */
+    if (P.hookCd > 0) return;
+    V3 eye = eye_pos(), best = v3(0, 0, 0);
+    float bs = 1e9f, bd = 0;
+    for (int i = 0; i < nb; i++) {                        /* point du decor le plus proche, de preference le bord d'un dessus */
+        Box *b = &boxes[i];
+        if (b->kind != B_SOLID || b->mx.y < P.pos.y - 2) continue;
+        for (int top = 0; top < 2; top++) {
+            V3 q = v3(clampf(eye.x, b->mn.x + 0.3f, b->mx.x - 0.3f),
+                      top ? b->mx.y - 0.3f : fminf(b->mx.y - 0.3f, fmaxf(eye.y + 6, b->mn.y + 0.3f)),
+                      clampf(eye.z, b->mn.z + 0.3f, b->mx.z - 0.3f));
+            V3 d = vsub(q, eye);
+            float l = vlen(d), score = l + (top ? 0 : 15);   /* une paroi retient, un dessus sauve */
+            if (l < 2 || l > GRAPPLE_RANGE * 0.95f || score >= bs) continue;
+            if (ray_world(eye, vmul(d, 1 / l), l + 0.5f, 0) < l - 0.6f) continue;   /* masque par autre chose */
+            bs = score; bd = l; best = q;
+        }
+    }
+    if (bs > 1e8f) return;
+    V3 d = vsub(best, eye);
+    P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(clampf(d.y / bd, -1, 1));
+    botPress[A_HOOK] = botHeld[A_HOOK] = 1;
+    rescueT = 2.5f;
+    netlog("grappin de secours (%.0f m, y %.1f)", bd, P.pos.y);
+}
+
 static void game_tick(float dt) {
     /* hitstop : le monde se fige un instant sur les gros coups (les entrees attendent) */
     if (hitstop > 0) { hitstop -= dt; P.prevPos = P.pos; return; }
@@ -8464,6 +8824,7 @@ static void game_tick(float dt) {
     }
 
     player_tick(dt, jp, dp);
+    void_check();                                         /* kill zone : sous killY = mort */
 
     skill_tick(dt, coinPress, act[A_SKILL]);              /* Competences (la piece en est une) */
     coin_tick(dt);
@@ -8671,11 +9032,29 @@ static void build_world_list(void) {
     glLineWidth(1.5f);
     for (int i = 1; i < nb; i++) {
         if (boxes[i].kind == B_PAD) glColor4f(0.6f, 1.0f, 1.0f, 0.9f);
+        else if (boxes[i].kind == B_SPEED) glColor4f(1.0f, 0.5f, 0.9f, 0.9f);
         else glColor4f(0.05f, 0.05f, 0.1f, 0.45f);
         box_edges(boxes[i].mn, boxes[i].mx);
     }
     glDisable(GL_BLEND);
     glEndList();
+}
+
+/* change de carte : boites, liste d'affichage, et plus rien de la carte precedente (projectiles, pieces, drones...) */
+static int glReady;                                       /* contexte OpenGL cree (les tests --test n'en ont pas) */
+static void load_map(int m) {
+    if (m < 0 || m >= NMAPS) m = 0;
+    for (int i = 0; i <= MAXP; i++) saw_remove_owner(i);  /* Scie : rendue a chacun */
+    curMap = m;
+    build_level(m);
+    if (glReady) {
+        if (worldList) glDeleteLists(worldList, 1);
+        build_world_list();
+    }
+    memset(PR, 0, sizeof PR); memset(CO, 0, sizeof CO); memset(E, 0, sizeof E);
+    memset(PA, 0, sizeof PA); memset(BM, 0, sizeof BM); memset(TR, 0, sizeof TR);
+    for (int i = 0; i < npu; i++) PU[i].t = PU[i].pending = 0;
+    voidPending = 0;
 }
 
 static void make_font(int i, int px) {
@@ -8735,9 +9114,10 @@ static void draw_sky(float vfov) {
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
     glMatrixMode(GL_MODELVIEW); glLoadIdentity();
     glDisable(GL_DEPTH_TEST);
+    const float *st = maps[curMap].sky, *sh = maps[curMap].fog;   /* couleurs de la carte */
     glBegin(GL_QUADS);
-    glColor3f(0.04f, 0.05f, 0.12f); glVertex2f(-1, 1); glVertex2f(1, 1);
-    glColor3f(0.34f, 0.30f, 0.44f); glVertex2f(1, horizon); glVertex2f(-1, horizon);
+    glColor3f(st[0], st[1], st[2]); glVertex2f(-1, 1); glVertex2f(1, 1);
+    glColor3f(sh[0], sh[1], sh[2]); glVertex2f(1, horizon); glVertex2f(-1, horizon);
     glVertex2f(-1, horizon); glVertex2f(1, horizon); glVertex2f(1, -1); glVertex2f(-1, -1);
     glEnd();
     glEnable(GL_DEPTH_TEST);
@@ -9883,6 +10263,7 @@ static void cfg_save(void) {
     fprintf(f, "impact_frames=%d" "\n" "screen_fx=%d" "\n", impactFrames, screenFx);
     fprintf(f, "online=%d" "\n" "update_check=%d" "\n", onlineOn, updCheck);
     fprintf(f, "loadout=%d,%d" "\n" "melee=%d" "\n" "skill=%d" "\n", wantLoadout[0], wantLoadout[1], wantMelee, wantSkill);
+    fprintf(f, "map=%d" "\n" "map_rotate=%d" "\n", menuMap, mapRotate);
     if (strcmp(lobbyAddr, LOBBY_DEFAULT)) fprintf(f, "lobby=%s" "\n", lobbyAddr);   /* le defaut peut changer avec une mise a jour */
     for (int a = 0; a < A_COUNT; a++) fprintf(f, "bind_%s=%d,%d" "\n", actId[a], binds[a][0], binds[a][1]);
     fclose(f);
@@ -9913,6 +10294,8 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
         else if (!strcmp(line, "fullscreen")) fs = atoi(v) != 0;
         else if (!strcmp(line, "loadout")) sscanf(v, "%d,%d", &wantLoadout[0], &wantLoadout[1]);
         else if (!strcmp(line, "melee")) wantMelee = atoi(v);
+        else if (!strcmp(line, "map")) menuMap = atoi(v) >= 0 && atoi(v) < NMAPS ? atoi(v) : 0;
+        else if (!strcmp(line, "map_rotate")) mapRotate = atoi(v) != 0;
         else if (!strcmp(line, "skill")) wantSkill = atoi(v) >= 0 && atoi(v) < SK_COUNT ? atoi(v) : SK_COIN;
         else if (!strncmp(line, "bind_", 5))
             for (int a = 0; a < A_COUNT; a++)
@@ -9950,7 +10333,7 @@ static const float pcol[MAXP][3] = {
 };
 static const char *weaponNames[W_COUNT] = { "RAIL", "ROQUETTE", "EPEE", "GRAPPIN", "PARRY", "SOLO", "RICOCHET",
                                             "ENCLUME", "LANCE", "YOYO", "POINGS", "EGIDE", "EVENTAIL", "ELAN",
-                                            "SCIE", "VENTOUSE", "TESLA" };
+                                            "SCIE", "VENTOUSE", "TESLA", "VIDE" };
 
 static int button(float x, float y, float w, float h, const char *label) {
     int hover = uiMX >= x && uiMX < x + w && uiMY >= y && uiMY < y + h;
@@ -10147,6 +10530,12 @@ static void draw_death_loadout(float cx, float y) {
     text_c(1, cx, y + 32, buf, 1, 0.9f, 0.6f, 1);
 }
 
+static void map_cycle(int d) {                            /* menu : carte suivante / precedente, montree en fond */
+    menuMap = (menuMap + d + NMAPS) % NMAPS;
+    if (appState == APP_MENU) menu_backdrop();
+    cfg_save();
+}
+
 static void draw_main_menu(float cx, float cy) {
     rect(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.7f);
     text_c(2, cx, cy - 300, "V E L O C I T Y", 0.5f, 0.9f, 1.0f, 1);
@@ -10154,7 +10543,19 @@ static void draw_main_menu(float cx, float cy) {
     float bx = cx - 620, bw = 420, y = cy - 200;
     field(bx, y, bw, 48, "PSEUDO", myName, 1);
     y += 76;
-    if (button(bx, y, bw, 52, "SOLO  -  VAGUES")) pendingAction = ACT_SOLO;
+    {                                                     /* carte : heberger, contre un bot, solo (cartes solo seulement) */
+        float aw = 46, rw = 128, mw = bw - rw - 8;
+        text(0, bx, y - 8, "CARTE", 0.7f, 0.75f, 0.85f, 1);
+        if (button(bx, y, aw, 46, "<")) map_cycle(-1);
+        rect(bx + aw + 4, y, mw - 2 * aw - 8, 46, 0.05f, 0.06f, 0.1f, 0.9f);
+        text_c(1, bx + mw * 0.5f, y + 23 + fontH[1] * 0.3f, maps[menuMap].name, 1, 0.9f, 0.6f, 1);
+        if (button(bx + mw - aw, y, aw, 46, ">")) map_cycle(1);
+        if (sel_button(bx + mw + 8, y, rw, 46, "ROTATION", mapRotate, 1, v3(1, 0.85f, 0.4f))) { mapRotate ^= 1; cfg_save(); }
+        y += 54;
+    }
+    char soloLbl[48];
+    snprintf(soloLbl, sizeof soloLbl, maps[menuMap].solo ? "SOLO  -  VAGUES" : "SOLO  -  VAGUES  (%s)", maps[0].name);
+    if (button(bx, y, bw, 52, soloLbl)) pendingAction = ACT_SOLO;
     y += 52 + 24;                                         /* le libelle sous le bouton, sans toucher son liseret */
     text(0, bx, y, "JOUEUR CONTRE BOT", 0.7f, 0.75f, 0.85f, 1);
     y += 8;
@@ -10201,7 +10602,8 @@ static void draw_join_menu(float cx, float cy) {
         if (found[i].online)
             snprintf(buf, sizeof buf, "[EN LIGNE]  %s    %d/%d joueurs%s", found[i].name, found[i].players, found[i].maxp,
                      found[i].spec ? "  (spectateurs)" : "");
-        else snprintf(buf, sizeof buf, "[LAN]  %s    %d/%d joueurs    %s", found[i].name, found[i].players, found[i].maxp,
+        else snprintf(buf, sizeof buf, "[LAN]  %s  -  %s    %d/%d    %s", found[i].name,
+                      found[i].map >= 0 ? maps[found[i].map].name : "?", found[i].players, found[i].maxp,
                       inet_ntoa(found[i].addr.sin_addr));
         if (button(bx, y, bw - 170, 46, buf)) { pendingAction = ACT_JOIN_FOUND; pendingArg = i; }
         if (button(bx + bw - 160, y, 160, 46, "REGARDER")) { pendingAction = ACT_SPEC_FOUND; pendingArg = i; }
@@ -10282,6 +10684,7 @@ static void draw_killfeed(void) {
         KillFeed *f = &kfeed[k];
         if (f->t <= 0) continue;
         if (f->info) snprintf(buf, sizeof buf, "%s %s", pname(f->victim), f->info == 1 ? "a rejoint" : "a quitte");
+        else if (f->killer == f->victim && f->kind == W_VOID) snprintf(buf, sizeof buf, "%s est tombe dans le vide", pname(f->victim));
         else if (f->killer == f->victim) snprintf(buf, sizeof buf, "%s s'est fait sauter", pname(f->victim));
         else snprintf(buf, sizeof buf, "%s  [%s]  %s", pname(f->killer), weaponNames[f->kind % W_COUNT], pname(f->victim));
         int mine = f->killer == myId || f->victim == myId;
@@ -10781,6 +11184,23 @@ static void draw_hud(void) {
         rect(0, 0, (float)winW, (float)winH, 0.6f, 0, 0, 0.12f + 0.06f * sinf(gameTime * 6));
     }
     if (P.hurtFlash > 0) rect(0, 0, (float)winW, (float)winH, 0.8f, 0.0f, 0.05f, P.hurtFlash * 0.35f);
+    if (maps[curMap].killY > -999 && !P.dead && !spectating && P.vel.y < 0 && P.pos.y < maps[curMap].killY + VOID_WARN_H) {
+        float k = clampf(1 - (P.pos.y - maps[curMap].killY) / VOID_WARN_H, 0, 1), W = (float)winW, H = (float)winH, m = H * 0.3f;
+        glBegin(GL_QUADS);                                /* kill zone : vignette rouge, on a encore le temps d'un grappin */
+        for (int e = 0; e < 4; e++) {                     /* bord haut, bas, gauche, droite : rouge au bord, transparent vers le centre */
+            float x0 = e == 3 ? W - m : 0, y0 = e == 1 ? H - m : 0, x1 = e == 2 ? m : W, y1 = e == 0 ? m : H;
+            float ao[4] = { k * 0.7f, k * 0.7f, k * 0.7f, k * 0.7f };   /* alpha des coins : (x0,y0) (x1,y0) (x1,y1) (x0,y1) */
+            if (e == 0) ao[2] = ao[3] = 0;
+            if (e == 1) ao[0] = ao[1] = 0;
+            if (e == 2) ao[1] = ao[2] = 0;
+            if (e == 3) ao[0] = ao[3] = 0;
+            glColor4f(0.9f, 0, 0.05f, ao[0]); glVertex2f(x0, y0);
+            glColor4f(0.9f, 0, 0.05f, ao[1]); glVertex2f(x1, y0);
+            glColor4f(0.9f, 0, 0.05f, ao[2]); glVertex2f(x1, y1);
+            glColor4f(0.9f, 0, 0.05f, ao[3]); glVertex2f(x0, y1);
+        }
+        glEnd();
+    }
     for (int i = 0; i < MAXDN; i++) {                     /* chiffres de degats */
         DmgNum *d = &DN[i];
         float sx, sy;
@@ -11254,6 +11674,51 @@ static void draw_slam_marker(void) {
     }
 }
 
+/* elements animes des cartes, hors liste d'affichage : chevrons des bandes d'acceleration, plan de mort rouge */
+static void draw_map_fx(void) {
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glLineWidth(4);
+    glBegin(GL_LINES);
+    for (int i = 0; i < nb; i++) {
+        if (boxes[i].kind != B_SPEED) continue;
+        Box *b = &boxes[i];
+        V3 d = vnorm(b->launch), s = v3(-d.z, 0, d.x);
+        V3 c = vlerp(b->mn, b->mx, 0.5f);
+        float len = fabsf(vdot(vsub(b->mx, b->mn), d)), wid = fabsf(vdot(vsub(b->mx, b->mn), s)), y = b->mx.y + 0.03f;
+        float ofs = fmodf(gameTime * 9, 3);
+        for (float u = -len * 0.5f + ofs; u < len * 0.5f - 1; u += 3) {   /* chevrons qui defilent dans le sens de la poussee */
+            V3 tip = vadd(c, vmul(d, u + 1)), l = vadd(vadd(c, vmul(d, u)), vmul(s, wid * 0.35f)), r = vsub(vadd(c, vmul(d, u)), vmul(s, wid * 0.35f));
+            float a = 0.35f + 0.5f * clampf(1 - fabsf(u) / (len * 0.5f), 0, 1);
+            glColor4f(1.0f, 0.35f, 0.85f, a);
+            glVertex3f(l.x, y, l.z); glVertex3f(tip.x, y, tip.z);
+            glVertex3f(tip.x, y, tip.z); glVertex3f(r.x, y, r.z);
+        }
+    }
+    glEnd();
+    float ky = maps[curMap].killY;
+    if (ky > -999) {                                      /* plan de mort : grille rouge qui respire, 3 m sous killY */
+        float py = ky - 3, R = 150, pulse = 0.5f + 0.5f * sinf(gameTime * 2.2f), sc = fmodf(gameTime * 2, 6);
+        glDisable(GL_FOG);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBegin(GL_QUADS);
+        glColor4f(0.25f, 0.0f, 0.02f, 0.75f);
+        glVertex3f(-R, py - 0.05f, -R); glVertex3f(R, py - 0.05f, -R); glVertex3f(R, py - 0.05f, R); glVertex3f(-R, py - 0.05f, R);
+        glEnd();
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        glLineWidth(2);
+        glBegin(GL_LINES);
+        for (float u = -R + sc; u <= R; u += 6) {
+            glColor4f(1.0f, 0.15f, 0.1f, 0.25f + 0.25f * pulse);
+            glVertex3f(u, py, -R); glVertex3f(u, py, R);
+            glVertex3f(-R, py, u); glVertex3f(R, py, u);
+        }
+        glEnd();
+        glEnable(GL_FOG);
+    }
+    glLineWidth(1);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
 static void render(float alpha, float frameDt) {
     glViewport(0, 0, winW, winH);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -11286,7 +11751,7 @@ static void render(float alpha, float frameDt) {
     glGetFloatv(GL_MODELVIEW_MATRIX, mvMat);
     glGetFloatv(GL_PROJECTION_MATRIX, prMat);
 
-    GLfloat fogc[4] = { 0.34f, 0.30f, 0.44f, 1 };
+    GLfloat fogc[4] = { maps[curMap].fog[0], maps[curMap].fog[1], maps[curMap].fog[2], 1 };
     glEnable(GL_FOG);
     glFogi(GL_FOG_MODE, GL_LINEAR);
     glFogfv(GL_FOG_COLOR, fogc);
@@ -11514,6 +11979,7 @@ static void render(float alpha, float frameDt) {
     }
     glEnd();
     glDisable(GL_TEXTURE_2D);
+    draw_map_fx();                                        /* bandes d'acceleration, plan de mort */
     draw_slam_marker();
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
@@ -11899,7 +12365,7 @@ static void egide_test_lan(V3 t, int shield, float yaw) {
 static void run_tests(const char *path) {
     FILE *f = fopen(path, "w");
     if (!f) return;
-    build_level();
+    build_level(0);
 
     reset_game();                                         /* escalier -> plateforme centrale */
     P.pos = P.prevPos = v3(0, 0, ms(14) + 0.6f); P.yaw = 0;
@@ -14322,6 +14788,111 @@ static void run_tests(const char *path) {
         fprintf(f, "mise a jour : chemins %s | %s (attendu C:/jeu/velocity.exe.new | C:/jeu/velocity.exe.old)\n", nw, old);
     }
 
+    {   /* --- Cartes (MapDef) : limites, departs, pads, kill zone solo et LAN, bande d'acceleration, prudence des bots --- */
+        double savedNow = nowT;
+        netMode = NET_OFF; dmMode = 0; connected = 0; spectating = 0; matchOver = 0;
+        for (int m = 0; m < NMAPS; m++) {
+            const MapDef *md = &maps[m];
+            load_map(m);
+            int freeN = 0, aboveN = 0, groundN = 0, cellBad = 0, padN = 0, padOk = 0, nbox = nb, ncell = npu;
+            for (int k = 0; k < md->nspawns; k++) {
+                V3 s = v3(md->spawns[k][0], md->spawns[k][1], md->spawns[k][2]);
+                freeN += pos_free(s, H_STAND);
+                aboveN += s.y > md->killY + 1;
+                groundN += ray_world(v3(s.x, s.y + 0.1f, s.z), v3(0, -1, 0), 0.6f, 0) < 0.6f;
+            }
+            for (int i = 0; i < npu; i++)                 /* une cellule n'est pas dans un solide */
+                for (int b = 0; b < nb; b++) {
+                    V3 c = PU[i].pos, lo = boxes[b].mn, hi = boxes[b].mx;
+                    if (boxes[b].kind == B_SOLID && c.x > lo.x && c.x < hi.x && c.y > lo.y && c.y < hi.y && c.z > lo.z && c.z < hi.z) cellBad++;
+                }
+            for (int i = 0; m > 0 && i < nbox; i++) {     /* chaque pad retombe sur un sol, et on y reste (l'Arene a ses tests) */
+                if (boxes[i].kind != B_PAD) continue;
+                padN++;
+                reset_game(); hitstop = 0;
+                memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+                V3 c = vlerp(boxes[i].mn, boxes[i].mx, 0.5f);
+                P.pos = P.prevPos = v3(c.x, boxes[i].mx.y + 0.01f, c.z); P.vel = v3(0, 0, 0);
+                int landed = -1;
+                for (int t = 0; t < 960 && P.pos.y > md->killY; t++) {
+                    player_tick(TICK, 0, 0);
+                    if (landed < 0 && P.grounded && boxes[P.groundBox].kind != B_PAD) landed = t;
+                    if (landed >= 0 && t > landed + 120) break;   /* 1 s apres l'atterrissage, sans toucher a rien */
+                }
+                padOk += landed >= 0 && P.grounded && P.pos.y > md->killY;
+            }
+            fprintf(f, "carte %s : %d boites (< %d), %d cellules (<= %d), departs libres %d, au-dessus du vide %d, au sol %d, "
+                       "cellules dans un solide %d, pads qui retombent sur un sol %d/%d (attendu %d %d %d, 0, %d/%d)\n",
+                    md->name, nbox, MAXB, ncell, MAXPICK, freeN, aboveN, groundN, cellBad, padOk, padN,
+                    md->nspawns, md->nspawns, md->nspawns, padN, padN);
+        }
+
+        load_map(1);                                      /* kill zone solo : sous killY -> mort au tick suivant */
+        reset_game(); hitstop = 0;
+        memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+        P.pos = P.prevPos = v3(17.8f, 0, 17.8f);
+        game_tick(TICK);
+        int aliveOn = !P.dead;
+        P.pos = P.prevPos = v3(0, maps[1].killY - 0.5f, 0); P.vel = v3(0, -20, 0);
+        game_tick(TICK);
+        fprintf(f, "kill zone solo (%s, killY %.0f) : vivant sur la plateforme %d, mort sous le plan %d, PV %.0f (attendu 1 1 0)\n",
+                maps[1].name, maps[1].killY, aliveOn, P.dead, P.hp);
+        for (int i = 0; i < 300; i++) game_tick(TICK);    /* le corps s'arrete 6 m sous le plan */
+        fprintf(f, "kill zone : corps arrete a y=%.1f (attendu %.1f)\n", P.pos.y, maps[1].killY - 6);
+
+        /* LAN simule (moi = hote 0, Cible = 1) : touche puis chute -> kill a l'attaquant ; chute sans touche -> suicide */
+        reset_game(); hitstop = 0;
+        netMode = NET_HOST; connected = 1; myId = 0; dmMode = 1; matchOver = 0;
+        memset(NP, 0, sizeof NP);
+        for (int i = 0; i < 2; i++) { NP[i].active = NP[i].alive = 1; NP[i].hp = 100; NP[i].lastHitBy = -1; }
+        snprintf(NP[0].name, 16, "Moi"); snprintf(NP[1].name, 16, "Cible");
+        P.pos = P.prevPos = v3(17.8f, 0, 17.8f); NP[0].disp = P.pos; NP[1].disp = v3(0, 6, 18.5f);
+        nowT += 10;
+        int c0 = voidCredited, s0 = voidSuicides, kills[4], deaths[4];
+        NetEvent hit = ev_new(EV_HIT), fall = ev_new(EV_HIT);
+        hit.from = 0; hit.target = 1; hit.sub = W_RAIL; hit.f[0] = 30;
+        fall.from = 1; fall.target = 1; fall.sub = W_VOID; fall.f[0] = 999;
+        host_handle(&hit); nowT += 1.5; host_handle(&fall);           /* 1. touche, chute 1,5 s apres : kill a Moi */
+        kills[0] = NP[0].kills; deaths[0] = NP[1].deaths;
+        host_respawn(1); nowT += 1; host_handle(&fall);               /* 2. chute sans touche : suicide */
+        kills[1] = NP[0].kills; deaths[1] = NP[1].deaths;
+        host_respawn(1); host_handle(&hit); nowT += VOID_CREDIT_T + 1; host_handle(&fall);   /* 3. touche trop ancienne : suicide */
+        kills[2] = NP[0].kills; deaths[2] = NP[1].deaths;
+        fprintf(f, "kill zone LAN : touche + chute -> kills %d morts %d ; chute seule -> kills %d morts %d ; touche il y a 5 s -> kills %d morts %d ; "
+                   "creditees %d suicides %d (attendu 1 1 ; 1 2 ; 1 3 ; 1 2)\n", kills[0], deaths[0], kills[1], deaths[1], kills[2], deaths[2],
+                voidCredited - c0, voidSuicides - s0);
+        P.pos = P.prevPos = v3(0, maps[1].killY - 0.5f, 0); P.vel = v3(0, -20, 0);   /* 4. l'hote lui-meme tombe : EV_HIT W_VOID */
+        nowT += 1;
+        game_tick(TICK);
+        fprintf(f, "kill zone LAN (hote) : mort %d, morts de Moi %d, suicides %d (attendu 1 1 3)\n", P.dead, NP[0].deaths, voidSuicides - s0);
+        netMode = NET_OFF; connected = 0; dmMode = 0; memset(NP, 0, sizeof NP); memset(outq, 0, sizeof outq);
+
+        {   /* bots : depuis la 8e plateforme, un saut vers le vide est detecte, un saut sur place non */
+            V3 s = v3(18.5f, 42, 0);
+            fprintf(f, "bot prudent (%s) : saut sur place retombe %d, saut a 15 m/s vers le centre retombe %d (attendu 1 0)\n", maps[1].name,
+                    bot_lands(s, v3(0, JUMP_V, 0), maps[1].killY), bot_lands(s, v3(-15, JUMP_V, 0), maps[1].killY));
+        }
+
+        load_map(3);                                      /* La Boucle : bande d'acceleration (voie nord exterieure, vers +x) */
+        reset_game(); hitstop = 0;
+        memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+        float sv[3];
+        static const float sx0[3] = { -30, -35, -20 }, sv0[3] = { 0, 26, -10 };
+        static const int sticks[3] = { 60, 36, 36 };
+        for (int k = 0; k < 3; k++) {
+            P.pos = P.prevPos = v3(sx0[k], 0.12f, 26.5f); P.vel = v3(sv0[k], 0, 0); P.grounded = 1;
+            for (int i = 0; i < sticks[k]; i++) player_tick(TICK, 0, 0);
+            sv[k] = P.vel.x;
+        }
+        fprintf(f, "bande d'acceleration : arret -> %.1f m/s en 0,5 s, 26 m/s -> %.1f (plafond), a contresens -10 -> %.1f en 0,3 s "
+                   "(attendu ~15, %.0f, ~-1)\n", sv[0], sv[1], sv[2], SPEED_MAX);
+
+        load_map(0);
+        reset_game();
+        nowT = savedNow;
+    }
+    /* --- fin Cartes --- */
+
     botLog = NULL;
     netMode = NET_OFF; dmMode = 0;
     fclose(f);
@@ -14334,7 +14905,7 @@ static void music_follow_game(void) {
     if (appState != APP_GAME) { if (mus.track >= 0) music_set(-1, 0); return; }   /* menus : silence */
     if (mus.track < 0) {                                  /* entree en partie : depart avec fondu, variations differentes a chaque partie */
         musSeed = (unsigned)(nowT * 1000.0) * 2654435761u + 1u;
-        music_set(0, 0);
+        music_set(maps[curMap].music, 0);
     }
     if (appState == APP_GAME && dmMode) {
         int lead = 0, second = 0;
@@ -14357,7 +14928,9 @@ static void do_action(void) {
     if (a == ACT_SOLO || a == ACT_HOST || a == ACT_BROWSE || a == ACT_QUICK) cfg_save();
     switch (a) {
     case ACT_SOLO:
-        net_shutdown(); reset_game(); appState = APP_GAME; set_capture(1);
+        net_shutdown();
+        if (curMap != (maps[menuMap].solo ? menuMap : 0)) load_map(maps[menuMap].solo ? menuMap : 0);
+        reset_game(); appState = APP_GAME; set_capture(1);
         break;
     case ACT_HOST:
         if (net_host_start()) { appState = APP_GAME; if (!botMode) set_capture(1); }
@@ -14449,7 +15022,14 @@ static int velocity_main(const char *cmd) {
     memcpy(binds, bindDefault, sizeof binds);
     if (cmd && strncmp(cmd, "--test ", 7) == 0) { run_tests(cmd + 7); return 0; }
     const char *shotPath = NULL;
-    if (cmd && strncmp(cmd, "--shot ", 7) == 0) { shotMode = 1; shotPath = cmd + 7; }
+    static char shotBuf[512];
+    float shotYaw = 0;
+    if (cmd && strncmp(cmd, "--shot ", 7) == 0) {
+        shotMode = 1;
+        snprintf(shotBuf, sizeof shotBuf, "%s", cmd + 7);
+        shotBuf[strcspn(shotBuf, " ")] = 0;               /* le nom s'arrete au premier espace (--map N, --yaw A ensuite) */
+        shotPath = shotBuf;
+    }
 
     /* mode bot : velocity.exe --bot host|join [--name N] [--time S] [--log fichier] [--botshot fichier.bmp] [--loadout a,b[,m]] */
     {
@@ -14477,6 +15057,8 @@ static int velocity_main(const char *cmd) {
             else if (!strcmp(t, "--hidden")) botHidden = 1;
             else if (!strcmp(t, "--updated")) updAfter = 1;
             else if (!strcmp(t, "--level") && (t = strtok(NULL, " "))) botLevel = atoi(t) < 0 ? 0 : atoi(t) > 2 ? 2 : atoi(t);
+            else if (!strcmp(t, "--map") && (t = strtok(NULL, " "))) menuMap = atoi(t) >= 0 && atoi(t) < NMAPS ? atoi(t) : 0;
+            else if (!strcmp(t, "--yaw") && (t = strtok(NULL, " "))) shotYaw = (float)atof(t);
             else if (!strcmp(t, "--loadout") && (t = strtok(NULL, " "))) {   /* --loadout arme1,arme2[,melee[,competence]] (WP_*, WP_*, MK_*, SK_*) */
                 int l0, l1, mk, sk, n = sscanf(t, "%d,%d,%d,%d", &l0, &l1, &mk, &sk);
                 if (n >= 2) { wantLoadout[0] = l0; wantLoadout[1] = l1; }
@@ -14537,8 +15119,9 @@ static int velocity_main(const char *cmd) {
     glHint(GL_FOG_HINT, GL_NICEST);
     make_font(0, 18); make_font(1, 28); make_font(2, 56);
     make_textures();
-    build_level();
+    build_level(curMap);
     build_world_list();
+    glReady = 1;
     make_sounds();
     {                                                     /* velocity.ini, a cote de l'executable */
 #ifdef _WIN32
@@ -14566,6 +15149,7 @@ static int velocity_main(const char *cmd) {
         if (updCheck) { updQuiet = 1; upd_start(upd_check_th, UPD_CHECKING); }
     }
     if (!shotMode && !botHidden) audio_init();
+    if (curMap != menuMap) load_map(menuMap);             /* --map N ou map= de velocity.ini */
     reset_game();
 
     if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu") || strstr(shotPath, "loadout") ||
@@ -14638,6 +15222,19 @@ static int velocity_main(const char *cmd) {
             tesla_fx_tick(TICK);
         }
         matchT = 95;
+        render(1, TICK);
+        save_bmp(shotPath);
+        return 0;
+    }
+    if (shotMode && curMap != 0) {        /* autres cartes : vue du menu, d'un point de depart ("spawn"), ou chute vers le vide ("chute") */
+        const MapDef *md = &maps[curMap];
+        appState = APP_GAME;
+        P.pos = md->menuCam; P.pitch = md->menuPitch; P.yaw = shotYaw;
+        if (strstr(shotPath, "spawn")) { P.pos = v3(md->spawns[0][0], md->spawns[0][1], md->spawns[0][2]); P.pitch = -0.05f; }
+        if (strstr(shotPath, "chute")) { P.pos = v3(md->menuCam.x + 2, md->killY + 3, md->menuCam.z + 2); P.vel = v3(0, -20, 0); P.pitch = -0.7f; }
+        P.prevPos = P.pos;
+        if (md->solo && strstr(shotPath, "solo")) { wave = 3; for (int i = 0; i < 8; i++) spawn_enemy(); }
+        gameTime = 1.3f;
         render(1, TICK);
         save_bmp(shotPath);
         return 0;
@@ -14807,6 +15404,7 @@ static int velocity_main(const char *cmd) {
         net_update(dt);
         if (botMode) {
             bot_think(dt);
+            bot_void_guard(dt);                           /* kill zone : pas de saut dans le vide, grappin de secours */
             if (nowT > botTime) break;
             if (botLocal && appState != APP_GAME && botT > 12) break;   /* l'hote est parti : le bot adverse se ferme */
         }
@@ -14863,6 +15461,11 @@ done:
                 if (hitCount[w]) n += snprintf(hb + n, sizeof hb - n, "%s %d, ", weaponNames[w], hitCount[w]);
             netlog("touches arbitrees : %s parries %d", n ? hb : "aucune, ", parryCount);
         }
+        if (maps[curMap].killY > -999)                    /* kill zone */
+            netlog("carte %s : chutes dans le vide %d (moi)%s", maps[curMap].name, voidFalls, "");
+        if (netMode == NET_HOST && maps[curMap].killY > -999)
+            netlog("vide (arbitre) : %d chutes, %d creditees a l'attaquant, %d suicides", voidCredited + voidSuicides, voidCredited,
+                   voidSuicides);
         netlog("munitions : points touche %.0f, kill %.0f, parry %.0f, cellules %.0f (%d prises), perdus %.0f ; a sec %.0f%% du temps",
                apStat[AP_HIT], apStat[AP_KILL], apStat[AP_PARRY], apStat[AP_CELL], cellsTaken, apStat[AP_LOST],
                100 * dryT / fmaxf(botAliveT, 0.01f));
