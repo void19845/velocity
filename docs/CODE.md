@@ -254,6 +254,31 @@ vitesse **relative** : foncer sur quelqu'un qui fonce sur vous frappe très fort
 - Chaque pièce a un `netId` (id du joueur + 1 dans les 8 bits hauts, compteur dans les 24 bits bas).
   En LAN : `net_fx_coin(0, ...)` à la création, `net_fx_coin(1, ...)` à la destruction (`EV_COIN`).
 
+#### Compétences (`skill_tick`, `skillDef`, design : `docs/COMPETENCES_MARKSMAN.md`)
+
+La pièce est une **compétence** parmi six (`enum SK_*`), choisie au LOADOUT (`wantSkill`, clé `skill=` de
+`velocity.ini`, `--skill N` ou `--loadout a,b,m,s` pour les bots ; sans eux, un bot en tire une au hasard).
+Touche `A_SKILL` (ancien `A_COIN`), charges `P.skillCh` (max et recharge par `skillDef[]`).
+
+| Compétence | Fonction | Effet |
+|---|---|---|
+| `SK_COIN` PIÈCE | `throw_coin` | inchangée (4 charges, 2 s) |
+| `SK_MARK` MARQUE | `skill_mark` | tir sans dégâts (90 m) : cible marquée 4 s (`markP[]` / `markE[]`), losange à travers les murs, mes touches ×1,25 |
+| `SK_CHARGE` CHARGE | `skill_tick` | maintenir 0,6 s → `P.chargeT` = 2 s : la prochaine touche ×1,5 (`CHARGE_GRACE` pour les autres touches du même tir), perdue si on perd des PV |
+| `SK_RICOCHET` RICOCHET | `ric_take`, `hitscan_shot` | `P.ricArmed` : le prochain rail / Élan est réfléchi (`r = d − 2(d·n)n`, 3 rebonds, 120 m), la roquette rebondit (`p->ricLeft`, ×0,8) ; recharge seulement après le tir ; retour sur soi à partir du 2e rebond, une fois par tir |
+| `SK_ALLIN` ALL IN ONE | `skill_allin` | toute la munition (rail, roquettes, Éventail, Élan) en éventail régulier, demi-angle `allin_half(n)` ; refus à 1 munition, Scie / Ventouse / Tesla, bouclier levé |
+| `SK_DECOY` MIRAGE | `skill_decoy` | `Coin` avec `decoy = 1` : immobile 3 s, absorbe un rail / Élan / plomb adverse (`decoy_absorb`), mon rail y ricoche ×1 ; ignoré par le yoyo, la scie, le tesla et le viseur adverse ; `decoy_skip` : un tir parti de l'intérieur le traverse |
+
+- Bonus centralisé : `skill_out()` dans `damage_enemy`, `net_hit*`, `hit_player_ex` (une fois par touche).
+- Réseau : `EV_SKILL` (marque, charge, all in one), `EV_COIN` sous-type 4 (leurre), `EV_ROCKET.sub` = rebonds.
+- Bots (`bot_skill`, appelé en fin de `bot_think`) : MARQUE sur une cible vue à 10–60 m, CHARGE maintenue
+  quand une cible approche, RICOCHET armé cible à couvert / près d'un mur (puis tir par le sol si elle reste
+  cachée), ALL IN ONE à 4–14 m avec ≥ 3 munitions, MIRAGE sous 45 PV ou juste après une touche. Un bot vise
+  le leurre adverse une fois sur deux pendant 0,4 à 1 s. Journal : ligne `competences : ...`, et
+  `salves mortelles` dans la ligne `equilibre` (kill depuis la pleine vie en < 0,1 s, en plusieurs touches).
+- Captures : `--shot skills.bmp` (marque, leurres), `--shot loadout_small.bmp` (fenêtre 1024×640),
+  `loadout_charge` (description sur deux lignes).
+
 #### Roquettes (`fire_rocket`, `proj_tick`, `explode`)
 
 - Arme 1. Projectile `PR_ROCKET` (`spawn_proj`) à `ROCKET_SPEED`, recharge `ROCKET_CD / streak_rate()`.

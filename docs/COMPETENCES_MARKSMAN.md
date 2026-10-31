@@ -1,7 +1,49 @@
 # Competences interchangeables avec la piece — design (v2)
 
-Statut : **proposition, rien n'est code**. Branche de travail : `dev`.
+Statut : **code** (les six competences, bots, tests, HUD, LOADOUT). Branche de travail : `dev`.
 Remplace la v1 (qui supprimait les pieces) : ici la **piece devient une competence parmi d'autres**.
+
+### Ce qui est code, choix faits et ecarts au design
+
+- Les 6 competences (`SK_COIN` .. `SK_DECOY`), une seule par loadout, valeurs de §3 (charges / recharge de
+  `skillDef`). Description complete dans `docs/CODE.md` (section Competences).
+- **MARQUE** : ×1,25 sur **toutes** les touches du marqueur (pas de « rail qui ricoche vers la marque suivante »).
+  Marque perdue a la mort de la cible. Pas encore : contre-jeu « un parry retire la marque », tesla qui propage.
+- **CHARGE** : ×1,5 sur la prochaine touche, quelle que soit l'arme (les autres touches du meme tir en
+  profitent pendant 0,05 s : plombs, perforation). Pas de perforation en plus ni de bonus de portee de melee.
+- **RICOCHET** : rail et Elan reflechis (3 rebonds, 120 m), roquette (×0,8 par rebond, explose sur une cible ou
+  au 4e impact). Shotgun, mine, scie et tesla : pas encore. Retour sur soi a partir du 2e rebond, **une seule
+  fois par tir** (rail perpendiculaire entre deux murs : 50 PV en solo, sinon il tuait). Une seule competence
+  par loadout : la synergie RICOCHET + ALL IN ONE n'existe donc pas.
+- **ALL IN ONE** : rail, roquettes, Eventail, Elan ; refus (son, message, charge gardee) a 1 munition, avec la
+  Scie / Ventouse / Tesla, bouclier leve ou sous decharge Tesla. Le plafond PvP s'applique par projectile :
+  le one-shot passe par plusieurs touches, compte dans « salves mortelles » (journal `equilibre`), pas
+  dans « one-shots » (un seul coup).
+- **MIRAGE** : leurre immobile 3 s (silhouette coloree du lanceur). Absorbe un rail, un Elan ou un plomb
+  adverse ; mon rail y ricoche ×1 vers la cible la plus proche. Un tir qui part de l'interieur du leurre le
+  traverse (sinon : leurre a ses pieds + rail = visee automatique). Le yoyo, la scie et le tesla l'ignorent ;
+  le viseur adverse ne s'allume pas dessus. Pas encore : « un coup de melee le detruit et rend la moitie de
+  la recharge ».
+- **Ancrage commun** (§4) : pas fait, chaque arme garde sa regle sur les pieces (les leurres en sont exclus).
+- **Bots** : competence au hasard sans `--skill`. MARQUE 10–60 m, CHARGE quand une cible approche, RICOCHET
+  arme si la cible est a couvert / pres d'un mur (tir par le sol si elle reste cachee), ALL IN ONE a 4–14 m
+  avec ≥ 3 munitions (donc roquettes : le rail n'en a que 2), MIRAGE sous 45 PV ou juste apres une touche.
+  Un bot vise un leurre adverse une fois sur deux, 0,4 a 1 s.
+- Le choix de competence ne voyage pas dans l'etat joueur (les effets visibles passent par `EV_SKILL` et
+  `EV_COIN` sous-type 4).
+
+Match bot contre bot (90 s, un match par ligne, variance forte) :
+
+| Match | TTK moyen | kills | one-shots | salves | parries | competences |
+|---|---|---|---|---|---|---|
+| `--skill 0` des deux cotes | 6,86 s | 7 | 0 | 0 | 15 | piece 4 |
+| RICOCHET / CHARGE (hasard) | 5,73 s | 6 | 0 | 0 | 10 | ricochet 4 (3 tirs, 7 rebonds), charge 2 (2 bonifiees) |
+| MARQUE / MIRAGE (hasard) | 7,37 s | 6 | 0 | 0 | 3 | marque 7 (4 bonifiees), mirage 2 |
+| RICOCHET / PIECE (hasard) | 5,92 s | 7 | 0 | 0 | 7 | ricochet 3 (2 tirs, 6 rebonds), piece 4 |
+| ALL IN ONE / MIRAGE (impose) | 3,40 s | 7 | 0 | 2 | 18 | all in one 3 (3, 4, 6 roquettes), mirage 3 |
+| CHARGE / MARQUE (impose) | 0,82 s | 6 | 0 | 0 | 7 | charge 3 (3 bonifiees), marque 10 (7 bonifiees) |
+
+A surveiller : ALL IN ONE aux roquettes (2 salves mortelles en 90 s) et le cumul MARQUE ×1,25 + CHARGE.
 
 ## 1. Idee
 
