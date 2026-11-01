@@ -1,8 +1,22 @@
-// Worker + Durable Object du lobby de VELOCITY.
-// Une seule instance du DO ("global") tient tous les salons ; ses WebSockets sont hibernables, donc
-// rien n'est facture tant que personne n'envoie de message.
+// Worker + Durable Objects de VELOCITY.
+// - Lobby : une seule instance ("global") tient tous les salons ; ses WebSockets sont hibernables, donc
+//   rien n'est facture tant que personne n'envoie de message.
+// - Ratings : une seule instance ("global") tient le classement du mode CLASSE (SQLite) ; elle repond
+//   aux requetes HTTPS /ranked/hello, /ranked/report et /ranked/top (voir ratings.js).
 
 import { handle, closed, newMeta } from './lobby.js';
+import { schema, rankedResponse } from './ratings.js';
+
+export class Ratings {
+  constructor(ctx) {
+    this.sql = ctx.storage.sql;
+    schema(this.sql);
+  }
+
+  fetch(request) {
+    return rankedResponse(this.sql, request);
+  }
+}
 
 export class Lobby {
   constructor(ctx) {
@@ -54,6 +68,9 @@ export class Lobby {
 
 export default {
   fetch(request, env) {
+    if (new URL(request.url).pathname.startsWith('/ranked/')) {
+      return env.RATINGS.get(env.RATINGS.idFromName('global')).fetch(request);
+    }
     return env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(request);
   },
 };

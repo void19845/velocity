@@ -3,7 +3,9 @@
 //
 // Une "connexion" est un objet { send(texte), meta } ou meta est un objet simple que l'on peut
 // remplacer (le Durable Object le garde dans l'attachement du WebSocket, qui survit a l'hibernation).
-// meta = { id, sub: ver|0, room: { ver, players, max, spec, ep, lan, name }|null }
+// meta = { id, sub: ver|0, room: { ver, players, max, spec, ep, lan, name, ranked, mmr }|null }
+// Mode classe : un salon classe (ranked = 1) porte la cote moyenne de ses joueurs (mmr) ; la partie rapide
+// classee ne choisit que des salons classes, le plus proche en cote ; la partie rapide normale les evite.
 
 export const MAX_LINE = 200;
 
@@ -20,7 +22,7 @@ function ipOf(ep) {
 
 function roomLine(c) {
   const r = c.meta.room;
-  return `room ${c.meta.id} ${r.players} ${r.max} ${r.spec} ${r.ep} ${r.name}`;
+  return `room ${c.meta.id} ${r.players} ${r.max} ${r.spec} ${r.ep} ${r.name} ${r.ranked ? 1 : 0} ${r.mmr || 0}`;
 }
 
 function sendAll(conns, pred, line) {
@@ -48,7 +50,7 @@ export function handle(conns, c, raw) {
     }
 
     case 'host': {
-      // host <ver> <joueurs> <max> <spec> <ep_public> <ep_lan> <nom>
+      // host <ver> <joueurs> <max> <spec> <ep_public> <ep_lan> <nom> [<classe 0/1> <cote>]
       const ver = parseInt(w[1], 10), players = parseInt(w[2], 10), max = parseInt(w[3], 10);
       const spec = parseInt(w[4], 10), ep = w[5], lan = w[6], name = w[7];
       if (![ver, players, max, spec].every(Number.isInteger) || players < 0 || players > 32 || max < 1 || max > 32 ||
@@ -56,8 +58,10 @@ export function handle(conns, c, raw) {
         c.send('err host');
         return;
       }
+      const ranked = w[8] === '1' ? 1 : 0;
+      const mmr = Math.min(9999, Math.max(0, parseInt(w[9], 10) || 0));
       const isNew = !m.room;
-      m.room = { ver, players, max, spec, ep, lan, name };
+      m.room = { ver, players, max, spec, ep, lan, name, ranked, mmr };
       c.meta = m;
       sendAll(conns, (x) => x.sub === ver && x.id !== m.id, roomLine(c));
       if (isNew) c.send('ok');
@@ -66,7 +70,7 @@ export function handle(conns, c, raw) {
 
     case 'join':
     case 'quick': {
-      // join <id> <mon_ep> <spec>      quick <ver> <mon_ep>
+      // join <id> <mon_ep> <spec>      quick <ver> <mon_ep> [<classe 0/1> <cote>]
       const quick = w[0] === 'quick';
       const myEp = w[2];
       if (!EP_RE.test(myEp || '')) { c.send('err ep'); return; }
@@ -74,10 +78,15 @@ export function handle(conns, c, raw) {
       let spec = 0;
       if (quick) {
         const ver = parseInt(w[1], 10);
+        const ranked = w[3] === '1' ? 1 : 0, mmr = parseInt(w[4], 10) || 0;
+        const gap = (o) => Math.abs(o.meta.room.mmr - mmr);
         for (const o of conns) {
           const r = o.meta.room;
-          if (!r || r.ver !== ver || o === c || r.players >= r.max) continue;
-          if (!host || r.players > host.meta.room.players) host = o;
+          if (!r || r.ver !== ver || o === c || r.players >= r.max || (r.ranked ? 1 : 0) !== ranked) continue;
+          if (!host) host = o;
+          else if (ranked) {                // classee : la cote la plus proche, puis le salon le plus rempli
+            if (gap(o) < gap(host) || (gap(o) === gap(host) && r.players > host.meta.room.players)) host = o;
+          } else if (r.players > host.meta.room.players) host = o;
         }
       } else {
         spec = w[3] === '1' ? 1 : 0;

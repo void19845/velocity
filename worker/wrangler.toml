@@ -6,6 +6,15 @@ compatibility_date = "2025-04-01"
 name = "LOBBY"
 class_name = "Lobby"
 
+[[durable_objects.bindings]]
+name = "RATINGS"
+class_name = "Ratings"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Lobby"]
+
+# mode CLASSE : classement (cotes, rapports de match) dans un Durable Object SQLite, gratuit sur le plan free
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Ratings"]

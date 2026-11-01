@@ -33,12 +33,12 @@ possibilité de regarder une partie. L'hôte reste un joueur (id 0) et fait auto
 | Sens | Message | Rôle |
 |---|---|---|
 | C→S | `list <ver>` | s'abonner à la liste des salons de cette version de protocole |
-| C→S | `host <ver> <joueurs> <max> <spec> <ep_public> <ep_lan> <nom>` | publier / mettre à jour mon salon |
+| C→S | `host <ver> <joueurs> <max> <spec> <ep_public> <ep_lan> <nom> [<classe 0/1> <cote>]` | publier / mettre à jour mon salon (classé : cote moyenne des joueurs) |
 | C→S | `join <id> <mon_ep> <spec 0/1>` | rejoindre ou regarder un salon |
-| C→S | `quick <ver> <mon_ep>` | partie rapide : le lobby choisit le salon le plus rempli et non plein |
+| C→S | `quick <ver> <mon_ep> [<classe 0/1> <cote>]` | partie rapide : salon non classé le plus rempli et non plein ; **classée** : salon classé de cote la plus proche |
 | C→S | `ping` | maintien de connexion (toutes les 25 s) |
 | S→C | `hello <id>` | à la connexion |
-| S→C | `room <id> <joueurs> <max> <spec> <ep> <nom>` / `gone <id>` / `end` | liste et mises à jour |
+| S→C | `room <id> <joueurs> <max> <spec> <ep> <nom> <classe> <cote>` / `gone <id>` / `end` | liste et mises à jour |
 | S→C | `go <ep> <spec>` | adresse à rejoindre |
 | S→C | `punch <ep>` | (hôte) un client arrive, ouvre ton NAT vers lui |
 | S→C | `none` / `err <texte>` / `pong` | réponses |
@@ -68,6 +68,30 @@ connexion. **Non vérifié** : le perçage de NAT entre deux vrais réseaux diff
 5. **Déploiement** (à faire par le propriétaire, compte Cloudflare) — `cd worker && npx wrangler deploy`,
    puis mettre l'adresse `xxx.workers.dev` dans `velocity.ini` (`lobby=`) ou dans `LOBBY_DEFAULT`.
 
+## Mode classé : serveur de classement (Durable Object `Ratings`)
+
+Le même Worker sert, sur HTTPS, le classement du mode CLASSE : `POST /ranked/hello`, `POST /ranked/report`,
+`GET /ranked/top` (détails, formule Elo et règles de concordance : `docs/CODE.md`, « Mode classé »). Une seule
+instance (`idFromName("global")`) avec SQLite : tables `players (id, keyhash, name, mmr, played, wins, updated)`,
+`matches (mid, created, done, result)`, `reports (mid, reporter, body, at)` et `rate` (limite de débit). Logique :
+`worker/src/ratings.js` (testée par `node test.js`) ; `dev-server.js` sert les mêmes routes sur une base SQLite en
+mémoire (`node:sqlite`, Node 22.5+), ce qui permet le match bot contre bot classé en local avec `--lobby`.
+
+- **Identité sans compte** : le jeu tire `ranked_id` + `ranked_key` (2 × 128 bits) au premier lancement
+  (`velocity.ini`) ; le serveur garde le SHA-256 de la clé au premier contact et l'exige ensuite.
+- **Le serveur calcule l'Elo** : l'hôte et chaque client envoient le rapport de fin de match (identifiant de
+  match tiré par l'hôte, présents et frags, gagnant, partis listés par l'hôte) ; il n'est appliqué que si une
+  majorité des présents concorde (1 contre 1 : les deux), dans les 10 minutes. Un joueur parti perd contre tous.
+- **Coût** : quelques requêtes par match et par joueur, dans le plan gratuit (Durable Objects SQLite).
+
+### À faire par le propriétaire (déploiement)
+
+1. `cd worker && npx wrangler deploy` : la migration **`v2`** (`new_sqlite_classes = ["Ratings"]`, déjà dans
+   `wrangler.toml`) crée la classe `Ratings` ; le binding `RATINGS` est déclaré à côté de `LOBBY`.
+2. Vérifier : `curl https://<lobby>/ranked/top` doit répondre `{"ok":true,"top":[],"me":null}`.
+3. Rien à changer dans le jeu : l'URL suit `lobby=` / `LOBBY_DEFAULT`. Tant que le Worker n'est pas redéployé, le
+   jeu affiche « classement indisponible » et PARTIE CLASSEE refuse de démarrer (le reste fonctionne).
+
 ## Coûts réseau (mesurés sur les structures)
 
 `PkSnap` = 464 octets × 60/s ≈ 28 Ko/s ≈ 220 kbit/s **par client ou spectateur** côté hôte. 8 joueurs
@@ -75,4 +99,5 @@ connexion. **Non vérifié** : le perçage de NAT entre deux vrais réseaux diff
 
 ## Hors périmètre (pour plus tard)
 
-Relais UDP (Oracle), spectateurs en nombre avec retard, classement, authentification.
+Relais UDP (Oracle), spectateurs en nombre avec retard, authentification forte (le classement repose sur une
+identité anonyme et sur la concordance des rapports : voir les limites dans `docs/CODE.md`).

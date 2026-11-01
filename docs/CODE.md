@@ -401,7 +401,9 @@ F2/F3 (sensibilité), F11 (plein écran), R (recommencer en solo, `latch[SC_R]`)
 - Fichier : `velocity.ini` **à côté de l'exécutable** (chemin `cfgPath`, calculé avec
   `GetModuleFileNameA` dans `WinMain`). Format `cle=valeur`, une par ligne, `#` pour un commentaire :
   `name`, `sens`, `fov`, `volume`, `invert_y`, `show_fps`, `fullscreen`, `impact_frames`, `screen_fx`,
-  `online`, `update_check` (vérifier les mises à jour au démarrage), puis `bind_<actId>=code1,code2`.
+  `online`, `update_check` (vérifier les mises à jour au démarrage), `ranked_id` / `ranked_key` (identité du mode
+  classé, créée au premier lancement), `mmr` / `ranked_played` / `ranked_wins` (simple **cache d'affichage** de la
+  cote : le serveur fait foi), puis `bind_<actId>=code1,code2`.
 - `cfg_load` lit au démarrage (pas en mode bot ni `--shot`), borne les valeurs (`clampf`) et ignore
   les clés inconnues. Il renvoie 1 si le plein écran est demandé.
 - `cfg_save` réécrit tout le fichier ; il ne fait rien si `botMode`, `shotMode` ou `cfgPath` vide.
@@ -415,7 +417,7 @@ F2/F3 (sensibilité), F11 (plein écran), R (recommencer en solo, `latch[SC_R]`)
 - Primitives 2D : `rect`, `text` (avec ombre), `text_c` (centré), polices 0/1/2.
 - Widgets immédiats : `button` (renvoie 1 au clic), `field` (champ texte, focus `uiFocus` 1 = pseudo,
   2 = IP ; la saisie passe par `WM_CHAR`), `slider(id, ...)` (glisser ; `uiDrag` mémorise l'`id` en cours).
-- Écrans : `draw_main_menu` (pseudo, SOLO, HÉBERGER, REJOINDRE, PARAMÈTRES, QUITTER + aide
+- Écrans : `draw_main_menu` (pseudo, SOLO, PARTIE RAPIDE / PARTIE CLASSEE, HÉBERGER, REJOINDRE, encadré CLASSEMENT + TOP 3, PARAMÈTRES, QUITTER + aide
   `draw_controls`), `draw_join_menu` (parties trouvées + IP), `draw_pause` (en jeu, souris libre),
   `draw_settings` (réglages à gauche, commandes à droite ; `waitAct`/`waitSlot` = case en attente d'une
   touche ; Échap annule, Retour arrière/Suppr efface).
@@ -634,6 +636,85 @@ Plan et protocole complet : [`PLAN_EN_LIGNE.md`](PLAN_EN_LIGNE.md). Le jeu de co
   `specFollow`), puis retour à la caméra libre. `P.dead` reste à 1 : aucune arme, aucun dégât subi.
   `draw_spec_hud` remplace le HUD (classement, minuteur, fil des kills) et `draw_viewmodel` est sauté.
 - Le spectateur n'envoie que `PK_KEEP` ; l'hôte le retire après 5 s sans nouvelle.
+
+### Mode classé (PARTIE CLASSEE, cote Elo tenue par le serveur)
+
+Pas de compte : le classement est tenu par le **serveur de classement** (Durable Object `Ratings` du worker, SQLite),
+qui calcule lui-même l'Elo à partir des rapports de fin de match. L'hôte fait autorité sur le déroulement du match
+(frags, gagnant, joueurs partis), comme pour le reste du jeu.
+
+**Identité** — au premier lancement, `rk_identity` tire `ranked_id` (128 bits) et `ranked_key` (128 bits secrets,
+`RtlGenRandom` sous Windows, `arc4random_buf` sous macOS), écrits dans `velocity.ini`. Le serveur enregistre le SHA-256
+de la clé au premier contact (confiance au premier usage) ; toute requête ensuite doit présenter la clé (sinon 403).
+Le pseudo peut changer. Les bots (`--bot … --ranked`) utilisent une identité temporaire (jamais sauvegardée).
+
+**Requêtes HTTP** (`rk_http`, une à la fois dans un fil : WinHTTP sous Windows, `curl` du système sous macOS ; même
+hôte que le lobby, `lobbyAddr`, donc `--lobby 127.0.0.1:8787` vise le `dev-server.js`) :
+
+| Requête | Corps / paramètres | Réponse |
+|---|---|---|
+| `POST /ranked/hello` | `{id, key, name}` | `{ok, mmr, played, wins, tier, rank}` (enregistre l'identité si nouvelle) |
+| `POST /ranked/report` | `{id, key, match, host, winner, players:[{id, kills}], left:[id]}` | `{ok, state:"pending"}` ou `{ok, state:"applied", delta, mmr, played, wins, tier}` ; `expired`, `ignored` |
+| `GET /ranked/top?id=…` | — | `{ok, top:[{name, mmr, tier, played}] (10 max, placement fini), me:{rank, mmr, …}}` |
+
+Au démarrage (hors `--shot`/`--test`, et hors bots sans `--ranked`) : `hello` puis `top`. Le menu principal affiche
+l'encadré **CLASSEMENT** (`draw_rank_box`) : mon palier et ma cote, `#rang`, puis le **TOP 3** (podium or / argent /
+bronze) et une 4e ligne « toi : #rang, cote » si je n'y suis pas ; « classement indisponible » sans réseau. Sous
+~1540 px de large, l'encadré devient une ligne sous le titre. Il est rafraîchi après chaque match classé.
+
+**Formule (référence unique, appliquée par `worker/src/ratings.js` ; `rank_delta` dans `main.c` est identique)** :
+- cote de départ `RANK_START` = 1000, bornée à [`RANK_MIN`, `RANK_MAX`] = [100, 3000] ;
+- Elo multijoueur **par paires** : pour le joueur `a` contre chacun des `n` autres participants `b`,
+  `E = 1 / (1 + 10^((Rb − Ra) / 400))`, `S` = 1 / 0,5 / 0 selon le classement final ;
+  `delta = K × Σ(S − E) / n`, arrondi au plus proche (0,5 s'éloigne de zéro, comme `lroundf`). En 1 contre 1 à
+  1000 contre 1000, le gagnant prend `K / 2` ;
+- `K` = `RANK_K_PLACE` = 64 pendant les `RANK_PLACEMENT` = 10 premiers matchs (affichés « PLACEMENT x/10 »),
+  puis `RANK_K` = 32 ;
+- classement final : le gagnant désigné par l'hôte d'abord, puis les frags (égalité = 0,5) ; tout présent bat tout
+  joueur parti ; entre partis, le dernier parti passe devant le premier. **Quitter un match en cours = défaite**
+  contre tous ;
+- paliers (`RANK_ARGENT` 900, `RANK_OR` 1050, `RANK_PLATINE` 1200, `RANK_DIAMANT` 1350, `RANK_MAITRE` 1500) :
+  BRONZE, ARGENT, OR, PLATINE, DIAMANT découpés en divisions III (bas) / II / I (haut) de 50 points ; MAITRE sans
+  division. BRONZE commence à 750 pour le calcul des divisions.
+
+**Déroulement** :
+1. **PARTIE CLASSEE** (`ACT_RANKED` → `ranked_play`) : il faut `online=1` et un `hello` réussi (sinon message clair :
+   « PARTIE CLASSEE indisponible … »). Partie rapide du lobby avec `quick <ver> <ep> 1 <cote>` : salon **classé**
+   de cote la plus proche ; `none` → on héberge une partie classée (`hostRanked`). La partie rapide normale évite les
+   salons classés. Le salon classé publie `host … <nom> 1 <cote moyenne>` ; REJOINDRE affiche « [CLASSEE] » (LAN :
+   `PkAnnounce.pad[1]`). Rejoindre une partie classée sans serveur de classement est refusé.
+2. **Règles figées** : match à mort normal, limite `FRAG_LIMIT`, `MATCH_TIME` ; jamais contre un bot (`vsBot`) ;
+   les spectateurs ne comptent pas. L'hôte refuse (`PkWelcome.refused = 2`) un joueur sans identité de classement.
+   Le premier adversaire qui arrive relance le match (`host_start_match`) ; si tous les adversaires partent, l'hôte
+   gagne (`host_end_match`).
+3. **Réseau** : `PkJoin` porte `rid` (16 octets), `mmr` et `rplay` (cache) ; l'hôte les diffuse dans `PkRoster`
+   (`mmr[]`, `rplay[]`, `rid[]`, `ranked`, `mid` = identifiant du match tiré par l'hôte à chaque match, `left[]` /
+   `nleft` = joueurs partis pendant le match, listés par l'hôte). `PkWelcome.pad[1]` = partie classée.
+   `pad[0]` de `PkAnnounce`/`PkWelcome` reste réservé à la carte.
+4. **Fin de match** (`rk_tick`, appelé par `net_update`) : `RANK_END_WAIT` (0,5 s) après `matchOver`, l'hôte **et**
+   chaque client envoient le même rapport (`rk_send_report`) ; il est renvoyé toutes les `RANK_RETRY` s tant que le
+   serveur répond `pending` (`RANK_TRIES` fois). Si l'hôte part en plein match (`PK_LEAVE` ou silence de 5 s), les
+   clients rapportent l'hôte comme parti et sans gagnant (`rk_host_gone`). Après `applied`, le client renvoie un
+   `PK_JOIN` (même adresse = même id) pour que l'hôte diffuse sa nouvelle cote.
+5. **Affichage** : palier + cote dans le tableau des scores (colonne CLASSE), à côté des noms en jeu, titre
+   « PARTIE CLASSEE » dans le HUD, et sous le tableau de fin de match « +18 MMR -> OR II (1093) » (`draw_rank_result` ;
+   estimation locale en attendant le serveur).
+
+**Concordance côté serveur** (`accepted` dans `ratings.js`) : les rapports d'un même `match` sont groupés par forme
+canonique (hôte, gagnant, présents triés avec frags, partis). Un groupe est appliqué si une **majorité stricte des
+présents** l'a envoyé (1 contre 1 : les deux) ; s'il déclare des partis, l'hôte doit être dans le groupe, ou bien
+l'hôte est lui-même parti et au moins 2 joueurs confirment. Un match non confirmé en 10 min (`EXPIRE_MS`) est perdu ;
+un match appliqué ne l'est qu'une fois (anti-rejeu, gardé 7 jours). Limite de débit : 30 requêtes/min par identité.
+
+**Limites (pas de vrai anti-triche sans serveur de jeu)** : un hôte truqué peut mentir sur les frags ou déclarer
+parti un client en 1 contre 1 (l'hôte fait déjà autorité sur tout le match) ; plusieurs identités jetables peuvent
+s'arranger entre elles (pas de compte) ; en 1 contre 1, un hôte qui quitte n'est pas sanctionné (un client seul ne
+peut pas le déclarer parti) ; la cote annoncée dans `PkJoin` (affichage, matchmaking) est déclarative.
+
+Tests : lignes `classe …` de `run_tests()` (Elo, abandon, paliers, placement, identité, `velocity.ini` de test,
+lecture du TOP, construction du rapport) ; `node test.js` (lobby classé, Elo, enregistrement, mauvaise clé,
+concordance, désaccord, rapport seul, abandon, hôte parti, expiration, top, limite de débit) ;
+`--shot ranked.bmp` (fin de match classée) et `--shot menu.bmp` (encadré TOP 3 avec données factices).
 
 ### `NET_VER`
 
@@ -898,6 +979,20 @@ sleep 3; ./velocity.exe --bot join --spec --name Spec --time 30 --log spec.txt -
 Les journaux montrent `lobby >> host …`, `lobby << room …`, `lobby >> join …`, `lobby << go …`, `punch`, puis
 `connecte a la partie` ; le spectateur reçoit `id 8` (= `MAXP`) et le journal de l'hôte note `spectateur 0 arrive`.
 Arrêtez ensuite le lobby de test (pas de `taskkill` global sur `node`).
+
+**Match classé** (même lobby de test, qui sert aussi `/ranked/…` sur une base en mémoire) : ajouter `--ranked` aux
+deux bots (identité temporaire, rien n'est sauvegardé) ; `--frags N` (bots seulement) abaisse la limite de frags
+pour voir plusieurs matchs complets en 90 s :
+
+```bash
+F="--ranked --lobby 127.0.0.1:8787 --lanep --nolan --frags 2"
+./velocity.exe --bot host --name Hote --time 90 --log host.txt $F &
+sleep 2; ./velocity.exe --bot join --name Client --time 86 --log client.txt $F; wait
+```
+
+Les journaux montrent `classe : rapport de fin de match …`, `classe (serveur) : cote 1000 -> 1032 (+32) …` à chaque
+match, l'abandon du client à 86 s (`Client quitte le match en cours`, l'hôte gagne), puis
+`classe : cote finale (serveur) …, variation …` : les variations de l'hôte et du client doivent s'annuler.
 
 ### Match bot contre bot sur une seule machine
 
