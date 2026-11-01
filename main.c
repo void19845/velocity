@@ -1674,6 +1674,23 @@ static char msg[64], popText[32];
 #define RESPAWN_TIME  2.5f
 #define PVP_SCALE     0.7f    /* degats contre les joueurs : 70% de ceux contre les monstres */
 #define KILL_HEAL     30.0f
+/* Mode classe : formule et paliers documentes dans docs/CODE.md (« Mode classe ») ; worker/src/ratings.js
+ * (le serveur, qui fait autorite) utilise exactement les memes valeurs */
+#define RANK_START     1000   /* cote de depart */
+#define RANK_K         32.0f  /* facteur K apres le placement */
+#define RANK_K_PLACE   64.0f  /* facteur K pendant le placement */
+#define RANK_PLACEMENT 10     /* matchs de placement */
+#define RANK_MIN       100
+#define RANK_MAX       3000
+#define RANK_TIERS     6      /* BRONZE, ARGENT, OR, PLATINE, DIAMANT, MAITRE */
+#define RANK_ARGENT    900    /* seuils des paliers (chaque palier sauf MAITRE : divisions III, II, I) */
+#define RANK_OR        1050
+#define RANK_PLATINE   1200
+#define RANK_DIAMANT   1350
+#define RANK_MAITRE    1500
+#define RANK_END_WAIT  0.5f   /* fin de match : attente des derniers frags (PK_SNAP) avant le rapport */
+#define RANK_RETRY     2.5f   /* rapport en attente des autres joueurs : renvoye toutes les 2,5 s ... */
+#define RANK_TRIES     24     /* ... pendant 60 s au plus */
 
 enum { NET_OFF, NET_HOST, NET_CLIENT };
 enum { APP_MENU, APP_JOIN, APP_GAME };
@@ -5414,6 +5431,130 @@ static void reset_game(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Mode classe : la cote (Elo) est tenue par le serveur de classement  */
+/* (worker/, Durable Object Ratings), qui la calcule a partir des      */
+/* rapports de fin de match de l'hote et des clients. Le jeu garde un  */
+/* cache d'affichage dans velocity.ini et applique la meme formule     */
+/* (docs/CODE.md, « Mode classe ») pour ses tests et pour l'estimation */
+/* affichee en attendant la reponse du serveur.                        */
+/* ------------------------------------------------------------------ */
+static char rkId[33], rkKey[33];                          /* identite sans compte (velocity.ini : ranked_id, ranked_key) */
+static int myMmr = RANK_START, rankPlayed, rankWins;      /* cache (velocity.ini : mmr, ranked_played, ranked_wins) */
+static int rkRank;                                        /* mon rang au classement (0 = en placement ou inconnu) */
+static int ranked;                                        /* la partie en cours est classee (hote : decide ; client : PkWelcome) */
+static int rankedWant, hostRanked;                        /* PARTIE CLASSEE en recherche / prochaine partie hebergee classee */
+static int rkMmr[MAXP + 1], rkPlay[MAXP + 1];             /* cote et matchs annonces par chaque joueur (PkJoin -> PkRoster) */
+static unsigned char rkRid[MAXP + 1][16];                 /* identite de classement de chaque joueur (zeros = aucune) */
+static unsigned char rkMid[8];                            /* identifiant du match classe en cours (tire par l'hote) */
+static unsigned char rkLeft[MAXP][16];                    /* joueurs partis pendant le match (liste de l'hote, diffusee) */
+static int rkLeftN;
+static int rkSeen[MAXP], rkHadOpp, rkPrevOver;            /* suivi du match : presents, adversaire vu, fin deja vue */
+static float rkEndWait = -1;                              /* compte a rebours avant le rapport de fin */
+enum { RS_NONE, RS_PENDING, RS_DONE, RS_FAILED };
+static int rkRepState, rkRepTries, rkLastDelta, rkLastMmr, rkLastPlayed, rkEstimate;
+static double rkRepRetryT;
+static char rkRepBody[1600];                              /* dernier rapport envoye (renvoye tant qu'il est en attente) */
+typedef struct { char name[16]; int mmr, played; char tier[24]; } RkTop;
+static RkTop rkTop[3];
+static int rkTopN, rkTopState, rkMeRank;                  /* rkTopState : 0 chargement, 1 pret, 2 indisponible */
+static int rkOnline, rkHelloBusy, rkAfterHello;           /* serveur joint (hello reussi) ; hello en cours ; PARTIE CLASSEE en attente */
+static double rkHelloAt;                                  /* hello + top a relancer a cet instant (0 = non) */
+static const char *rankNames[RANK_TIERS] = { "BRONZE", "ARGENT", "OR", "PLATINE", "DIAMANT", "MAITRE" };
+static const int rankFloor[RANK_TIERS] = { 0, RANK_ARGENT, RANK_OR, RANK_PLATINE, RANK_DIAMANT, RANK_MAITRE };
+
+static int rank_clamp(int m) { return m < RANK_MIN ? RANK_MIN : m > RANK_MAX ? RANK_MAX : m; }
+static float rank_expect(float ra, float rb) { return 1.0f / (1.0f + powf(10.0f, (rb - ra) / 400.0f)); }
+static float rank_k(int played) { return played < RANK_PLACEMENT ? RANK_K_PLACE : RANK_K; }
+/* score de a contre b : le gagnant designe par l'hote passe devant, puis les frags ; egalite = 0,5 */
+static float rank_score(int ka, int kb, int wa, int wb) {
+    if (wa != wb) return wa ? 1.0f : 0.0f;
+    return ka > kb ? 1.0f : ka < kb ? 0.0f : 0.5f;
+}
+/* variation de cote contre n adversaires (cotes opp[], scores sc[]) : K / n * somme(S - E), arrondie */
+static int rank_delta(int me, int played, int n, const int *opp, const float *sc) {
+    if (n <= 0) return 0;
+    float s = 0;
+    for (int j = 0; j < n; j++) s += sc[j] - rank_expect((float)me, (float)opp[j]);
+    return (int)lroundf(rank_k(played) * s / n);
+}
+static int rank_tier(int m) {
+    int t = 0;
+    while (t + 1 < RANK_TIERS && m >= rankFloor[t + 1]) t++;
+    return t;
+}
+static int rank_div(int m) {                              /* division III (bas du palier) a I (haut) ; 0 pour MAITRE */
+    int t = rank_tier(m);
+    if (t == RANK_TIERS - 1) return 0;
+    int lo = t ? rankFloor[t] : rankFloor[1] - (rankFloor[2] - rankFloor[1]), hi = rankFloor[t + 1];
+    int d = 3 - (int)(3.0f * (float)(m - lo) / (float)(hi - lo));
+    return d < 1 ? 1 : d > 3 ? 3 : d;
+}
+static void rank_name(int m, char *out, int n) {          /* "OR II", "MAITRE" */
+    static const char *roman[4] = { "", "I", "II", "III" };
+    int d = rank_div(m);
+    snprintf(out, n, "%s%s%s", rankNames[rank_tier(m)], d ? " " : "", roman[d]);
+}
+static void rank_label(int m, int played, char *out, int n) {   /* palier, ou PLACEMENT x/10 pendant les premiers matchs */
+    if (played < RANK_PLACEMENT) snprintf(out, n, "PLACEMENT %d/%d", played, RANK_PLACEMENT);
+    else rank_name(m, out, n);
+}
+static const float *rank_col(int m) {                     /* couleur du palier */
+    static const float c[RANK_TIERS][3] = { { 0.8f, 0.5f, 0.3f }, { 0.75f, 0.8f, 0.85f }, { 1.0f, 0.82f, 0.3f },
+                                            { 0.45f, 0.95f, 0.85f }, { 0.55f, 0.75f, 1.0f }, { 1.0f, 0.45f, 0.85f } };
+    return c[rank_tier(m)];
+}
+
+static void hex_of(const unsigned char *b, int n, char *out) {
+    for (int i = 0; i < n; i++) snprintf(out + 2 * i, 3, "%02x", b[i]);
+    out[2 * n] = 0;
+}
+static int hex_ok(const char *s, int n) {                 /* exactement n chiffres hexadecimaux minuscules */
+    for (int i = 0; i < n; i++) if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f'))) return 0;
+    return s[n] == 0;
+}
+static void bin_of(const char *hex, unsigned char *b, int n) {
+    for (int i = 0; i < n; i++) {
+        unsigned int v = 0;
+        sscanf(hex + 2 * i, "%2x", &v);
+        b[i] = (unsigned char)v;
+    }
+}
+static int rid_set(const unsigned char *r) { for (int i = 0; i < 16; i++) if (r[i]) return 1; return 0; }
+#ifdef _WIN32
+BOOLEAN WINAPI SystemFunction036(PVOID buf, ULONG len);  /* RtlGenRandom (advapi32) : aleatoire du systeme */
+#endif
+static void rk_random(unsigned char *b, int n) {
+    int ok;
+#ifdef _WIN32
+    ok = SystemFunction036(b, (ULONG)n) != 0;
+#else
+    arc4random_buf(b, (size_t)n);
+    ok = 1;
+#endif
+    if (!ok) {                                            /* secours : horloges (ne devrait jamais servir) */
+        LARGE_INTEGER t;
+        QueryPerformanceCounter(&t);
+        srand((unsigned)t.QuadPart ^ (unsigned)GetTickCount());
+        for (int i = 0; i < n; i++) b[i] = (unsigned char)(rand() >> 3);
+    }
+}
+/* identite de classement : 128 bits d'identifiant + 128 bits de cle secrete ; 1 si elle vient d'etre creee */
+static int rk_identity(void) {
+    unsigned char b[16];
+    if (hex_ok(rkId, 32) && hex_ok(rkKey, 32)) return 0;
+    rk_random(b, 16); hex_of(b, 16, rkId);
+    rk_random(b, 16); hex_of(b, 16, rkKey);
+    return 1;
+}
+enum { RQ_HELLO = 1, RQ_TOP, RQ_REPORT };               /* requetes au serveur de classement */
+static int rkFragsTest;                                   /* --frags N : limite de frags d'un match classe de bots (tests) */
+static void rk_new_match(void) {                          /* hote : un nouveau match classe commence */
+    rk_random(rkMid, 8);
+    rkLeftN = 0;
+    memset(rkLeft, 0, sizeof rkLeft);
+}
+
+/* ------------------------------------------------------------------ */
 /* Multijoueur LAN : reseau                                            */
 /*                                                                     */
 /* L'hote est aussi un joueur (id 0) et fait autorite sur PV, kills,   */
@@ -5423,7 +5564,7 @@ static void reset_game(void) {
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   13      /* 13 : carte dans WELCOME / ANNOUNCE / EV_MATCH, arme W_VOID */
+#define NET_VER   14      /* 13 : carte (WELCOME / ANNOUNCE pad[0], EV_MATCH), W_VOID ; 14 : mode classe (PkJoin, PkRoster, pad[1]) */
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
@@ -5445,12 +5586,19 @@ typedef struct {
     float f[7];
 } NetEvent;
 typedef struct { PkHead h; char name[16]; unsigned char players, maxp, pad[2]; } PkAnnounce;
-typedef struct { PkHead h; char name[16]; unsigned char spec, pad[3]; } PkJoin;
+typedef struct {                                          /* mode classe : identite, cote et matchs joues (cache) */
+    PkHead h; char name[16]; unsigned char spec, rplay; unsigned short mmr; unsigned char rid[16];
+} PkJoin;
 typedef struct { PkHead h; unsigned char id, refused, pad[2]; } PkWelcome;
 typedef struct { PkHead h; NetPState st; } PkState;
 typedef struct { unsigned char active, alive; short hp, kills, deaths; NetPState st; } SnapP;
 typedef struct { PkHead h; float matchT; unsigned char matchOver, winner; unsigned short pickMask; unsigned char fragLimit; SnapP p[MAXP]; } PkSnap;
-typedef struct { PkHead h; char names[MAXP][16]; } PkRoster;
+typedef struct {
+    PkHead h; char names[MAXP][16];
+    unsigned short mmr[MAXP]; unsigned char rplay[MAXP];  /* mode classe : cote et matchs annonces par chacun */
+    unsigned char ranked, nleft, mid[8];                  /* partie classee, nombre de partis, identifiant du match */
+    unsigned char rid[MAXP][16], left[MAXP][16];          /* identites de classement des joueurs et des partis */
+} PkRoster;
 typedef struct { PkHead h; NetEvent ev; } PkEvent;
 #pragma pack(pop)
 
@@ -5459,6 +5607,7 @@ typedef struct {
     int online, spec;                                     /* online : salon du lobby (addr = ip:port public) ; spec : spectateurs */
     char id[8];                                           /* identifiant du salon chez le lobby */
     int map;                                              /* carte annoncee (LAN), -1 = inconnue (salon en ligne) */
+    int ranked, mmr;                                      /* mode classe : salon classe, cote moyenne (en ligne) */
 } Found;
 #define MAXFOUND 12
 static Found found[MAXFOUND];
@@ -6907,6 +7056,11 @@ static void host_send_roster(void) {
     PkRoster r;
     head(&r.h, PK_ROSTER);
     for (int i = 0; i < MAXP; i++) memcpy(r.names[i], NP[i].name, 16);
+    for (int i = 0; i < MAXP; i++) {                      /* mode classe */
+        r.mmr[i] = (unsigned short)rkMmr[i]; r.rplay[i] = (unsigned char)(rkPlay[i] > 255 ? 255 : rkPlay[i]);
+        memcpy(r.rid[i], rkRid[i], 16); memcpy(r.left[i], rkLeft[i], 16);
+    }
+    r.ranked = (unsigned char)ranked; r.nleft = (unsigned char)rkLeftN; memcpy(r.mid, rkMid, 8);
     host_send_all(&r, sizeof r);
 }
 
@@ -6945,7 +7099,8 @@ static void host_on_join(const PkJoin *pj, const struct sockaddr_in *from) {
         for (int i = 0; i < MAXSPEC; i++) if (SP[i].active && same_addr(&SP[i].addr, from)) k = i;
         for (int i = 0; i < MAXSPEC && k < 0; i++) if (!SP[i].active) k = i;
         PkWelcome w;
-        head(&w.h, PK_WELCOME); w.id = MAXP; w.refused = k < 0; w.pad[0] = (unsigned char)curMap; w.pad[1] = 0;
+        head(&w.h, PK_WELCOME); w.id = MAXP; w.refused = k < 0; w.pad[0] = (unsigned char)curMap;
+        w.pad[1] = (unsigned char)ranked;                 /* mode classe : le spectateur affiche les paliers */
         net_send(&w, sizeof w, from);
         if (k >= 0) {
             if (!SP[k].active) netlog("spectateur %d arrive", k);
@@ -6954,7 +7109,14 @@ static void host_on_join(const PkJoin *pj, const struct sockaddr_in *from) {
         }
         return;
     }
+    if (ranked && !rid_set(pj->rid)) {                    /* mode classe : il faut une identite de classement */
+        PkWelcome w;
+        head(&w.h, PK_WELCOME); w.id = 0; w.refused = 2; w.pad[0] = w.pad[1] = 0;
+        net_send(&w, sizeof w, from);
+        return;
+    }
     for (int i = 1; i < MAXP; i++) if (NP[i].active && same_addr(&NP[i].addr, from)) id = i;
+    int fresh = id < 0;
     if (id < 0) {
         for (int i = 1; i < MAXP; i++) if (!NP[i].active) { id = i; break; }
         if (id < 0) {
@@ -6975,10 +7137,18 @@ static void host_on_join(const PkJoin *pj, const struct sockaddr_in *from) {
         net_emit(&e);
         apply_event(&e);
     }
+    rkMmr[id] = pj->mmr ? rank_clamp(pj->mmr) : RANK_START; rkPlay[id] = pj->rplay;   /* mode classe : cache annonce */
+    memcpy(rkRid[id], pj->rid, 16);
     PkWelcome w;
-    head(&w.h, PK_WELCOME); w.id = (unsigned char)id; w.refused = 0; w.pad[0] = (unsigned char)curMap; w.pad[1] = 0;
+    head(&w.h, PK_WELCOME); w.id = (unsigned char)id; w.refused = 0; w.pad[0] = (unsigned char)curMap;
+    w.pad[1] = (unsigned char)ranked;                     /* mode classe : la partie est classee */
     net_send(&w, sizeof w, from);
     host_send_roster();
+    if (ranked && fresh && !matchOver && !rkHadOpp) {     /* classe : le match commence quand arrive le premier adversaire */
+        int n = 0;
+        for (int i = 0; i < MAXP; i++) n += NP[i].active;
+        if (n == 2) { rk_new_match(); host_start_match(); netlog("classe : premier adversaire, le match recommence"); }
+    }
 }
 
 /* evenement recu d'un client : l'hote l'arbitre, l'applique chez lui et le relaie a tout le monde,
@@ -7002,7 +7172,8 @@ static void host_recv(PkHead *h, int n, struct sockaddr_in *from) {
         for (int i = 0; i < MAXP; i++) count += NP[i].active;
         head(&a.h, PK_ANNOUNCE);
         memcpy(a.name, myName, 16);
-        a.players = (unsigned char)count; a.maxp = MAXP; a.pad[0] = (unsigned char)curMap; a.pad[1] = 0;   /* carte */
+        a.players = (unsigned char)count; a.maxp = MAXP; a.pad[0] = (unsigned char)curMap;   /* carte */
+        a.pad[1] = (unsigned char)ranked;                 /* mode classe : [CLASSEE] dans la liste */
         net_send(&a, sizeof a, from);
         break;
     }
@@ -7032,6 +7203,126 @@ static void host_recv(PkHead *h, int n, struct sockaddr_in *from) {
     }
 }
 
+/* --- mode classe : suivi du match et rapport de fin ------------------- */
+/* L'hote tire un identifiant par match (rkMid) et tient la liste des partis (rkLeft) ; il les diffuse dans
+ * PK_ROSTER. A la fin, chacun (hote et clients) envoie au serveur le meme rapport : presents et frags, gagnant,
+ * partis. Le serveur ne l'applique que si une majorite des presents concorde (worker/src/ratings.js). */
+static void rk_push(int kind, const char *path, const char *body);
+static void client_send_join(void) {                      /* PK_JOIN : aussi renvoye apres un match classe (nouvelle cote) */
+    PkJoin j;
+    memset(&j, 0, sizeof j);
+    head(&j.h, PK_JOIN);
+    memcpy(j.name, myName, 16);
+    j.spec = (unsigned char)joinSpec;
+    j.rplay = (unsigned char)(rankPlayed > 255 ? 255 : rankPlayed);
+    j.mmr = (unsigned short)rank_clamp(myMmr);
+    if (hex_ok(rkId, 32)) bin_of(rkId, j.rid, 16);
+    net_send(&j, sizeof j, &hostAddr);
+}
+
+static int rk_slot_ok(int i) { return i >= 0 && i < MAXP && NP[i].active && rid_set(rkRid[i]); }
+
+/* hostGone : l'hote est parti en plein match (il rejoint les partis, pas de gagnant) */
+static void rk_send_report(int hostGone) {
+    char body[sizeof rkRepBody], h[40];
+    int opp[2 * MAXP + 1], np = 0, nl = 0, n;
+    float sc[2 * MAXP + 1];
+    if (!hex_ok(rkId, 32) || myId >= MAXP) return;
+    bin_of(rkId, rkRid[myId], 16);
+    if (!rid_set(rkRid[0])) return;
+    hex_of(rkMid, 8, h);
+    n = snprintf(body, sizeof body, "{\"id\":\"%s\",\"key\":\"%s\",\"match\":\"%s\",", rkId, rkKey, h);
+    hex_of(rkRid[0], 16, h);
+    n += snprintf(body + n, sizeof body - n, "\"host\":\"%s\",", h);
+    int win = !hostGone && rk_slot_ok(matchWinner) ? matchWinner : -1;
+    if (win >= 0) hex_of(rkRid[win], 16, h); else h[0] = 0;
+    n += snprintf(body + n, sizeof body - n, "\"winner\":\"%s\",\"players\":[", h);
+    for (int i = 0; i < MAXP; i++) {
+        if (!rk_slot_ok(i) || (hostGone && i == 0)) continue;
+        hex_of(rkRid[i], 16, h);
+        n += snprintf(body + n, sizeof body - n, "%s{\"id\":\"%s\",\"kills\":%d}", np ? "," : "", h, NP[i].kills);
+        np++;
+    }
+    n += snprintf(body + n, sizeof body - n, "],\"left\":[");
+    unsigned char lst[MAXP + 1][16];
+    int ln = 0;
+    for (int k = 0; k < rkLeftN; k++) {                   /* un parti revenu dans la partie compte comme present */
+        int back = 0;
+        for (int i = 0; i < MAXP; i++) if (rk_slot_ok(i) && !(hostGone && i == 0) && !memcmp(rkRid[i], rkLeft[k], 16)) back = 1;
+        if (!back) memcpy(lst[ln++], rkLeft[k], 16);
+    }
+    int dup = 0;
+    for (int k = 0; k < ln; k++) if (!memcmp(lst[k], rkRid[0], 16)) dup = 1;
+    if (hostGone && !dup) memcpy(lst[ln++], rkRid[0], 16);
+    for (int k = 0; k < ln; k++) {
+        hex_of(lst[k], 16, h);
+        n += snprintf(body + n, sizeof body - n, "%s\"%s\"", nl++ ? "," : "", h);
+    }
+    snprintf(body + n, sizeof body - n, "]}");
+    n = 0;                                                /* estimation locale (meme formule que le serveur, partis exclus) */
+    for (int i = 0; i < MAXP; i++) {
+        if (i == myId || !rk_slot_ok(i) || (hostGone && i == 0)) continue;
+        opp[n] = rkMmr[i] ? rkMmr[i] : RANK_START;
+        sc[n++] = rank_score(NP[myId].kills, NP[i].kills, win == myId, win == i);
+    }
+    for (int k = 0; k < ln; k++) { opp[n] = myMmr; sc[n++] = 1; }   /* partis : cote inconnue ici, supposee egale */
+    rkEstimate = rank_delta(myMmr, rankPlayed, n, opp, sc);
+    snprintf(rkRepBody, sizeof rkRepBody, "%s", body);
+    rkRepState = RS_PENDING; rkRepTries = 0; rkRepRetryT = 0;
+    rk_push(RQ_REPORT, "/ranked/report", body);
+    netlog("classe : rapport de fin de match%s (%d present(s), %d parti(s), estimation %+d)",
+           hostGone ? " (l'hote est parti)" : "", np, ln, rkEstimate);
+}
+
+static void rk_tick(float dt) {
+    if (!ranked || !dmMode || !connected || spectating || myId >= MAXP) { rkPrevOver = matchOver; return; }
+    if (!matchOver) {
+        int opp = 0;
+        if (rkPrevOver) {                                 /* fin de la pause : nouveau match */
+            if (netMode == NET_HOST) rk_new_match();
+            rkHadOpp = 0;
+        }
+        rkEndWait = -1;
+        for (int i = 0; i < MAXP; i++) {
+            if (i == myId) continue;
+            if (NP[i].active) { opp++; rkSeen[i] = 1; continue; }
+            if (!rkSeen[i]) continue;
+            rkSeen[i] = 0;
+            if (netMode == NET_HOST && rkHadOpp && rid_set(rkRid[i]) && rkLeftN < MAXP) {   /* l'hote liste les partis */
+                memcpy(rkLeft[rkLeftN++], rkRid[i], 16);
+                netlog("classe : %s quitte le match en cours (classe dernier)", pname(i));
+                host_send_roster();
+            }
+        }
+        if (opp) rkHadOpp = 1;
+        else if (rkHadOpp && netMode == NET_HOST) {       /* tous les adversaires sont partis : l'hote gagne */
+            netlog("classe : plus aucun adversaire, fin du match");
+            host_end_match(myId);
+        }
+    } else if (rkHadOpp) {                                /* fin du match : rapport une fois les derniers frags recus */
+        if (rkEndWait < 0) rkEndWait = RANK_END_WAIT;
+        else if ((rkEndWait -= dt) <= 0) { rk_send_report(0); rkHadOpp = 0; rkEndWait = -1; }
+    }
+    rkPrevOver = matchOver;
+}
+
+static void rk_host_gone(void) {                          /* client : l'hote a quitte (ou ne repond plus) */
+    if (!ranked || spectating || netMode != NET_CLIENT || !connected || !rkHadOpp) return;
+    rk_send_report(!matchOver);
+    rkHadOpp = 0;
+}
+
+static void rk_shutdown(void) {                           /* on quitte la partie (net_shutdown) */
+    if (ranked && !spectating && rkHadOpp && matchOver && myId < MAXP) rk_send_report(0);   /* match fini, rapport pas encore parti */
+    if (ranked && !spectating) {
+        if (rkHadOpp && !matchOver) netlog("classe : partie quittee en plein match : defaite si les autres confirment");
+        rkHelloAt = nowT + 4;                             /* la cote a pu changer : on la relira */
+    }
+    ranked = rankedWant = 0; rkHadOpp = 0; rkPrevOver = 0; rkEndWait = -1; rkLeftN = 0;
+    memset(rkSeen, 0, sizeof rkSeen); memset(rkRid, 0, sizeof rkRid); memset(rkLeft, 0, sizeof rkLeft);
+    memset(rkMmr, 0, sizeof rkMmr); memset(rkPlay, 0, sizeof rkPlay);
+}
+
 /* --- client ----------------------------------------------------------- */
 static void dm_local_start(void) {
     reset_game();
@@ -7051,6 +7342,7 @@ static void stop_bot_proc(void) {
 }
 
 static void net_shutdown(void) {
+    rk_shutdown();
     stop_bot_proc();
     if (sock != INVALID_SOCKET) {
         PkHead l;
@@ -7079,6 +7371,7 @@ static void menu_backdrop(void) {
 }
 
 static void net_disconnect_to_menu(const char *why) {
+    rk_host_gone();
     net_shutdown();
     set_status(why);
     set_capture(0);
@@ -7140,6 +7433,7 @@ static void found_add(const PkAnnounce *a, const struct sockaddr_in *from) {
     found[k].addr = *from;
     found[k].players = a->players; found[k].maxp = a->maxp;
     found[k].map = a->pad[0] < NMAPS ? a->pad[0] : -1;
+    found[k].ranked = a->pad[1] & 1;                      /* mode classe */
     found[k].seen = nowT;
 }
 
@@ -7152,10 +7446,13 @@ static void client_recv(PkHead *h, int n, struct sockaddr_in *from) {
     case PK_WELCOME:
         if (joining && n >= (int)sizeof(PkWelcome)) {
             const PkWelcome *w = (const PkWelcome *)h;
-            if (w->refused) { joining = 0; set_status(joinSpec ? "plus de place pour les spectateurs" : "partie pleine (8 joueurs max)"); }
+            if (w->refused == 2) { joining = 0; set_status("partie classee : identite de classement requise"); }
+            else if (w->refused) { joining = 0; set_status(joinSpec ? "plus de place pour les spectateurs" : "partie pleine (8 joueurs max)"); }
             else {
                 if (w->pad[0] < NMAPS && w->pad[0] != curMap) load_map(w->pad[0]);   /* la carte de l'hote, avant de demarrer */
+                ranked = w->pad[1] & 1;
                 on_welcome(w->id);
+                if (ranked) netlog("classe : partie classee");
             }
         }
         break;
@@ -7166,6 +7463,11 @@ static void client_recv(PkHead *h, int n, struct sockaddr_in *from) {
         if (fromHost && n >= (int)sizeof(PkRoster)) {
             const PkRoster *r = (const PkRoster *)h;
             for (int i = 0; i < MAXP; i++) { memcpy(NP[i].name, r->names[i], 16); NP[i].name[15] = 0; }
+            for (int i = 0; i < MAXP; i++) {              /* mode classe */
+                rkMmr[i] = r->mmr[i]; rkPlay[i] = r->rplay[i];
+                memcpy(rkRid[i], r->rid[i], 16); memcpy(rkLeft[i], r->left[i], 16);
+            }
+            ranked = r->ranked & 1; rkLeftN = r->nleft > MAXP ? MAXP : r->nleft; memcpy(rkMid, r->mid, 8);
         }
         break;
     case PK_EVENT:
@@ -7263,11 +7565,7 @@ static void net_update(float dt) {
             }
             if (joining && joinAcc >= (joinOnline ? 0.2f : 0.4f)) {   /* en ligne : les paquets repetes percent le NAT */
                 joinAcc = 0;
-                PkJoin j;
-                head(&j.h, PK_JOIN);
-                memcpy(j.name, myName, 16);
-                j.spec = (unsigned char)joinSpec; j.pad[0] = j.pad[1] = j.pad[2] = 0;
-                net_send(&j, sizeof j, &hostAddr);
+                client_send_join();
                 if (nowT - joinStartT > (joinOnline ? 10 : 5)) {
                     joining = 0;
                     set_status(joinOnline ? "connexion impossible (NAT strict ?) - essaie la saisie d'IP" : "pas de reponse de l'hote");
@@ -7293,6 +7591,7 @@ static void net_update(float dt) {
             if (nowT - lastSnapT > 5) { net_disconnect_to_menu("connexion perdue avec l'hote"); return; }
         }
     }
+    rk_tick(dt);                                          /* mode classe */
     for (int i = 0; i < MAXP; i++) {                     /* lissage des autres joueurs */
         if (i == myId || !NP[i].active) continue;
         float ahead = (float)fmin(nowT - NP[i].recvT, 0.1);
@@ -7314,8 +7613,12 @@ static int net_host_start(void) {
     dm_local_start();
     matchOver = 0; matchT = 0;
     fragLimit = hostQuick ? FRAG_LIMIT_QUICK : FRAG_LIMIT; hostQuick = 0;
+    ranked = hostRanked && rkOnline; hostRanked = 0;      /* mode classe : regles figees (limite de frags par defaut) */
+    if (ranked) { fragLimit = rkFragsTest > 0 ? rkFragsTest : FRAG_LIMIT; rk_new_match(); }
+    rkMmr[0] = myMmr; rkPlay[0] = rankPlayed;
+    if (hex_ok(rkId, 32)) bin_of(rkId, rkRid[0], 16);
     host_respawn(0);
-    netlog("partie hebergee, ip %s, %d frags", hostIpText, fragLimit);
+    netlog("partie hebergee, ip %s, %d frags%s", hostIpText, fragLimit, ranked ? ", CLASSEE" : "");
     return 1;
 }
 
@@ -7663,7 +7966,7 @@ static void lb_safe_name(char *out, int n) {                 /* le lobby n'accep
     if (!k) snprintf(out, n, "joueur");
 }
 
-static void lb_room(const char *id, int players, int maxp, int spec, const char *ep, const char *name) {
+static void lb_room(const char *id, int players, int maxp, int spec, const char *ep, const char *name, int rk, int mmr) {
     struct sockaddr_in a;
     if (!parse_ep(ep, &a)) return;
     int k = -1;
@@ -7676,14 +7979,15 @@ static void lb_room(const char *id, int players, int maxp, int spec, const char 
     snprintf(found[k].id, sizeof found[k].id, "%s", id);
     snprintf(found[k].name, sizeof found[k].name, "%s", name);
     found[k].addr = a; found[k].players = players; found[k].maxp = maxp; found[k].spec = spec;
+    found[k].ranked = rk; found[k].mmr = mmr;             /* mode classe */
     found[k].online = 1; found[k].seen = nowT; found[k].map = -1;
 }
 
 static void lb_line(const char *s) {
     char a[64], b[64], c[64];
-    int n1, n2, n3;
+    int n1, n2, n3, n4 = 0, n5 = 0;
     netlog("lobby << %s", s);
-    if (sscanf(s, "room %7s %d %d %d %63s %63s", a, &n1, &n2, &n3, b, c) == 6) lb_room(a, n1, n2, n3, b, c);
+    if (sscanf(s, "room %7s %d %d %d %63s %63s %d %d", a, &n1, &n2, &n3, b, c, &n4, &n5) >= 6) lb_room(a, n1, n2, n3, b, c, n4 & 1, n5);
     else if (sscanf(s, "gone %7s", a) == 1) {
         for (int i = 0; i < nFound; i++) if (found[i].online && !strcmp(found[i].id, a)) { found[i] = found[--nFound]; break; }
     } else if (sscanf(s, "go %63s %d", a, &n1) == 2) {
@@ -7696,7 +8000,7 @@ static void lb_line(const char *s) {
         for (int i = 0; i < 4; i++) if (punchQ[i].left <= 0) { k = i; break; }
         punchQ[k].addr = t; punchQ[k].left = 4; punchQ[k].acc = 1;
     } else if (!strcmp(s, "none")) {
-        set_status("aucune partie en ligne : tu en crees une");
+        set_status(rankedWant ? "aucune partie classee : tu en crees une" : "aucune partie en ligne : tu en crees une");
         lbWantHost = 1;
     } else if (!strcmp(s, "err full")) set_status("partie pleine (8 joueurs max)");
     else if (!strcmp(s, "err unknown")) set_status("cette partie n'existe plus");
@@ -7746,11 +8050,13 @@ static void lb_update(float dt) {
         for (int i = 0; i < MAXP; i++) pl += NP[i].active;
         if (pl != lbLastPlayers || sp != lbLastSpec || nowT - lbHostT > 20) {
             char pub[40], lan[40], nm[16];
+            int sum = 0;
+            for (int i = 0; i < MAXP; i++) if (NP[i].active) sum += rkMmr[i] ? rkMmr[i] : RANK_START;
             lbLastPlayers = pl; lbLastSpec = sp; lbHostT = nowT;
             ep_text(&myPub, pub, sizeof pub);
             lan_ep_text(lan, sizeof lan, NET_PORT);
             lb_safe_name(nm, sizeof nm);
-            lb_send("host %d %d %d %d %s %s %s", NET_VER, pl, MAXP, sp, pub, lan, nm);
+            lb_send("host %d %d %d %d %s %s %s %d %d", NET_VER, pl, MAXP, sp, pub, lan, nm, ranked, pl ? sum / pl : 0);
         }
     }
 
@@ -7759,7 +8065,7 @@ static void lb_update(float dt) {
             char me[40];
             ep_text(&myPub, me, sizeof me);
             if (reqKind == 'j') lb_send("join %s %s %d", reqId, me, reqSpec);
-            else lb_send("quick %d %s", NET_VER, me);
+            else lb_send("quick %d %s %d %d", NET_VER, me, rankedWant, myMmr);   /* mode classe : salon classe de cote proche */
             reqKind = 0; reqSentT = nowT;
         } else if (nowT - reqT > 10) {
             set_status(lbState == LB_ON ? "adresse publique introuvable (STUN bloque ?)" : "lobby injoignable");
@@ -7782,11 +8088,32 @@ static void lb_update(float dt) {
 /* rejoindre / regarder la partie found[i] : directement (LAN) ou via le lobby (en ligne) */
 static void join_found(int i, int spec) {
     if (i < 0 || i >= nFound) return;
+    if (found[i].ranked && !spec && !rkOnline) {          /* mode classe : sans serveur de classement, pas de resultat */
+        set_status("partie classee : serveur de classement injoignable");
+        return;
+    }
     if (found[i].online) {
         reqKind = 'j'; reqSpec = spec; reqT = nowT;
         snprintf(reqId, sizeof reqId, "%s", found[i].id);
         set_status(spec ? "demande pour regarder la partie ..." : "demande de connexion ...");
     } else net_connect_ex(found[i].addr, spec, 0);
+}
+
+/* PARTIE CLASSEE : il faut le serveur de classement (hello reussi) ; la partie rapide du lobby cherche un salon
+ * classe de cote proche, sinon on heberge une partie classee */
+static void ranked_play(void) {
+    if (!onlineOn) { set_status("PARTIE CLASSEE : active les parties en ligne (PARAMETRES)"); return; }
+    if (!rkOnline) {
+        rkAfterHello = 1;
+        if (!rkHelloBusy) rkHelloAt = nowT;               /* relance le hello tout de suite */
+        set_status("connexion au serveur de classement ...");
+        return;
+    }
+    if (!net_browse_start()) return;
+    appState = APP_JOIN;
+    rankedWant = 1;
+    reqKind = 'q'; reqT = nowT;
+    set_status("recherche d'une partie classee ...");
 }
 
 static void quick_play(void) {
@@ -7802,6 +8129,7 @@ static int join_busy(void) { return joining || reqKind || nowT - reqSentT < 4; }
 static float botTime = 20, botT, botNextHook, botNextDash, botSpeedSum, botAliveT, botMaxSpeed;
 static char botShot[260];
 static int botSpec;                                       /* --spec : le bot client regarde la partie au lieu d'y jouer */
+static int botRanked, botMmr0 = -1;                       /* --ranked : partie classee ; cote au debut (journal) */
 static float bot_melee_reach(float rel) {
     return P.meleeKind == MK_ANVIL ? anvil_range(rel) : P.meleeKind == MK_LANCE ? LANCE_THRUST_RANGE :
            P.meleeKind == MK_FLAIL ? flail_range(rel) : P.meleeKind == MK_FIST ? fist_range(rel) :
@@ -10350,7 +10678,7 @@ static void upd_cleanup(void) {
 /* Interface : menus, tableau des scores, joueurs distants             */
 /* ------------------------------------------------------------------ */
 enum { ACT_NONE, ACT_SOLO, ACT_HOST, ACT_BROWSE, ACT_QUIT, ACT_BACK, ACT_JOIN_FOUND, ACT_JOIN_IP, ACT_RESUME,
-       ACT_RESTART, ACT_LEAVE, ACT_FULLSCREEN, ACT_QUICK, ACT_SPEC_FOUND, ACT_VSBOT };
+       ACT_RESTART, ACT_LEAVE, ACT_FULLSCREEN, ACT_QUICK, ACT_SPEC_FOUND, ACT_VSBOT, ACT_RANKED };
 static int settingsOpen, waitAct = -1, waitSlot, uiDown, uiDrag;
 static int fullscreen;
 static char cfgPath[MAX_PATH];
@@ -10393,6 +10721,9 @@ static void cfg_save(void) {
     fprintf(f, "loadout=%d,%d" "\n" "melee=%d" "\n" "skill=%d" "\n", wantLoadout[0], wantLoadout[1], wantMelee, wantSkill);
     fprintf(f, "map=%d" "\n" "map_rotate=%d" "\n", menuMap, mapRotate);
     if (strcmp(lobbyAddr, LOBBY_DEFAULT)) fprintf(f, "lobby=%s" "\n", lobbyAddr);   /* le defaut peut changer avec une mise a jour */
+    if (hex_ok(rkId, 32) && hex_ok(rkKey, 32))           /* mode classe : identite, puis cache de la cote (le serveur fait foi) */
+        fprintf(f, "ranked_id=%s" "\n" "ranked_key=%s" "\n", rkId, rkKey);
+    fprintf(f, "mmr=%d" "\n" "ranked_played=%d" "\n" "ranked_wins=%d" "\n", myMmr, rankPlayed, rankWins);
     for (int a = 0; a < A_COUNT; a++) fprintf(f, "bind_%s=%d,%d" "\n", actId[a], binds[a][0], binds[a][1]);
     fclose(f);
 }
@@ -10419,6 +10750,11 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
         else if (!strcmp(line, "online")) onlineOn = atoi(v) != 0;
         else if (!strcmp(line, "update_check")) updCheck = atoi(v) != 0;
         else if (!strcmp(line, "lobby") && v[0]) snprintf(lobbyAddr, sizeof lobbyAddr, "%s", v);
+        else if (!strcmp(line, "ranked_id") && hex_ok(v, 32)) snprintf(rkId, sizeof rkId, "%s", v);
+        else if (!strcmp(line, "ranked_key") && hex_ok(v, 32)) snprintf(rkKey, sizeof rkKey, "%s", v);
+        else if (!strcmp(line, "mmr")) myMmr = rank_clamp(atoi(v));
+        else if (!strcmp(line, "ranked_played")) rankPlayed = atoi(v) < 0 ? 0 : atoi(v);
+        else if (!strcmp(line, "ranked_wins")) rankWins = atoi(v) < 0 ? 0 : atoi(v);
         else if (!strcmp(line, "fullscreen")) fs = atoi(v) != 0;
         else if (!strcmp(line, "loadout")) sscanf(v, "%d,%d", &wantLoadout[0], &wantLoadout[1]);
         else if (!strcmp(line, "melee")) wantMelee = atoi(v);
@@ -10454,6 +10790,321 @@ static void assign_bind(int code) {
 static int uiMX, uiMY, uiClick, uiFocus, pendingAction, pendingArg;   /* uiFocus : 1 = pseudo, 2 = IP */
 static char ipField[32];
 static GLfloat mvMat[16], prMat[16];
+
+/* ------------------------------------------------------------------ */
+/* Mode classe : requetes HTTP au serveur de classement                */
+/* (meme hote que le lobby : lobbyAddr, donc --lobby pour les tests).  */
+/* Une requete a la fois, dans un fil (WinHTTP ; curl sous macOS) :    */
+/*   POST /ranked/hello  {id, key, name}       -> cote, palier, rang   */
+/*   POST /ranked/report {id, key, match, ...} -> pending / applied    */
+/*   GET  /ranked/top?id=...                   -> top et mon rang      */
+/* ------------------------------------------------------------------ */
+typedef struct { int kind, post; char path[96]; char body[sizeof rkRepBody]; } RkReq;
+static RkReq rkQ[6], rkCur;
+static int rkQN, rkRespOk;
+static HANDLE rkTh;
+static char rkResp[4096];
+
+/* 1 si le serveur a repondu (quel que soit le statut HTTP : le JSON dit ok ou non), reponse dans out */
+static int rk_http(const RkReq *q, char *out, int cap) {
+    char host[96];
+    int port = 443, n = 0, ok = 0;
+    snprintf(host, sizeof host, "%s", lobbyAddr);
+    char *colon = strchr(host, ':');
+    if (colon) { *colon = 0; port = atoi(colon + 1); }
+    out[0] = 0;
+#ifdef _WIN32
+    wchar_t whost[96], wpath[160];
+    DWORD len = (DWORD)strlen(q->body);
+    MultiByteToWideChar(CP_UTF8, 0, host, -1, whost, 96);
+    MultiByteToWideChar(CP_UTF8, 0, q->path, -1, wpath, 160);
+    HINTERNET ses = WinHttpOpen(L"VELOCITY", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET con = NULL, req = NULL;
+    if (ses) {
+        WinHttpSetTimeouts(ses, 5000, 5000, 10000, 10000);
+        con = WinHttpConnect(ses, whost, (INTERNET_PORT)port, 0);
+    }
+    if (con) req = WinHttpOpenRequest(con, q->post ? L"POST" : L"GET", wpath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                      port == 443 ? WINHTTP_FLAG_SECURE : 0);
+    if (req && WinHttpSendRequest(req, q->post ? L"Content-Type: application/json\r\n" : WINHTTP_NO_ADDITIONAL_HEADERS,
+                                  q->post ? (DWORD)-1 : 0, q->post ? (LPVOID)q->body : WINHTTP_NO_REQUEST_DATA,
+                                  q->post ? len : 0, q->post ? len : 0, 0) &&
+        WinHttpReceiveResponse(req, NULL)) {
+        ok = 1;
+        while (n < cap - 1) {
+            DWORD got = 0;
+            if (!WinHttpReadData(req, out + n, (DWORD)(cap - 1 - n), &got)) { ok = 0; break; }
+            if (!got) break;
+            n += (int)got;
+        }
+    }
+    if (req) WinHttpCloseHandle(req);
+    if (con) WinHttpCloseHandle(con);
+    if (ses) WinHttpCloseHandle(ses);
+#else                                                     /* macOS : curl du systeme, sans -f pour lire le JSON d'erreur */
+    char url[300], tmp[MAX_PATH];
+    static int seq;
+    pid_t pid;
+    int st = 0;
+    snprintf(url, sizeof url, "%s://%s%s", port == 443 ? "https" : "http", lobbyAddr, q->path);
+    snprintf(tmp, sizeof tmp, "/tmp/velocity-rk-%d-%d.txt", (int)getpid(), ++seq);
+    char *get[] = { "/usr/bin/curl", "-sS", "--max-time", "10", "-o", tmp, url, NULL };
+    char *post[] = { "/usr/bin/curl", "-sS", "--max-time", "10", "-o", tmp, "-X", "POST", "-H", "Content-Type: application/json",
+                     "--data-binary", (char *)q->body, url, NULL };
+    if (upd_spawn(q->post ? post : get, &pid) && waitpid(pid, &st, 0) >= 0) ok = WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    FILE *f = fopen(tmp, "rb");
+    if (f) { n = (int)fread(out, 1, (size_t)(cap - 1), f); fclose(f); }
+    remove(tmp);
+#endif
+    out[n] = 0;
+    return ok && n > 0;
+}
+
+static DWORD WINAPI rk_thread(LPVOID arg) {
+    (void)arg;
+    rkRespOk = rk_http(&rkCur, rkResp, sizeof rkResp);
+    return 0;
+}
+
+static void rk_push(int kind, const char *path, const char *body) {
+    if (kind != RQ_REPORT)                                /* hello et top : une seule demande en attente suffit */
+        for (int i = 0; i < rkQN; i++) if (rkQ[i].kind == kind) return;
+    if (rkQN >= 6) return;
+    RkReq *q = &rkQ[rkQN++];
+    q->kind = kind; q->post = body != NULL;
+    snprintf(q->path, sizeof q->path, "%s", path);
+    snprintf(q->body, sizeof q->body, "%s", body ? body : "");
+}
+
+/* lecture minimale du JSON du serveur (cles uniques, chaines sans echappement) */
+static const char *json_at(const char *s, const char *key) {
+    char pat[40];
+    snprintf(pat, sizeof pat, "\"%s\":", key);
+    const char *p = strstr(s, pat);
+    if (!p) return NULL;
+    p += strlen(pat);
+    while (*p == ' ') p++;
+    return p;
+}
+static int json_int(const char *s, const char *key, int def) {
+    const char *p = json_at(s, key);
+    return p && (*p == '-' || isdigit((unsigned char)*p)) ? atoi(p) : def;
+}
+static int json_str(const char *s, const char *key, char *out, int n) {
+    const char *p = json_at(s, key);
+    int k = 0;
+    if (!p || *p != '"') { out[0] = 0; return 0; }
+    for (p++; *p && *p != '"' && k < n - 1; p++) out[k++] = *p;
+    out[k] = 0;
+    return 1;
+}
+static int json_obj(const char *p, char *out, int n) {   /* copie l'objet { ... } (sans objet imbrique) qui commence en p */
+    const char *e = p && *p == '{' ? strchr(p, '}') : NULL;
+    if (!e) { out[0] = 0; return 0; }
+    int len = (int)(e - p + 1) < n - 1 ? (int)(e - p + 1) : n - 1;
+    memcpy(out, p, (size_t)len);
+    out[len] = 0;
+    return 1;
+}
+static int json_ok(const char *s) { const char *p = json_at(s, "ok"); return p && !strncmp(p, "true", 4); }
+
+static void rk_take_player(const char *o) {              /* mmr / played / wins d'une reponse : cache local */
+    myMmr = rank_clamp(json_int(o, "mmr", myMmr));
+    rankPlayed = json_int(o, "played", rankPlayed);
+    rankWins = json_int(o, "wins", rankWins);
+}
+
+static void rk_parse_top(const char *s) {
+    char obj[256];
+    const char *p = json_at(s, "top");
+    rkTopN = 0;
+    if (p && *p == '[') {
+        for (p++; rkTopN < 3;) {
+            const char *o = strchr(p, '{'), *end = strchr(p, ']');
+            if (!o || (end && end < o) || !json_obj(o, obj, sizeof obj)) break;
+            RkTop *t = &rkTop[rkTopN++];
+            json_str(obj, "name", t->name, sizeof t->name);
+            json_str(obj, "tier", t->tier, sizeof t->tier);
+            t->mmr = json_int(obj, "mmr", 0); t->played = json_int(obj, "played", 0);
+            p = o + strlen(obj);
+        }
+    }
+    rkMeRank = 0;
+    if (json_obj(json_at(s, "me"), obj, sizeof obj)) { rkMeRank = json_int(obj, "rank", 0); rk_take_player(obj); }
+}
+
+static void rq_hello(void) {
+    char body[200], nm[16];
+    if (!onlineOn || !hex_ok(rkId, 32)) return;
+    lb_safe_name(nm, sizeof nm);
+    snprintf(body, sizeof body, "{\"id\":\"%s\",\"key\":\"%s\",\"name\":\"%s\"}", rkId, rkKey, nm);
+    rkHelloBusy = 1;
+    rk_push(RQ_HELLO, "/ranked/hello", body);
+}
+static void rq_top(void) {
+    char path[96];
+    if (!onlineOn) { rkTopState = 2; return; }
+    snprintf(path, sizeof path, "/ranked/top?id=%s", hex_ok(rkId, 32) ? rkId : "");
+    rk_push(RQ_TOP, path, NULL);
+}
+
+static void rk_on_hello(int ok) {
+    char err[48];
+    rkHelloBusy = 0;
+    if (ok && json_ok(rkResp)) {
+        rkOnline = 1;
+        rk_take_player(rkResp);
+        rkRank = json_int(rkResp, "rank", 0);
+        if (botMmr0 < 0) botMmr0 = myMmr;
+        cfg_save();
+        netlog("classement : identite reconnue, cote %d, %d match(s) classe(s), %d victoire(s)", myMmr, rankPlayed, rankWins);
+        if (rkAfterHello) { rkAfterHello = 0; pendingAction = ACT_RANKED; }
+        return;
+    }
+    rkOnline = 0;
+    json_str(rkResp, "err", err, sizeof err);
+    netlog("classement : serveur %s", err[0] ? err : "injoignable");
+    if (rkAfterHello) {
+        char b[96];
+        rkAfterHello = 0;
+        if (err[0]) snprintf(b, sizeof b, "PARTIE CLASSEE indisponible : %s", err);
+        else snprintf(b, sizeof b, "PARTIE CLASSEE indisponible : serveur de classement injoignable");
+        set_status(b);
+    }
+}
+
+static void rk_on_report(int ok) {
+    char st[16], tier[24];
+    json_str(rkResp, "state", st, sizeof st);
+    if (ok && !strcmp(st, "applied")) {
+        int before = myMmr;
+        rk_take_player(rkResp);
+        rkLastDelta = json_int(rkResp, "delta", myMmr - before);
+        rkLastMmr = myMmr; rkLastPlayed = rankPlayed;
+        json_str(rkResp, "tier", tier, sizeof tier);
+        rkRepState = RS_DONE;
+        cfg_save();
+        netlog("classe (serveur) : cote %d -> %d (%+d), %s, %d match(s) classe(s), %d victoire(s)",
+               myMmr - rkLastDelta, myMmr, rkLastDelta, tier, rankPlayed, rankWins);
+        if (connected && myId < MAXP) { rkMmr[myId] = myMmr; rkPlay[myId] = rankPlayed; }
+        if (netMode == NET_CLIENT && connected && !spectating)   /* l'hote apprend ma nouvelle cote (PK_ROSTER) */
+            for (int r = 0; r < 3; r++) client_send_join();
+        rq_top();
+        return;
+    }
+    if (!ok || !strcmp(st, "pending")) {                  /* en attente des rapports des autres (ou pas de reponse) */
+        if (++rkRepTries < RANK_TRIES) { rkRepRetryT = nowT + RANK_RETRY; return; }
+        netlog("classe : resultat non confirme par les autres joueurs");
+    } else {
+        char err[48];
+        json_str(rkResp, "err", err, sizeof err);
+        netlog("classe : rapport refuse (%s)", st[0] ? st : err);
+    }
+    rkRepState = RS_FAILED;
+}
+
+/* appele a chaque image : resultat de la requete finie, renvois, requete suivante */
+static void rk_net_poll(void) {
+    if (rkTh && WaitForSingleObject(rkTh, 0) != WAIT_TIMEOUT) {
+        CloseHandle(rkTh);
+        rkTh = NULL;
+        if (rkCur.kind == RQ_HELLO) rk_on_hello(rkRespOk);
+        else if (rkCur.kind == RQ_REPORT) rk_on_report(rkRespOk);
+        else if (rkRespOk && json_ok(rkResp)) { rk_parse_top(rkResp); rkTopState = 1; }
+        else rkTopState = 2;
+    }
+    if (rkRepState == RS_PENDING && rkRepRetryT > 0 && nowT >= rkRepRetryT) {
+        rkRepRetryT = 0;
+        rk_push(RQ_REPORT, "/ranked/report", rkRepBody);
+    }
+    if (rkHelloAt > 0 && nowT >= rkHelloAt) { rkHelloAt = 0; rq_hello(); rq_top(); }
+    if (!rkTh && rkQN > 0) {
+        rkCur = rkQ[0];
+        memmove(rkQ, rkQ + 1, sizeof rkQ[0] * (size_t)(rkQN - 1));
+        rkQN--;
+        rkTh = CreateThread(NULL, 0, rk_thread, NULL, 0, NULL);
+        if (!rkTh) {                                      /* pas de fil : comme une absence de reponse */
+            rkResp[0] = 0;
+            if (rkCur.kind == RQ_HELLO) rk_on_hello(0);
+            else if (rkCur.kind == RQ_REPORT) rk_on_report(0);
+            else rkTopState = 2;
+        }
+    }
+}
+
+/* fin d'un bot --ranked : laisse partir les derniers rapports, relit la cote au serveur et l'ecrit au journal */
+static void rk_bot_final(void) {
+    for (int k = 0; k < 120 && (k < 30 || rkTh || rkQN || rkRepState == RS_PENDING); k++) {   /* 3 s (rapport de l'hote apres un abandon), 12 s au plus */
+#ifdef _WIN32
+        Sleep(100);
+#else
+        usleep(100000);
+#endif
+        nowT += 0.1;
+        rk_net_poll();
+    }
+    RkReq q;
+    memset(&q, 0, sizeof q);
+    q.kind = RQ_HELLO; q.post = 1;
+    snprintf(q.path, sizeof q.path, "/ranked/hello");
+    snprintf(q.body, sizeof q.body, "{\"id\":\"%s\",\"key\":\"%s\"}", rkId, rkKey);
+    if (rk_http(&q, rkResp, sizeof rkResp) && json_ok(rkResp)) {
+        char tl[32];
+        rk_take_player(rkResp);
+        rank_label(myMmr, rankPlayed, tl, sizeof tl);
+        netlog("classe : cote finale (serveur) %d, %s, %d match(s) classe(s), %d victoire(s) ; debut %d, variation %+d",
+               myMmr, tl, rankPlayed, rankWins, botMmr0, botMmr0 >= 0 ? myMmr - botMmr0 : 0);
+    } else netlog("classe : serveur de classement injoignable a la fin");
+}
+
+/* encadre du menu : ma cote, puis le TOP 3 (podium or / argent / bronze) et mon rang */
+static void draw_rank_box(float cx, float cy) {
+    static const float medal[3][3] = { { 1.0f, 0.8f, 0.25f }, { 0.78f, 0.82f, 0.88f }, { 0.8f, 0.5f, 0.28f } };
+    char buf[128], tl[32];
+    const float *c = rank_col(myMmr);
+    rank_label(myMmr, rankPlayed, tl, sizeof tl);
+    float w = 380, x = cx + 380, y = cy - 214;
+    if (x + w > winW - 8) {                               /* fenetre etroite : une seule ligne sous le titre */
+        int k = snprintf(buf, sizeof buf, "%s %d", tl, myMmr);
+        if (rkTopState == 1)
+            for (int i = 0; i < rkTopN && k < (int)sizeof buf - 30; i++)
+                k += snprintf(buf + k, sizeof buf - k, "   %d. %s %d", i + 1, rkTop[i].name, rkTop[i].mmr);
+        text_c(0, cx, cy - 240, buf, c[0], c[1], c[2], 1);
+        return;
+    }
+    rect(x, y, w, 290, 0.03f, 0.04f, 0.08f, 0.82f);
+    rect(x, y, 4, 290, c[0], c[1], c[2], 1);
+    text(1, x + 18, y + 34, "CLASSEMENT", 0.5f, 0.9f, 1.0f, 1);
+    snprintf(buf, sizeof buf, "%s  -  %d", tl, myMmr);
+    text(1, x + 18, y + 70, buf, c[0], c[1], c[2], 1);
+    if (rkRank > 0 || rkMeRank > 0) snprintf(buf, sizeof buf, "#%d  -  %d match%s, %d victoire%s", rkMeRank ? rkMeRank : rkRank,
+                                           rankPlayed, rankPlayed > 1 ? "s" : "", rankWins, rankWins > 1 ? "s" : "");
+    else snprintf(buf, sizeof buf, "%d match%s classe%s, %d victoire%s", rankPlayed, rankPlayed > 1 ? "s" : "",
+                  rankPlayed > 1 ? "s" : "", rankWins, rankWins > 1 ? "s" : "");
+    text(0, x + 18, y + 96, buf, 0.7f, 0.75f, 0.85f, 1);
+    text(0, x + 18, y + 132, "TOP 3", 0.9f, 0.9f, 1.0f, 1);
+    rect(x + 18, y + 140, w - 36, 2, 0.4f, 0.85f, 1.0f, 0.35f);
+    if (rkTopState != 1) {
+        text(0, x + 18, y + 176, rkTopState == 2 ? "classement indisponible" : "chargement ...", 0.6f, 0.6f, 0.7f, 1);
+        return;
+    }
+    if (!rkTopN) text(0, x + 18, y + 176, "personne n'a fini son placement", 0.6f, 0.6f, 0.7f, 1);
+    for (int i = 0; i < rkTopN; i++) {
+        float yy = y + 150 + i * 32.0f;
+        const float *m = medal[i];
+        rect(x + 18, yy, 26, 26, m[0], m[1], m[2], 1);
+        snprintf(buf, sizeof buf, "%d", i + 1);
+        text_c(0, x + 31, yy + 19, buf, 0.08f, 0.08f, 0.1f, 1);
+        text(0, x + 54, yy + 19, rkTop[i].name, m[0], m[1], m[2], 1);
+        snprintf(buf, sizeof buf, "%d  %s", rkTop[i].mmr, rkTop[i].tier);
+        text(0, x + w - 18 - fontW[0] * (float)strlen(buf), yy + 19, buf, 0.85f, 0.85f, 0.9f, 1);
+    }
+    if (rkMeRank > 3 || (!rkMeRank && rankPlayed < RANK_PLACEMENT)) {   /* 4e ligne : moi, si je ne suis pas sur le podium */
+        if (rkMeRank) snprintf(buf, sizeof buf, "toi : #%d, cote %d", rkMeRank, myMmr);
+        else snprintf(buf, sizeof buf, "toi : en placement (%d/%d), cote %d", rankPlayed, RANK_PLACEMENT, myMmr);
+        text(0, x + 18, y + 270, buf, c[0], c[1], c[2], 1);
+    }
+}
 
 static const float pcol[MAXP][3] = {
     { 0.3f, 0.8f, 1.0f }, { 1.0f, 0.45f, 0.3f }, { 0.5f, 1.0f, 0.4f }, { 1.0f, 0.85f, 0.3f },
@@ -10709,7 +11360,9 @@ static void draw_main_menu(float cx, float cy) {
     for (int lv = 0; lv < 3; lv++)                        /* un duel contre un bot : trois niveaux */
         if (button(bx + lv * 142, y, 136, 46, botLevelNames[lv])) { pendingAction = ACT_VSBOT; pendingArg = lv; }
     y += 54;
-    if (button(bx, y, bw, 46, "PARTIE RAPIDE  -  EN LIGNE")) pendingAction = ACT_QUICK;
+    if (button(bx, y, 200, 46, "PARTIE RAPIDE")) pendingAction = ACT_QUICK;
+    if (button(bx + 208, y, bw - 208, 46, "PARTIE CLASSEE")) pendingAction = ACT_RANKED;
+    rect(bx + 208, y + 43, bw - 208, 3, 1.0f, 0.8f, 0.3f, 0.9f);   /* liseret dore : mode classe */
     y += 54;
     if (button(bx, y, bw, 46, "HEBERGER UNE PARTIE")) pendingAction = ACT_HOST;
     y += 54;
@@ -10728,6 +11381,7 @@ static void draw_main_menu(float cx, float cy) {
     if (button(bx, y, bw, 46, "QUITTER")) pendingAction = ACT_QUIT;
     draw_status(bx, y + 90);
     draw_controls(cx - 130, cy - 200);
+    draw_rank_box(cx, cy);
     if (uiClick) { uiClick = 0; uiFocus = 0; }
 }
 
@@ -10747,9 +11401,9 @@ static void draw_join_menu(float cx, float cy) {
             for (int j = 0; j < nFound; j++) if (!found[j].online && !strcmp(found[j].name, found[i].name)) dup = 1;
         if (dup) continue;
         if (found[i].online)
-            snprintf(buf, sizeof buf, "[EN LIGNE]  %s    %d/%d joueurs%s", found[i].name, found[i].players, found[i].maxp,
-                     found[i].spec ? "  (spectateurs)" : "");
-        else snprintf(buf, sizeof buf, "[LAN]  %s  -  %s    %d/%d    %s", found[i].name,
+            snprintf(buf, sizeof buf, "[EN LIGNE]%s  %s    %d/%d joueurs%s", found[i].ranked ? " [CLASSEE]" : "", found[i].name,
+                     found[i].players, found[i].maxp, found[i].spec ? "  (spectateurs)" : "");
+        else snprintf(buf, sizeof buf, "[LAN]%s  %s  -  %s    %d/%d    %s", found[i].ranked ? " [CLASSEE]" : "", found[i].name,
                       found[i].map >= 0 ? maps[found[i].map].name : "?", found[i].players, found[i].maxp,
                       inet_ntoa(found[i].addr.sin_addr));
         if (button(bx, y, bw - 170, 46, buf)) { pendingAction = ACT_JOIN_FOUND; pendingArg = i; }
@@ -10808,11 +11462,12 @@ static void draw_scoreboard(float cx, float cy) {
         for (int b = a; b > 0 && NP[order[b]].kills > NP[order[b - 1]].kills; b--) {
             int t = order[b]; order[b] = order[b - 1]; order[b - 1] = t;
         }
-    float w = 600, x = cx - w * 0.5f, y = cy - 170;
+    float w = ranked ? 820.0f : 600.0f, x = cx - w * 0.5f, y = cy - 170;
     rect(x - 24, y - 56, w + 48, 90 + n * 38.0f, 0.03f, 0.04f, 0.08f, 0.88f);
     text(1, x, y - 14, "JOUEUR", 0.6f, 0.7f, 0.85f, 1);
     text(1, x + 360, y - 14, "FRAGS", 0.6f, 0.7f, 0.85f, 1);
     text(1, x + 480, y - 14, "MORTS", 0.6f, 0.7f, 0.85f, 1);
+    if (ranked) text(1, x + 610, y - 14, "CLASSE", 1, 0.8f, 0.3f, 1);
     for (int k = 0; k < n; k++) {
         int i = order[k];
         float yy = y + 30 + k * 38.0f;
@@ -10822,6 +11477,33 @@ static void draw_scoreboard(float cx, float cy) {
         text(1, x + 360, yy, buf, 1, 1, 1, 1);
         snprintf(buf, sizeof buf, "%d", NP[i].deaths);
         text(1, x + 480, yy, buf, 0.8f, 0.8f, 0.85f, 1);
+        if (ranked) {                                     /* palier et cote annonces (moi : mon cache) */
+            int m = i == myId ? myMmr : rkMmr[i] ? rkMmr[i] : RANK_START, pl = i == myId ? rankPlayed : rkPlay[i];
+            const float *c = rank_col(m);
+            char tl[32];
+            rank_label(m, pl, tl, sizeof tl);
+            snprintf(buf, sizeof buf, "%s  %d", tl, m);
+            text(0, x + 610, yy - 4, buf, c[0], c[1], c[2], 1);
+        }
+    }
+}
+
+/* fin d'un match classe, sous le tableau des scores : "+18 MMR  ->  OR II" une fois le serveur d'accord */
+static void draw_rank_result(float cx, float cy) {
+    char buf[128], tl[32];
+    int n = 0;
+    for (int i = 0; i < MAXP; i++) n += NP[i].active;
+    float y = cy - 136 + n * 38.0f + 46;
+    rect(cx - 330, y - 30, 660, 46, 0.03f, 0.04f, 0.08f, 0.8f);
+    if (rkHadOpp || rkRepState == RS_PENDING) {
+        snprintf(buf, sizeof buf, "envoi du resultat au serveur de classement ...   (estimation %+d)", rkHadOpp ? 0 : rkEstimate);
+        text_c(0, cx, y, buf, 0.8f, 0.8f, 0.9f, 1);
+    } else if (rkRepState == RS_DONE) {
+        rank_label(rkLastMmr, rkLastPlayed, tl, sizeof tl);
+        snprintf(buf, sizeof buf, "%+d MMR  ->  %s   (%d)", rkLastDelta, tl, rkLastMmr);
+        text_c(1, cx, y + 8, buf, rkLastDelta >= 0 ? 0.4f : 1.0f, rkLastDelta >= 0 ? 1.0f : 0.4f, rkLastDelta >= 0 ? 0.5f : 0.35f, 1);
+    } else if (rkRepState == RS_FAILED) {
+        text_c(0, cx, y, "resultat non confirme par le serveur : cote inchangee", 1, 0.6f, 0.3f, 1);
     }
 }
 
@@ -10857,7 +11539,12 @@ static void draw_name_tags(void) {
         V3 head = vadd(NP[i].disp, v3(0, np_height(i) + 0.45f, 0));
         float sx, sy;
         if (!los(camEye, head) || !project(head, &sx, &sy)) continue;
-        text_c(0, sx, sy, NP[i].name, pcol[i][0], pcol[i][1], pcol[i][2], 0.95f);
+        if (ranked) {                                     /* mode classe : palier a cote du nom */
+            char tag[64], tl[32];
+            rank_label(rkMmr[i] ? rkMmr[i] : RANK_START, rkPlay[i], tl, sizeof tl);
+            snprintf(tag, sizeof tag, "%s  [%s]", NP[i].name, tl);
+            text_c(0, sx, sy, tag, pcol[i][0], pcol[i][1], pcol[i][2], 0.95f);
+        } else text_c(0, sx, sy, NP[i].name, pcol[i][0], pcol[i][1], pcol[i][2], 0.95f);
     }
 }
 
@@ -11737,7 +12424,8 @@ static void draw_hud(void) {
             if (i != myId && NP[i].kills > NP[myId].kills) rank++;
         }
         int left = (int)fmaxf(0, MATCH_TIME - matchT);
-        snprintf(buf, sizeof buf, "DEATHMATCH LAN   %d joueur%s   %d:%02d", count, count > 1 ? "s" : "", left / 60, left % 60);
+        snprintf(buf, sizeof buf, "%s   %d joueur%s   %d:%02d", ranked ? "PARTIE CLASSEE" : "DEATHMATCH LAN", count,
+                 count > 1 ? "s" : "", left / 60, left % 60);
         text(0, 30, 40, buf, 0.85f, 0.85f, 0.95f, 1);
         snprintf(buf, sizeof buf, "FRAGS %d / %d", NP[myId].kills, fragLimit);
         text(1, 30, 78, buf, 1, 1, 1, 1);
@@ -11767,6 +12455,7 @@ static void draw_hud(void) {
         snprintf(buf, sizeof buf, "%s REMPORTE LE MATCH", pname(matchWinner));
         text_c(2, cx, cy - 250, buf, 1, 0.85f, 0.3f, 1);
         draw_scoreboard(cx, cy);
+        if (ranked && !spectating) draw_rank_result(cx, cy);
         snprintf(buf, sizeof buf, "nouveau match dans %d s", (int)ceilf(fmaxf(matchEndT, 0)));
         text_c(1, cx, winH - 150.0f, buf, 0.9f, 0.9f, 0.9f, 1);
     } else if (dmMode && P.dead) {
@@ -15273,6 +15962,75 @@ static void run_tests(const char *path) {
         reset_game();
         botLog = savedLog;
     }
+    {   /* mode classe : Elo (meme formule que worker/src/ratings.js), paliers, placement, identite, velocity.ini, JSON */
+        FILE *savedLog = botLog;
+        botLog = NULL;                                    /* pas de journal au milieu des resultats */
+        int o1000[2] = { 1000, 1000 }, o1200 = 1200;
+        float s1 = 1, s0[2] = { 0, 0 };
+        fprintf(f, "classe Elo : 1000 bat 1000 %+d, placement %+d, perd contre 1200 %+d (attendu %+d %+d -8)\n",
+                rank_delta(1000, 20, 1, o1000, &s1), rank_delta(1000, 0, 1, o1000, &s1), rank_delta(1000, 20, 1, &o1200, s0),
+                (int)RANK_K / 2, (int)RANK_K_PLACE / 2);
+        fprintf(f, "classe abandon : defaite contre 2 joueurs a 1000 %+d, en placement %+d (attendu %+d %+d)\n",
+                rank_delta(1000, 20, 2, o1000, s0), rank_delta(1000, 3, 2, o1000, s0), -(int)RANK_K / 2, -(int)RANK_K_PLACE / 2);
+        char t[6][32], pl[32];
+        int ms[6] = { 899, RANK_ARGENT, 1000, RANK_OR, 1349, RANK_MAITRE };
+        for (int k = 0; k < 6; k++) rank_name(ms[k], t[k], sizeof t[k]);
+        fprintf(f, "classe paliers : %s | %s | %s | %s | %s | %s (attendu BRONZE I | ARGENT III | ARGENT I | OR III | PLATINE I | MAITRE)\n",
+                t[0], t[1], t[2], t[3], t[4], t[5]);
+        rank_label(1000, 3, pl, sizeof pl);
+        fprintf(f, "classe placement : %s, K %.0f au 10e match puis %.0f (attendu PLACEMENT 3/10, 64 puis 32)\n", pl,
+                rank_k(RANK_PLACEMENT - 1), rank_k(RANK_PLACEMENT));
+
+        char sid[33], skey[33];                           /* identite : 2 x 128 bits, hexadecimal minuscule */
+        int sm = myMmr, sp = rankPlayed, sw = rankWins, savedBot = botMode;
+        memcpy(sid, rkId, 33); memcpy(skey, rkKey, 33);
+        rkId[0] = rkKey[0] = 0;
+        int made = rk_identity(), again = rk_identity();
+        char id1[33];
+        memcpy(id1, rkId, 33);
+        fprintf(f, "classe identite : creee=%d, recreee au 2e appel=%d, format=%d, cle differente=%d (attendu 1 0 1 1)\n", made, again,
+                hex_ok(rkId, 32) && hex_ok(rkKey, 32), strcmp(rkId, rkKey) != 0);
+        botMode = 0;                                      /* velocity.ini de test (jamais le vrai) */
+        snprintf(cfgPath, sizeof cfgPath, "cfg_rank_test.ini");
+        myMmr = 1234; rankPlayed = 12; rankWins = 5;
+        cfg_save();
+        myMmr = RANK_START; rankPlayed = rankWins = 0; rkId[0] = rkKey[0] = 0;
+        cfg_load();
+        fprintf(f, "classe velocity.ini : cote %d, matchs %d, victoires %d, identite relue %d (attendu 1234 12 5 1)\n", myMmr,
+                rankPlayed, rankWins, !strcmp(rkId, id1) && hex_ok(rkKey, 32));
+        remove(cfgPath);
+        cfgPath[0] = 0;
+        botMode = savedBot;
+
+        rk_parse_top("{\"ok\":true,\"top\":[{\"name\":\"Alice\",\"mmr\":1420,\"tier\":\"PLATINE III\",\"played\":31},"
+                     "{\"name\":\"Bob\",\"mmr\":1301,\"tier\":\"PLATINE III\",\"played\":12}],"
+                     "\"me\":{\"rank\":7,\"mmr\":1093,\"played\":14,\"wins\":6,\"tier\":\"OR II\"}}");
+        fprintf(f, "classe top : %d joueurs, 1er %s %d, 2e %s, mon rang %d, ma cote %d (attendu 2, Alice 1420, Bob, 7, 1093)\n",
+                rkTopN, rkTop[0].name, rkTop[0].mmr, rkTop[1].name, rkMeRank, myMmr);
+
+        /* rapport de fin : 3 joueurs, le 3e est parti (liste de l'hote) ; le parti revenu ne figure qu'une fois */
+        memset(NP, 0, sizeof NP);
+        myId = 1; myMmr = 1000; rankPlayed = 20;
+        for (int i = 0; i < 2; i++) { NP[i].active = 1; rkRid[i][0] = (unsigned char)(0x10 + i); rkMmr[i] = 1000; }
+        NP[0].kills = 15; NP[1].kills = 9; matchWinner = 0;
+        hex_of(rkRid[1], 16, rkId);
+        rkLeftN = 2; memset(rkLeft, 0, sizeof rkLeft); rkLeft[0][0] = 0x33; rkLeft[1][0] = 0x10;   /* 0x10 = l'hote, present */
+        rkQN = 0;
+        rk_send_report(0);
+        const char *rb = rkQN ? rkQ[0].body : "";
+        fprintf(f, "classe rapport : envoye=%d, gagnant=hote %d, presents=%d, partis=%d, estimation %+d (attendu 1 1 1 1 +0)\n",
+                rkQN == 1, strstr(rb, "\"winner\":\"10") != NULL, strstr(rb, "\"kills\":15") && strstr(rb, "\"kills\":9"),
+                strstr(rb, "\"left\":[\"33") != NULL && !strstr(rb, "\"left\":[\"33000000000000000000000000000000\",\""), rkEstimate);
+        rk_send_report(1);                                /* l'hote part en plein match : il rejoint les partis, pas de gagnant */
+        rb = rkQN > 1 ? rkQ[1].body : "";
+        fprintf(f, "classe hote parti : sans gagnant=%d, hote une fois dans les partis=%d (attendu 1 1)\n", strstr(rb, "\"winner\":\"\"") != NULL,
+                strstr(rb, "\"left\":[\"33000000000000000000000000000000\",\"10000000000000000000000000000000\"]") != NULL);
+        rkQN = 0; rkRepState = RS_NONE; rkTopN = 0; rkMeRank = 0; rkLeftN = 0; myId = 0;
+        memset(NP, 0, sizeof NP); memset(rkRid, 0, sizeof rkRid); memset(rkMmr, 0, sizeof rkMmr); memset(rkLeft, 0, sizeof rkLeft);
+        memcpy(rkId, sid, 33); memcpy(rkKey, skey, 33);
+        myMmr = sm; rankPlayed = sp; rankWins = sw;
+        botLog = savedLog;
+    }
 
     botLog = NULL;
     netMode = NET_OFF; dmMode = 0;
@@ -15306,7 +16064,7 @@ static void do_action(void) {
     int a = pendingAction;
     pendingAction = ACT_NONE;
     if (!myName[0]) snprintf(myName, sizeof myName, "joueur");
-    if (a == ACT_SOLO || a == ACT_HOST || a == ACT_BROWSE || a == ACT_QUICK) cfg_save();
+    if (a == ACT_SOLO || a == ACT_HOST || a == ACT_BROWSE || a == ACT_QUICK || a == ACT_RANKED) cfg_save();
     switch (a) {
     case ACT_SOLO:
         net_shutdown();
@@ -15315,7 +16073,7 @@ static void do_action(void) {
         break;
     case ACT_HOST:
         if (net_host_start()) { appState = APP_GAME; if (!botMode) set_capture(1); }
-        hostQuick = 0;
+        hostQuick = 0; hostRanked = 0;
         break;
     case ACT_BROWSE:
         if (net_browse_start()) { appState = APP_JOIN; netStatus[0] = 0; }
@@ -15362,6 +16120,9 @@ static void do_action(void) {
         break;
     case ACT_QUICK:
         quick_play();
+        break;
+    case ACT_RANKED:
+        ranked_play();
         break;
     case ACT_JOIN_IP: {
         struct sockaddr_in addr;
@@ -15434,6 +16195,8 @@ static int velocity_main(const char *cmd) {
             else if (!strcmp(t, "--lanep")) lanEp = 1;
             else if (!strcmp(t, "--nolan")) lanOff = 1;
             else if (!strcmp(t, "--spec")) botSpec = 1;
+            else if (!strcmp(t, "--ranked")) botRanked = 1;   /* mode classe : partie classee (identite temporaire) */
+            else if (!strcmp(t, "--frags") && (t = strtok(NULL, " "))) rkFragsTest = atoi(t);
             else if (!strcmp(t, "--local")) botLocal = 1;
             else if (!strcmp(t, "--hidden")) botHidden = 1;
             else if (!strcmp(t, "--updated")) updAfter = 1;
@@ -15521,6 +16284,8 @@ static int velocity_main(const char *cmd) {
 #endif
         if (!botMode && !shotMode && cfg_load()) toggle_fullscreen();
     }
+    if (rk_identity() && !botMode && !shotMode) cfg_save();   /* mode classe : identite creee au premier lancement */
+    if (!shotMode && (!botMode || botRanked)) { rq_hello(); rq_top(); }   /* cote et TOP 3 en arriere-plan */
     if (!botMode && !shotMode) {                          /* mise a jour : restes de la precedente, puis verification discrete */
         upd_cleanup();
         if (updAfter) {
@@ -15548,6 +16313,29 @@ static int velocity_main(const char *cmd) {
         }
         if (strstr(shotPath, "settings")) { settingsOpen = 1; waitAct = A_SKILL; waitSlot = 1; }
         if (strstr(shotPath, "loadout")) { loadoutOpen = 1; if (strstr(shotPath, "charge")) wantSkill = SK_CHARGE; }
+        if (strstr(shotPath, "menu")) {                   /* mode classe : donnees factices pour l'encadre TOP 3 */
+            static const RkTop fake[3] = { { "Vortex", 1612, 41, "MAITRE" }, { "Kestrel", 1418, 33, "PLATINE I" },
+                                           { "Nyx", 1377, 25, "DIAMANT III" } };
+            memcpy(rkTop, fake, sizeof fake); rkTopN = 3; rkTopState = 1;
+            myMmr = 1093; rankPlayed = 14; rankWins = 6; rkMeRank = 12;
+        }
+        render(1, TICK);
+        save_bmp(shotPath);
+        return 0;
+    }
+    if (shotMode && strstr(shotPath, "ranked")) {         /* mode classe : fin de match classe, tableau des scores */
+        appState = APP_GAME; dmMode = 1; myId = 0; ranked = 1; connected = 1;
+        memset(NP, 0, sizeof NP);
+        static const char *nm[3] = { "Moi", "Rival", "Ninja" };
+        static const int kl[3] = { 15, 11, 4 }, mm[3] = { 1093, 1188, 962 }, pp[3] = { 14, 30, 6 };
+        for (int i = 0; i < 3; i++) {
+            snprintf(NP[i].name, 16, "%s", nm[i]); NP[i].active = NP[i].alive = 1; NP[i].hp = 100;
+            NP[i].kills = kl[i]; NP[i].deaths = 3 + i * 2; rkMmr[i] = mm[i]; rkPlay[i] = pp[i];
+        }
+        P.pos = P.prevPos = v3(0, 0, 24); P.yaw = -0.1f; P.pitch = 0.08f; P.hp = 100;
+        myMmr = 1093; rankPlayed = 14;
+        rkRepState = RS_DONE; rkLastDelta = 18; rkLastMmr = 1093; rkLastPlayed = 14;
+        matchOver = 1; matchWinner = 0; matchEndT = 6; matchT = 340;
         render(1, TICK);
         save_bmp(shotPath);
         return 0;
@@ -15769,6 +16557,7 @@ static int velocity_main(const char *cmd) {
     menu_backdrop();
     if (botMode == 1) pendingAction = ACT_HOST;
     if (botMode == 2) pendingAction = ACT_BROWSE;
+    if (botMode && botRanked) pendingAction = ACT_RANKED;   /* recherche classee ; sans partie, l'hote en cree une */
 
     LARGE_INTEGER freq, start, last, now;
     QueryPerformanceFrequency(&freq);
@@ -15834,8 +16623,9 @@ static int velocity_main(const char *cmd) {
 #endif
         tesla_audio();                                    /* Tesla : boucles sonores des arcs */
         music_follow_game();
+        rk_net_poll();                                    /* mode classe : requetes au serveur de classement */
         audio_update();
-        if (lbWantHost) { lbWantHost = 0; if (appState == APP_JOIN) { pendingAction = ACT_HOST; hostQuick = 1; } }
+        if (lbWantHost) { lbWantHost = 0; if (appState == APP_JOIN) { pendingAction = ACT_HOST; hostQuick = 1; hostRanked = rankedWant; } }
         if (pendingAction) do_action();
     }
 done:
@@ -15934,6 +16724,7 @@ done:
                    shieldBlocks, shieldBreaks, shieldPerfects, shieldDenied, shieldConverted, shieldRips, hitCount[W_SHIELD]);
     }
     net_shutdown();
+    if (botMode && botRanked) rk_bot_final();
     if (botLog) fclose(botLog);
     set_capture(0);
 #ifdef _WIN32

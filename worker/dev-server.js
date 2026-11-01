@@ -1,11 +1,26 @@
 // Lobby en local pour les tests : meme logique que le Durable Object, WebSocket ecrit a la main
 // (RFC 6455, trames texte uniquement) pour ne dependre d'aucun paquet npm.
+// Sert aussi le classement (/ranked/...) avec la meme logique que le DO Ratings, sur une base SQLite
+// en memoire (node:sqlite, integre a Node 22.5+ ; vide a chaque lancement).
 //   node dev-server.js [port]      (8787 par defaut)
 
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { handle, closed, newMeta } from './src/lobby.js';
+import { schema, rankedResponse } from './src/ratings.js';
+
+// meme interface que ctx.storage.sql d'un Durable Object : exec(requete, ...valeurs).toArray()
+export async function memorySql() {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(':memory:');
+  return {
+    exec(q, ...b) {
+      const r = db.prepare(q).all(...b);
+      return { toArray: () => r };
+    },
+  };
+}
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -16,9 +31,19 @@ function frame(text) {
   return Buffer.concat([h, p]);
 }
 
-export function startDevServer(port = 8787) {
+export async function startDevServer(port = 8787) {
   const conns = [];
-  const server = http.createServer((req, res) => res.end('VELOCITY lobby (dev)'));
+  const sql = await memorySql();
+  schema(sql);
+  const server = http.createServer(async (req, res) => {
+    if (!req.url.startsWith('/ranked/')) { res.end('VELOCITY lobby (dev)'); return; }
+    const chunks = [];
+    for await (const ch of req) chunks.push(ch);
+    const body = req.method === 'POST' ? Buffer.concat(chunks) : undefined;
+    const r = await rankedResponse(sql, new Request(`http://127.0.0.1${req.url}`, { method: req.method, body }));
+    res.writeHead(r.status, { 'Content-Type': 'application/json' });
+    res.end(await r.text());
+  });
 
   server.on('upgrade', (req, socket) => {
     const key = req.headers['sec-websocket-key'];
@@ -61,11 +86,11 @@ export function startDevServer(port = 8787) {
     socket.on('error', drop);
   });
 
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, conns })));
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, conns, sql })));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = parseInt(process.argv[2], 10) || 8787;
   await startDevServer(port);
-  console.log(`lobby de test sur ws://127.0.0.1:${port}/`);
+  console.log(`lobby de test sur ws://127.0.0.1:${port}/ (classement : http://127.0.0.1:${port}/ranked/...)`);
 }
