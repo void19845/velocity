@@ -93,19 +93,19 @@ export function schema(sql) {
   sql.exec('CREATE TABLE IF NOT EXISTS rate (id TEXT PRIMARY KEY, win INTEGER NOT NULL, n INTEGER NOT NULL)');
 }
 
-const rows = (sql, q, ...b) => sql.exec(q, ...b).toArray();
-const one = (sql, q, ...b) => rows(sql, q, ...b)[0] || null;
+export const rows = (sql, q, ...b) => sql.exec(q, ...b).toArray();
+export const one = (sql, q, ...b) => rows(sql, q, ...b)[0] || null;
 
 export async function sha256hex(text) {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
-function limited(sql, id, now) {
+function limited(sql, id, now, perMin) {
   const win = Math.floor(now / 60000);
   const r = one(sql, 'SELECT win, n FROM rate WHERE id = ?', id);
   if (!r || r.win !== win) { sql.exec('INSERT OR REPLACE INTO rate (id, win, n) VALUES (?, ?, 1)', id, win); return false; }
-  if (r.n >= RANK.RATE_PER_MIN) return true;
+  if (r.n >= perMin) return true;
   sql.exec('UPDATE rate SET n = n + 1 WHERE id = ?', id);
   return false;
 }
@@ -115,9 +115,10 @@ function playerView(p) {
 }
 
 // identite : premiere requete = enregistrement de l'empreinte de la cle (confiance au premier usage)
-async function auth(sql, req, now, create) {
+// rate : compteur de debit (par defaut l'identite ; le speedrun a le sien, speedrun.js)
+export async function auth(sql, req, now, create, rate = { key: req.id, perMin: RANK.RATE_PER_MIN }) {
   if (!HEX32.test(req.id || '') || !HEX32.test(req.key || '')) return { err: 'identite invalide', status: 400 };
-  if (limited(sql, req.id, now)) return { err: 'trop de requetes', status: 429 };
+  if (limited(sql, rate.key, now, rate.perMin)) return { err: 'trop de requetes', status: 429 };
   const kh = await sha256hex(req.key);
   let p = one(sql, 'SELECT * FROM players WHERE id = ?', req.id);
   if (!p) {
@@ -250,7 +251,8 @@ export async function handleRanked(sql, method, path, query, json, now) {
   return [404, { ok: false, err: 'inconnu' }];
 }
 
-export async function rankedResponse(sql, request) {
+// handler : handleRanked (/ranked/...) ou handleSpeedrun (/speedrun/..., speedrun.js), meme forme
+export async function rankedResponse(sql, request, handler = handleRanked) {
   const url = new URL(request.url);
   let json = null;
   if (request.method === 'POST') {
@@ -258,6 +260,6 @@ export async function rankedResponse(sql, request) {
     if (text.length > 4096) return new Response('{"ok":false,"err":"trop long"}', { status: 413 });
     try { json = JSON.parse(text); } catch (e) { json = null; }
   }
-  const [status, body] = await handleRanked(sql, request.method, url.pathname, url.searchParams, json, Date.now());
+  const [status, body] = await handler(sql, request.method, url.pathname, url.searchParams, json, Date.now());
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }

@@ -514,6 +514,96 @@ static void draw_rank_box(float cx, float cy) {
     }
 }
 
+/* ecran CHALLENGE : une course par carte CHALLENGE, le speedrun complet, la vague 100 ; a droite le classement de la
+ * categorie choisie (srSel) : record, top 10, mon rang et mon meilleur temps (serveur), mon record local */
+static int sr_local_best(int cat) {                       /* record local (ms) : course de la carte en memoire, speedrun complet */
+    if (cat == SR_COMPLET) return srPbN == srMapN && srMapN ? srPb[srMapN - 1] : 0;
+    if (cat >= SR_MAP0 && raceLoaded == cat - SR_MAP0 && raceBest > 0) return (int)lroundf(raceBest * 1000);
+    return 0;
+}
+static void draw_sr_board(int cat, float x, float y, float w) {   /* classement d'une categorie */
+    static const float medal[3][3] = { { 1.0f, 0.8f, 0.25f }, { 0.78f, 0.82f, 0.88f }, { 0.8f, 0.5f, 0.28f } };
+    const SrTop *t = &srTop[cat];
+    char buf[128], tb[24], tb2[24];
+    rect(x, y, w, 470, 0.03f, 0.04f, 0.08f, 0.82f);
+    rect(x, y, 4, 470, 1.0f, 0.8f, 0.3f, 1);
+    snprintf(buf, sizeof buf, "CLASSEMENT  -  %s", sr_label(cat));
+    text(1, x + 18, y + 34, buf, 0.5f, 0.9f, 1.0f, 1);
+    if (t->state == 2 && t->wrMs > 0) {
+        sr_time_str(tb, sizeof tb, t->wrMs);
+        snprintf(buf, sizeof buf, "RECORD  %s  par %s   -   %d coureur%s", tb, t->wrName, t->runners, t->runners > 1 ? "s" : "");
+    } else snprintf(buf, sizeof buf, "plancher du serveur : %d s", sr_floor_ms(cat) / 1000);
+    text(0, x + 18, y + 62, buf, 1.0f, 0.82f, 0.35f, 1);
+    rect(x + 18, y + 74, w - 36, 2, 0.4f, 0.85f, 1.0f, 0.35f);
+    if (t->state != 2) {
+        text(0, x + 18, y + 110, t->state == 3 ? "classement indisponible (hors ligne ?)" : "chargement ...", 0.6f, 0.6f, 0.7f, 1);
+    } else if (!t->n) text(0, x + 18, y + 110, "personne n'a encore de temps : le premier record est a prendre", 0.6f, 0.6f, 0.7f, 1);
+    for (int i = 0; i < t->n; i++) {
+        float yy = y + 86 + i * 30.0f;
+        int me = t->meRank == i + 1;
+        const float *m = i < 3 ? medal[i] : NULL;
+        if (me) rect(x + 14, yy - 2, w - 28, 28, 0.3f, 0.85f, 1.0f, 0.12f);
+        if (m) rect(x + 18, yy, 24, 24, m[0], m[1], m[2], 1);
+        snprintf(buf, sizeof buf, "%d", i + 1);
+        if (m) text_c(0, x + 30, yy + 18, buf, 0.08f, 0.08f, 0.1f, 1); else text_c(0, x + 30, yy + 18, buf, 0.7f, 0.75f, 0.85f, 1);
+        text(0, x + 54, yy + 18, t->name[i], m ? m[0] : 0.9f, m ? m[1] : 0.9f, m ? m[2] : 0.95f, 1);
+        sr_time_str(tb, sizeof tb, t->ms[i]);
+        int gap = t->ms[i] - t->ms[0];                   /* ecart au premier : +1.55, ou +1:02.37 au-dela d'une minute */
+        if (gap >= 60000) sr_time_str(tb2, sizeof tb2, gap); else snprintf(tb2, sizeof tb2, "%.2f", gap / 1000.0f);
+        if (i) { char g[32]; snprintf(g, sizeof g, "+%s", tb2); snprintf(buf, sizeof buf, "%s  %9s", tb, g); }   /* colonnes alignees */
+        else snprintf(buf, sizeof buf, "%s  %9s", tb, "");
+        text(0, x + w - 18 - fontW[0] * (float)strlen(buf), yy + 18, buf, 0.85f, 0.85f, 0.9f, 1);
+    }
+    float yb = y + 400;
+    rect(x + 18, yb - 14, w - 36, 2, 0.4f, 0.85f, 1.0f, 0.35f);
+    if (t->state == 2 && t->meMs > 0) {
+        sr_time_str(tb, sizeof tb, t->meMs);
+        snprintf(buf, sizeof buf, "toi : #%d sur %d  -  meilleur temps %s", t->meRank, t->runners, tb);
+    } else snprintf(buf, sizeof buf, "toi : pas encore de temps au classement");
+    text(0, x + 18, yb + 12, buf, 0.4f, 1.0f, 0.6f, 1);
+    int lb = sr_local_best(cat);
+    if (lb > 0) { sr_time_str(tb, sizeof tb, lb); snprintf(buf, sizeof buf, "record sur cette machine : %s", tb); }
+    else snprintf(buf, sizeof buf, "%s", cat == SR_VAGUES100 ? "se joue en SOLO - VAGUES : finis la vague 100" :
+                                          "aucun temps sur cette machine");
+    text(0, x + 18, yb + 40, buf, 0.65f, 0.7f, 0.8f, 1);
+}
+static void draw_challenge_menu(float cx, float cy) {
+    char buf[96], tb[24];
+    rect(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.78f);
+    text_c(2, cx, cy - 280, "CHALLENGE", 1.0f, 0.85f, 0.35f, 1);
+    text_c(0, cx, cy - 250, "contre la montre : chaque temps compte au classement en ligne", 0.7f, 0.75f, 0.85f, 1);
+    sr_maps_init();
+    if (!sr_cat_ok(srSel)) srSel = srMapN ? SR_MAP0 + srMaps[0] : SR_COMPLET;
+    int cats[NMAPS + 2], nc = 0;
+    for (int k = 0; k < srMapN; k++) cats[nc++] = SR_MAP0 + srMaps[k];
+    cats[nc++] = SR_COMPLET; cats[nc++] = SR_VAGUES100;
+    float bw = 360, bx = cx - 480, y = cy - 214;
+    for (int k = 0; k < nc; k++) {
+        int c = cats[k];
+        if (c >= SR_MAP0) snprintf(buf, sizeof buf, "COURSE  -  %s", sr_label(c));
+        else if (c == SR_COMPLET) snprintf(buf, sizeof buf, "SPEEDRUN COMPLET  (%d carte%s)", srMapN, srMapN > 1 ? "s" : "");
+        else snprintf(buf, sizeof buf, "%s  (mode VAGUES)", sr_label(c));
+        if (sel_button(bx, y, bw, 46, buf, srSel == c, 1, v3(1, 0.85f, 0.35f))) srSel = c;
+        int lb = sr_local_best(c), sb = srTop[c].state == 2 ? srTop[c].meMs : 0;
+        if (sb > 0 && (lb <= 0 || sb < lb)) lb = sb;
+        if (lb > 0) { sr_time_str(tb, sizeof tb, lb); snprintf(buf, sizeof buf, "ton record %s", tb); }
+        else snprintf(buf, sizeof buf, "pas encore de temps");
+        text(0, bx + 4, y + 64, buf, 0.65f, 0.7f, 0.8f, 1);
+        y += 82;
+    }
+    y += 6;
+    if (srSel == SR_VAGUES100) text(0, bx, y + 30, "lance une partie SOLO - VAGUES depuis le menu", 0.8f, 0.8f, 0.9f, 1);
+    else if (button(bx, y, bw, 56, srSel == SR_COMPLET ? "LANCER LE SPEEDRUN" : "LANCER LA COURSE")) {
+        if (srSel == SR_COMPLET) pendingAction = ACT_SPEEDRUN;
+        else { pendingAction = ACT_RACE; pendingArg = srSel - SR_MAP0; }
+    }
+    y += 70;
+    if (button(bx, y, 200, 46, "RETOUR")) challengeOpen = 0;
+    draw_status(bx, y + 80);
+    draw_sr_board(srSel, cx - 90, cy - 214, 570);
+    if (uiClick) uiClick = 0;
+}
+
 static void draw_main_menu(float cx, float cy) {
     /* assombri surtout en haut (lisibilite du titre) ; vers le bas, le decor (sol, arene) reste visible */
     rect_vgrad(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.78f, 0.30f);
@@ -536,7 +626,7 @@ static void draw_main_menu(float cx, float cy) {
     char soloLbl[48];
     snprintf(soloLbl, sizeof soloLbl, maps[menuMap].solo ? "SOLO - VAGUES" : "SOLO (%s)", maps[0].name);
     if (button(bx, y, bw * 0.62f - 4, 52, soloLbl)) pendingAction = ACT_SOLO;
-    if (button(bx + bw * 0.62f + 4, y, bw * 0.38f - 4, 52, "CHALLENGE")) pendingAction = ACT_RACE;   /* course au grappin (LA TOILE) */
+    if (button(bx + bw * 0.62f + 4, y, bw * 0.38f - 4, 52, "CHALLENGE")) { challengeOpen = 1; rq_sr_top_all(); }   /* courses, speedrun */
     y += 52 + 24;                                         /* le libelle sous le bouton, sans toucher son liseret */
     text(0, bx, y, "JOUEUR CONTRE BOT  (duel)", 0.7f, 0.75f, 0.85f, 1);
     y += 8;

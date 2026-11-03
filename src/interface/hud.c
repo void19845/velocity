@@ -338,6 +338,7 @@ static void draw_hud(void) {
         else if (loadoutOpen && appState == APP_MENU) draw_loadout(cx, cy);
         else if (hostOpen && appState == APP_MENU) draw_host_menu(cx, cy);
         else if (skinOpen && appState == APP_MENU) draw_skin_menu(cx, cy);
+        else if (challengeOpen && appState == APP_MENU) draw_challenge_menu(cx, cy);
         else if (appState == APP_MENU) draw_main_menu(cx, cy);
         else draw_join_menu(cx, cy);
         glDisable(GL_BLEND);

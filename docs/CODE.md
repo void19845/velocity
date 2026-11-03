@@ -109,9 +109,10 @@ velocity/
 │   ├── solo/         ennemis_vagues.c
 │   ├── reseau/       etat_partage.c, protocole.c (paquets, EV_*), hote.c, modes.c, client.c, en_ligne.c (lobby, STUN),
 │   │                 classe.c (mode classe : Elo, paliers, identite), classe_match.c (suivi du match, rapport),
-│   │                 classe_serveur.c (requetes au serveur de classement)
+│   │                 classe_serveur.c (requetes au serveur de classement), speedrun_serveur.c (classements de temps)
 │   ├── bots/         navigation.c (graphe de la carte, plus court chemin), bot.c
-│   ├── jeu/          style.c (jauge D a S), course.c (mode COURSE), kill_zone.c (void_check, bots prudents),
+│   ├── jeu/          style.c (jauge D a S), course.c (mode COURSE), speedrun.c (classements, speedrun complet),
+│   │                 kill_zone.c (void_check, bots prudents),
 │   │                 boucle.c (pickup_tick, game_tick)
 │   ├── graphismes/   rendu_ini.c (lecture de graphismes/rendu.ini, ambiances, qualite)
 │   ├── perso/        skins.c (modeles et animation des personnages)
@@ -157,6 +158,7 @@ velocity/
 | `reseau/classe.c` | mode classé (§4 « Mode classé ») : état, formule Elo, paliers, identité, cartes et règles imposées | `rank_delta`, `rank_tier`, `rank_div`, `rank_label`, `rank_col`, `rk_identity`, `rk_new_match`, `rk_map_ok`, `rk_map_pick`, `rk_counts` |
 | `reseau/classe_match.c` | mode classé : suivi du match et rapport de fin | `rk_send_report`, `rk_tick`, `rk_host_gone`, `rk_shutdown` |
 | `reseau/classe_serveur.c` | mode classé : file de requêtes au serveur de classement (fil de fond), lecture des réponses JSON | `rk_http`, `rk_thread`, `rk_push`, `rq_hello`, `rq_top`, `rk_on_hello`, `rk_on_report`, `rk_net_poll`, `rk_bot_final` |
+| `reseau/speedrun_serveur.c` | speedrun (§4 « Speedrun ») : ticket, rapport de temps, classements | `speedrun_begin`, `speedrun_report`, `speedrun_report_splits`, `rq_sr_top`, `rq_sr_top_all`, `sr_parse_top`, `sr_on_response` |
 | `plateforme/http.c` | requête HTTP générique, bloquante (WinHTTP ; macOS : `/usr/bin/curl`) | `http_request` |
 | `bots/navigation.c` | navigation des bots (§3.19) | `nav_build`, `nav_path`, `nav_plan`, `nav_follow`, `NV`, `navBusy`, `navLanding` |
 | `bots/bot.c` | bots | `aim_assist`, `bot_think` |
@@ -171,16 +173,17 @@ velocity/
 | `rendu/modeles.c`, `rendu/armes_rendu.c`, `rendu/viewmodel.c` | modèles 3D, rendu des armes, arme en main | `draw_enemy`, `draw_tesla_arcs`, `draw_flails`, `draw_viewmodel` |
 | `interface/mise_a_jour.c` | bouton MISE A JOUR (§3.17) | `upd_click`, `upd_poll`, `upd_label`, `upd_install`, `sha256_file` |
 | `interface/config.c` | `velocity.ini` | `cfg_save`, `cfg_load`, `assign_bind`, `key_name` |
-| `interface/menus.c` | menus et paramètres | `button`, `slider`, `draw_settings`, `draw_loadout`, `draw_skin_menu`, `draw_main_menu` (dont PARTIE CLASSEE), `draw_rank_box` (encadré CLASSEMENT / TOP 3), `draw_pause` |
+| `interface/menus.c` | menus et paramètres | `button`, `slider`, `draw_settings`, `draw_loadout`, `draw_skin_menu`, `draw_main_menu` (dont PARTIE CLASSEE), `draw_rank_box` (encadré CLASSEMENT / TOP 3), `draw_challenge_menu` / `draw_sr_board` (écran CHALLENGE), `draw_pause` |
 | `interface/scores.c` | scores, killfeed, pseudos | `draw_scoreboard` (colonne CLASSE), `draw_rank_result`, `draw_killfeed`, `project`, `draw_name_tags` |
 | `rendu/joueurs.c` | joueurs distants | `np_anim`, `draw_trails`, `draw_outlines`, `draw_remote_players` |
 | `reseau/modes.c` | modes de jeu (§3.23) | `mode_tick`, `mode_reset`, `mode_on_death`, `mode_time_winner`, `mode_bot_goal`, `mode_ok`, `zone_r`, `shield_r`, `obj_event` |
 | `jeu/economie.c` | boutique (§3.23) | `credits`, `eco_reset`, `eco_gain`, `eco_buy`, `eco_pick_starter`, `eco_loadout`, `ammo_rule_mul` |
 | `interface/modes_hud.c` | modes : affichage (§3.23) | `draw_modes_world`, `draw_modes_hud`, `draw_shop` |
 | `jeu/style.c` | jauge de style (§3.20) | `style_add`, `style_kill`, `style_parry`, `style_tick`, `style_mult` |
-| `jeu/course.c` | mode COURSE (§3.21) | `race_start`, `race_tick`, `race_respawn`, `race_ghost_at` |
+| `jeu/course.c` | mode COURSE (§3.21) | `race_start_map`, `race_start`, `race_tick`, `race_respawn`, `race_ghost_at` |
+| `jeu/speedrun.c` | speedrun (§4 « Speedrun ») : catégories, planchers, speedrun complet | `sr_key`, `sr_label`, `sr_floor_ms`, `sr_full_start`, `sr_full_map_done`, `sr_full_tick`, `sr_full_ms` |
 | `interface/hud.c` | HUD | `melee_preview`, `draw_radar`, `draw_style_hud`, `draw_hud` |
-| `interface/course_hud.c` | course : affichage et record | `draw_race_world`, `draw_race_hud`, `race_save`, `race_load` |
+| `interface/course_hud.c` | course : affichage et record ; speedrun : résultat, panneau, bilan | `draw_race_world`, `draw_race_hud`, `race_save`, `race_load`, `sr_pb_save`, `sr_result_line`, `draw_sr_full_panel`, `draw_sr_full_end` |
 | `rendu/ciel_ombres_bloom.c` | ciel, ombres, bloom (voir §3.12) | `draw_sky_dome`, `draw_dyn_shadows`, `bloom_apply` |
 | `effets/monde_fx.c` | effets du monde | `draw_world_marks`, `draw_world_glow`, `draw_weather`, `storm_tick`, `draw_flare` |
 | `interface/carte_ecran.c` | second écran : carte et stats (§3.15) | `draw_map_screen`, `maps_draw_map`, `maps_draw_panel` |
@@ -871,7 +874,9 @@ cartes de partie et une carte **CHALLENGE** (LA TOILE, mode COURSE seulement, §
 
 ### 3.21 Mode COURSE (`src/jeu/course.c`, `src/interface/course_hud.c`)
 
-- Bouton **CHALLENGE** du menu principal (`ACT_RACE`, anciennement COURSE) : la première carte CHALLENGE à portes
+- Bouton **CHALLENGE** du menu principal → écran CHALLENGE (classements, §4 « Speedrun ») : COURSE d'une carte
+  (`ACT_RACE`, `pendingArg` = la carte, `race_start_map`), SPEEDRUN COMPLET (`ACT_SPEEDRUN`). Aujourd'hui une seule
+  carte CHALLENGE à portes
   (`MapDef.challenge`, `gates` x y z rayon, `ngates`, `startYaw` ; **LA TOILE**, `build_map_toile` : quatre avenues
   de gratte-ciel au-dessus du vide, 13 portes jusqu'au toit d'arrivée). Pas d'ennemis, pas de vagues. LA TOILE n'est
   jouable que là (§3.18, « Cartes CHALLENGE »).
@@ -879,8 +884,9 @@ cartes de partie et une carte **CHALLENGE** (LA TOILE, mode COURSE seulement, §
   `prevPos → pos` (centre du corps) traverse sa sphère, dans l'ordre. Chute sous `killY` : `race_respawn` à la
   dernière porte passée (le chrono continue, compteur de chutes). **R** ou RECOMMENCER : `race_start`.
 - **Record** : temps, temps intermédiaires (écart vert / rouge à chaque porte) et **fantôme** (position et
-  orientation à 30 Hz, `RACE_GMAX`) dans `velocity_course.txt` à côté de `velocity.ini` (jamais en `--bot`,
-  `--shot`, `--test`). Le fantôme est dessiné en silhouette additive bleutée (`skinFlat`).
+  orientation à 30 Hz, `RACE_GMAX`) dans `velocity_course.txt` à côté de `velocity.ini` pour la première carte
+  CHALLENGE, `velocity_course_<carte>.txt` pour les suivantes (jamais en `--bot`, `--shot`, `--test`). Chaque
+  arrivée part aussi au classement en ligne de la carte (`speedrun_report_splits`, §4 « Speedrun »). Le fantôme est dessiné en silhouette additive bleutée (`skinFlat`).
 - **Façon Spider-Man** (seulement en course, `raceOn`) : 31 **points de balancement** (`addswing`, cubes dorés de
   2 × `SWING_HALF`, contour lumineux) au milieu des avenues, 15 à 20 m au-dessus des portes. **Aimant** : au lancer,
   le grappin part vers le point de balancement en vue le plus proche du viseur dans un cône de `RACE_MAGNET_COS`
@@ -1244,6 +1250,92 @@ lecture du TOP, construction du rapport) ; `node test.js` (lobby classé, Elo, e
 concordance, désaccord, rapport seul, abandon, hôte parti, expiration, top, limite de débit) ;
 `--shot ranked.bmp` (fin de match classée) et `--shot menu.bmp` (encadré TOP 3 avec données factices).
 
+### Speedrun : classements des meilleurs temps
+
+Trois familles de classements, tenus par le **même Durable Object `Ratings`** que le mode classé (mêmes tables
+`players`, même identité `ranked_id` / `ranked_key`, aucune nouvelle migration) : le **serveur fait foi**.
+
+| Catégorie (jeu) | Clé (serveur) | Temps intermédiaires | Plancher | Ticket valable |
+|---|---|---|---|---|
+| `SR_MAP0 + m` : course de la carte CHALLENGE `m` | `course:<carte>` (`course:la_toile`) | un par porte (13) | 6 975 ms | 30 min |
+| `SR_COMPLET` : toutes les cartes CHALLENGE à la suite | `complet` | un par carte (1 aujourd'hui) | somme des courses | 2 h |
+| `SR_VAGUES100` : mode VAGUES, vague 100 terminée | `vagues100` | 0 ou 4 (vagues 25 / 50 / 75 / 100) | 5 min (provisoire) | 8 h |
+
+**Où est le code** : `src/jeu/speedrun.c` (catégories `sr_key` / `sr_label` / `sr_cat_ok`, planchers `sr_floor_ms`,
+speedrun complet `sr_full_*`, état `srRun[]` / `srTop[]`), `src/reseau/speedrun_serveur.c` (ticket, rapport,
+classement, sur la file de requêtes du mode classé : `rk_push_arg`, `RQ_SR_*`), déclarations à la fin de
+`src/reseau/etat_partage.c`, record perso du speedrun complet dans `src/interface/course_hud.c`
+(`velocity_speedrun.txt`), écran CHALLENGE dans `menus.c` (`draw_challenge_menu`, `draw_sr_board`) ; serveur :
+`worker/src/speedrun.js`.
+
+**Point d'entrée** (appelable de partout, déclaré dans `etat_partage.c`) :
+```c
+speedrun_begin(SR_VAGUES100);                            /* au depart du run : ticket horodate par le serveur */
+speedrun_report(SR_VAGUES100, ms);                       /* a l'arrivee : temps de jeu en ms */
+speedrun_report_splits(SR_VAGUES100, ms, splitMs, 4);    /* ou avec les temps intermediaires cumules (dernier = ms) */
+```
+Rien ne part en `--bot` / `--shot`, hors ligne (`online=0`) ou sans identité. Un temps fini avant l'arrivée du
+ticket attend le ticket (`SRR_WAIT`) ; sans ticket (serveur injoignable au départ), il reste « garde sur cette
+machine ». Un nouveau `speedrun_begin` de la même catégorie (R) remplace le ticket : la réponse d'un ancien départ
+est ignorée (numéro de séquence dans `RkReq.arg`).
+
+**Requêtes HTTP** (même hôte que le lobby, `lobbyAddr`) :
+
+| Requête | Corps / paramètres | Réponse |
+|---|---|---|
+| `POST /speedrun/start` | `{id, key, name, cat}` | `{ok, run, cat}` (crée l'identité si nouvelle ; annule le ticket précédent de la catégorie) |
+| `POST /speedrun/report` | `{id, key, cat, run, ms, splits:[ms cumulés]}` | `{ok, state:"record"\|"kept", best, prev, rank}` ou `{ok:false, err}` |
+| `GET /speedrun/top?cat=…&id=…` | — | `{ok, cat, runners, top:[{name, ms}] (10), wr:{name, ms, splits}, me:{rank, ms, splits}}` |
+
+**Validation (anti-triche minimale, `runError` et `report` dans `speedrun.js`)** :
+- le **ticket** : le rapport doit citer le dernier ticket demandé par ce joueur pour cette catégorie ; il ne sert
+  qu'une fois (même refusé), expire (`maxAgeMs`), et **le temps annoncé ne peut pas dépasser le temps réel écoulé
+  depuis le ticket** (+ `TOL_MS` = 1,5 s) : un speedhack ou un temps inventé sans avoir joué aussi longtemps est
+  refusé (« plus rapide que le temps reel ») ;
+- catégorie connue, nombre de temps intermédiaires attendu, temps strictement croissants (troncons ≥ `SEG_MIN_MS`
+  = 250 ms), le dernier égal au total ;
+- **plancher** : chemin le plus court de porte en porte (du départ à la 1re porte, chaque tronçon raccourci du
+  rayon de la porte d'arrivée) à `SR_VMAX` = 45 m/s de moyenne (le grappin plafonne à 38–46 m/s). Calculé par le jeu
+  (`sr_floor_ms`) et **recopié** dans `SR.CATS` : la ligne « speedrun planchers » de `--test` les affiche ;
+- la requête est authentifiée par la clé du joueur, comme le mode classé (le serveur ne garde que son SHA-256) : une
+  signature HMAC n'ajouterait rien tant que la clé elle-même circule (en HTTPS) ;
+- débit : 60 requêtes/min par identité, compteur à part du mode classé.
+
+Limites : pas de rejeu de la course côté serveur, donc un client modifié qui joue en temps réel peut annoncer un temps
+plausible (au-dessus du plancher) qu'il n'a pas fait ; le temps de jeu ne compte pas les décomptes, ce qui laisse
+3 s de marge au contrôle du temps réel.
+
+**Nouvelle carte CHALLENGE** : ajouter sa catégorie `course:<carte>` dans `SR.CATS` (plancher donné par `--test`),
+ajouter son plancher à celui de `complet`, et passer `complet.splits` au nouveau nombre de cartes ; redéployer.
+
+**Affichage** :
+- bouton **CHALLENGE** du menu principal → écran CHALLENGE (`challengeOpen`) : une ligne par catégorie (COURSE de
+  chaque carte, SPEEDRUN COMPLET, VAGUE 100) avec mon record, et à droite le classement de la catégorie choisie
+  (`draw_sr_board`) : record du monde et son auteur, top 10 avec l'écart au premier (podium or / argent / bronze,
+  ma ligne surlignée), « toi : #rang sur N - meilleur temps », mon record sur cette machine. Les classements sont
+  demandés à l'ouverture (`rq_sr_top_all`) et après chaque temps accepté ; on revient sur cet écran en quittant une
+  course ;
+- écran d'ARRIVEE d'une course : ligne CLASSEMENT (`sr_result_line` : envoi…, « #3 sur 37 - record perso
+  enregistre », « ton meilleur temps reste… », refus avec la raison, hors ligne).
+
+**Speedrun complet** (`ACT_SPEEDRUN`, `sr_full_start`) : les cartes CHALLENGE à portes dans l'ordre de `maps[]`
+(`srMaps`). Chaque carte garde son décompte (non compté), son fantôme et son record, et son temps part aussi à son
+propre classement. **Chrono global** = somme des temps de course (`sr_full_ms`), temps cumulé à chaque arrivée
+(`srSplit`), écart vert / rouge au record perso (`srPb`, `velocity_speedrun.txt` ; à défaut, les temps
+intermédiaires de mon meilleur run au serveur). Après une arrivée, `SR_NEXT_DELAY` (2 s) puis la carte suivante
+(`sr_full_tick`, appelé par `game_tick`). **R** / RECOMMENCER repart de la première carte. Panneau en haut à gauche
+(`draw_sr_full_panel`), bilan final (`draw_sr_full_end`) avec le temps de chaque carte et le classement `complet`.
+Avec une seule carte CHALLENGE (LA TOILE), le speedrun complet est cette course seule, mais son classement est à part.
+
+Tests : lignes `speedrun …` de `run_tests()` (catégories, planchers, ticket puis rapport, ticket remplacé par R,
+réponse record / refus, hors ligne, lecture du classement, speedrun complet sur deux cartes : enchaînement, décompte,
+chrono global, record perso, R) ; `node test.js` (lignes `speedrun :` : ticket, temps réel, ticket consommé /
+remplacé / d'un autre joueur / d'une autre catégorie / expiré, record gardé, rang, plancher, temps intermédiaires,
+vague 100, complet, top par HTTP, limite de débit) ; captures `challenge`, `course_fin`, `speedrun`, `speedrun_fin`.
+**De bout en bout** (jeu ↔ worker réel, HTTP et JSON compris) : lancer un lobby local (`cd worker && node dev-server.js 8791`)
+puis `--test` avec la variable `SPEEDRUN_LOBBY=127.0.0.1:8791` : ligne « speedrun de bout en bout » (ticket, temps trop
+tôt refusé, vrai temps de course de 7,6 s puis record rang 1, classement relu). Sans la variable, `--test` reste hors ligne.
+
 ### `NET_VER`
 
 `NET_VER` est comparé à chaque paquet reçu. **Incrémentez-le à chaque changement** de structure de
@@ -1506,6 +1598,8 @@ Ouvre la fenêtre sans l'activer, prépare une scène, la dessine une fois (`ren
 | `sansbloom` / `sansombre` | (à combiner) coupe le bloom / les ombres dynamiques pour comparer |
 | `ranked` | fin de match classée : colonne CLASSE, « +18 MMR -> OR II » (`draw_rank_result`) |
 | `menu` (aussi) | l'encadré CLASSEMENT / TOP 3 est rempli de données factices |
+| `challenge` | écran CHALLENGE : classement factice de la course (top 8, ma ligne, record du monde) |
+| `speedrun` / `speedrun_fin` | speedrun complet en cours (panneau, chrono global) / bilan final ; `course_fin` montre aussi la ligne CLASSEMENT |
 
 Autres noms reconnus (voir `src/plateforme/demarrage.c`, chercher `strstr(shotPath`) : `loadout` (`_charge`),
 `update`, `skinmenu`, `skins` (`_course`), `small` (fenêtre 1024 × 640), `carte` / `carte3d` (second écran, avec
@@ -1590,6 +1684,11 @@ F="--ranked --lobby 127.0.0.1:8787 --lanep --nolan --frags 2"
 ./velocity.exe --bot host --name Hote --time 90 --log host.txt $F &
 sleep 2; ./velocity.exe --bot join --name Client --time 86 --log client.txt $F; wait
 ```
+
+**Speedrun** (même lobby de test, `/speedrun/…`) : `velocity.exe --lobby 127.0.0.1:8787`, bouton CHALLENGE, une
+course : l'écran d'arrivée affiche « CLASSEMENT : #1 … » et le journal `speedrun : LA TOILE en … ms, record, rang 1`.
+Les routes se testent aussi à la main :
+`curl "http://127.0.0.1:8787/speedrun/top?cat=course:la_toile"`.
 
 Les journaux montrent `classe : rapport de fin de match …`, `classe (serveur) : cote 1000 -> 1032 (+32) …` à chaque
 match, l'abandon du client à 86 s (`Client quitte le match en cours`, l'hôte gagne), puis

@@ -3,6 +3,7 @@
 
 import { startDevServer } from './dev-server.js';
 import { eloDelta, tierName, rankLabel, handleRanked, RANK } from './src/ratings.js';
+import { handleSpeedrun, runError, SR } from './src/speedrun.js';
 import crypto from 'node:crypto';
 
 const PORT = 8799;
@@ -234,6 +235,81 @@ check('top : joueur en placement sans rang', t2.me.rank, 0);
 let limitedHit = false;
 for (let n = 0; n < RANK.RATE_PER_MIN + 2 && !limitedHit; n++) limitedHit = (await post('/ranked/hello', K)).status === 429;
 check('limite de debit par identite', limitedHit, true);
+
+// --- speedrun : classements des meilleurs temps (course par carte CHALLENGE, speedrun complet, vague 100) ---
+const sr = (path, body, at) => handleSpeedrun(sql, 'POST', path, new URLSearchParams(), body, at);
+const toile = 'course:la_toile', gates = SR.CATS[toile].splits[0];
+const splitsOf = (ms, n) => Array.from({ length: n }, (_, i) => Math.round(ms * (i + 1) / n));
+const S1 = ident('Sam'), S2 = ident('Tia'), S3 = ident('Uma');
+const now = Date.now();
+let [st, sb] = await sr('/speedrun/start', { ...S1, cat: toile }, now);
+check('speedrun : ticket (identite creee au premier usage)', [st, sb.ok, /^[0-9a-f]{16}$/.test(sb.run)], [200, true, true]);
+const run1 = sb.run;
+[st, sb] = await sr('/speedrun/report', { ...S1, cat: toile, run: run1, ms: 40000, splits: splitsOf(40000, gates) }, now + 30000);
+check('speedrun : plus rapide que le temps reel ecoule depuis le ticket', [st, sb.err], [400, 'plus rapide que le temps reel']);
+[st, sb] = await sr('/speedrun/report', { ...S1, cat: toile, run: run1, ms: 40000, splits: splitsOf(40000, gates) }, now + 45000);
+check('speedrun : ticket consomme par le rapport refuse', sb.err, 'ticket inconnu');
+[, sb] = await sr('/speedrun/start', { ...S1, cat: toile }, now);
+[st, sb] = await sr('/speedrun/report', { ...S1, cat: toile, run: sb.run, ms: 40000, splits: splitsOf(40000, gates) }, now + 44000);
+check('speedrun : premier temps -> record, rang 1', [st, sb.state, sb.best, sb.prev, sb.rank], [200, 'record', 40000, 0, 1]);
+[, sb] = await sr('/speedrun/start', { ...S1, cat: toile }, now);
+const runA = sb.run;
+await sr('/speedrun/start', { ...S1, cat: toile }, now + 1000);   // R : nouveau depart, l'ancien ticket tombe
+[st, sb] = await sr('/speedrun/report', { ...S1, cat: toile, run: runA, ms: 39000, splits: splitsOf(39000, gates) }, now + 60000);
+check('speedrun : ticket remplace par un nouveau depart', [st, sb.err], [400, 'ticket inconnu']);
+[, sb] = await sr('/speedrun/start', { ...S1, cat: toile }, now);
+[, sb] = await sr('/speedrun/report', { ...S1, cat: toile, run: sb.run, ms: 45000, splits: splitsOf(45000, gates) }, now + 60000);
+check('speedrun : temps moins bon -> record garde', [sb.state, sb.best, sb.prev], ['kept', 40000, 40000]);
+[, sb] = await sr('/speedrun/start', { ...S2, cat: toile }, now);
+[, sb] = await sr('/speedrun/report', { ...S2, cat: toile, run: sb.run, ms: 38500, splits: splitsOf(38500, gates) }, now + 60000);
+check('speedrun : second joueur plus rapide -> rang 1', [sb.state, sb.rank], ['record', 1]);
+[, sb] = await sr('/speedrun/start', { ...S2, cat: toile }, now);
+[st, sb] = await sr('/speedrun/report', { ...S2, cat: toile, run: sb.run, ms: 5000, splits: splitsOf(5000, gates) }, now + 60000);
+check('speedrun : sous le plancher', [st, sb.err], [400, 'sous le plancher']);
+check('speedrun : planchers (course, complet = somme des courses)', [SR.CATS[toile].floorMs, SR.CATS.complet.floorMs], [6975, 6975]);
+check('speedrun : temps intermediaires', [
+  runError(toile, 40000, splitsOf(40000, gates - 1)),
+  runError(toile, 40000, [...splitsOf(39000, gates - 1), 40000].reverse()),
+  runError(toile, 40000, splitsOf(39000, gates)),
+  runError('vagues100', 1200000, []),
+  runError('vagues100', 1200000, splitsOf(1200000, 4)),
+  runError('vagues100', 1200000, splitsOf(1200000, 3)),
+  runError('autre', 40000, []),
+  runError(toile, 40000.5, splitsOf(40000, gates)),
+], ['temps intermediaires', 'temps intermediaires', 'temps intermediaires', null, null, 'temps intermediaires', 'categorie inconnue',
+  'temps invalide']);
+[, sb] = await sr('/speedrun/start', { ...S3, cat: toile }, now);
+[st, sb] = await sr('/speedrun/report', { ...S1, cat: toile, run: sb.run, ms: 39000, splits: splitsOf(39000, gates) }, now + 60000);
+check('speedrun : ticket d\'un autre joueur refuse', [st, sb.err], [400, 'ticket inconnu']);
+[, sb] = await sr('/speedrun/start', { ...S3, cat: 'complet' }, now);
+[st, sb] = await sr('/speedrun/report', { ...S3, cat: toile, run: sb.run, ms: 39000, splits: splitsOf(39000, gates) }, now + 60000);
+check('speedrun : ticket d\'une autre categorie refuse', [st, sb.err], [400, 'ticket inconnu']);
+[, sb] = await sr('/speedrun/start', { ...S3, cat: toile }, now);
+[st, sb] = await sr('/speedrun/report', { ...S3, cat: toile, run: sb.run, ms: 39000, splits: splitsOf(39000, gates) }, now + 31 * 60000);
+check('speedrun : ticket expire (30 min pour une course)', [st, sb.err], [400, 'ticket expire']);
+[st, sb] = await sr('/speedrun/start', { ...S3, key: hex(16), cat: toile }, now);
+check('speedrun : mauvaise cle', [st, sb.ok], [403, false]);
+[st, sb] = await sr('/speedrun/start', { ...S3, cat: 'course:inconnue' }, now);
+check('speedrun : categorie inconnue', [st, sb.err], [400, 'categorie inconnue']);
+// vague 100 (point d'entree du mode VAGUES) et speedrun complet : memes regles, leurs propres classements
+[, sb] = await sr('/speedrun/start', { ...S3, cat: 'vagues100' }, now);
+[, sb] = await sr('/speedrun/report', { ...S3, cat: 'vagues100', run: sb.run, ms: 1500000, splits: splitsOf(1500000, 4) }, now + 1501000);
+check('speedrun : vague 100', [sb.state, sb.rank], ['record', 1]);
+[, sb] = await sr('/speedrun/start', { ...S3, cat: 'complet' }, now);
+[, sb] = await sr('/speedrun/report', { ...S3, cat: 'complet', run: sb.run, ms: 41000, splits: [41000] }, now + 50000);
+check('speedrun : complet', [sb.state, sb.rank], ['record', 1]);
+// classement par HTTP (meme route que le Durable Object)
+const top1 = await (await fetch(`http://127.0.0.1:${PORT}/speedrun/top?cat=${encodeURIComponent(toile)}&id=${S1.id}`)).json();
+check('speedrun : top du plus rapide au plus lent', top1.top.map((p) => [p.name, p.ms]), [['Tia', 38500], ['Sam', 40000]]);
+check('speedrun : record du monde et son detail', [top1.wr.name, top1.wr.splits.length, top1.wr.splits[gates - 1]], ['Tia', gates, 38500]);
+check('speedrun : mon rang et mon meilleur temps', [top1.me.rank, top1.me.ms, top1.me.splits.length, top1.runners], [2, 40000, gates, 2]);
+const top2 = await (await fetch(`http://127.0.0.1:${PORT}/speedrun/top?cat=complet&id=${S1.id}`)).json();
+check('speedrun : classement complet a part, sans temps pour moi', [top2.top.length, top2.me], [1, null]);
+r = await post('/speedrun/start', { ...ident('Vic'), cat: 'complet' });
+check('speedrun : depart par HTTP', [r.status, r.ok], [200, true]);
+let srLimited = false;
+for (let n = 0; n < SR.RATE_PER_MIN + 2 && !srLimited; n++) srLimited = (await sr('/speedrun/start', { ...S2, cat: toile }, now))[0] === 429;
+check('speedrun : limite de debit (compteur a part du mode classe)', srLimited, true);
 
 console.log(fails ? `${fails} echec(s)` : 'tous les tests passent');
 server.close();

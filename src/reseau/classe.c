@@ -121,7 +121,8 @@ static int rk_identity(void) {
     rk_random(b, 16); hex_of(b, 16, rkKey);
     return 1;
 }
-enum { RQ_HELLO = 1, RQ_TOP, RQ_REPORT };               /* requetes au serveur de classement */
+enum { RQ_HELLO = 1, RQ_TOP, RQ_REPORT,                  /* requetes au serveur de classement */
+       RQ_SR_START, RQ_SR_REPORT, RQ_SR_TOP };            /* speedrun : ticket, temps, classement (speedrun_serveur.c) */
 static int rkFragsTest;                                   /* --frags N : limite de frags d'un match classe de bots (tests) */
 static void rk_new_match(void) {                          /* hote : un nouveau match classe commence */
     rk_random(rkMid, 8);

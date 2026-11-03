@@ -5,7 +5,8 @@
 /* Interface : menus, tableau des scores, joueurs distants             */
 /* ------------------------------------------------------------------ */
 enum { ACT_NONE, ACT_SOLO, ACT_HOST, ACT_BROWSE, ACT_QUIT, ACT_BACK, ACT_JOIN_FOUND, ACT_JOIN_IP, ACT_RESUME,
-       ACT_RESTART, ACT_LEAVE, ACT_FULLSCREEN, ACT_QUICK, ACT_SPEC_FOUND, ACT_VSBOT, ACT_RACE, ACT_RANKED };
+       ACT_RESTART, ACT_LEAVE, ACT_FULLSCREEN, ACT_QUICK, ACT_SPEC_FOUND, ACT_VSBOT, ACT_RACE, ACT_RANKED,
+       ACT_SPEEDRUN };
 static int settingsOpen, waitAct = -1, waitSlot, uiDown, uiDrag;
 static int settingsPage;                                  /* ecran PARAMETRES : 0 = reglages et commandes, 1 = GRAPHISMES */
 static int fullscreen;

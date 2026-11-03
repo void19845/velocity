@@ -2,18 +2,22 @@
 // - Lobby : une seule instance ("global") tient tous les salons ; ses WebSockets sont hibernables, donc
 //   rien n'est facture tant que personne n'envoie de message.
 // - Ratings : une seule instance ("global") tient le classement du mode CLASSE (SQLite) ; elle repond
-//   aux requetes HTTPS /ranked/hello, /ranked/report et /ranked/top (voir ratings.js).
+//   aux requetes HTTPS /ranked/hello, /ranked/report et /ranked/top (voir ratings.js), et aux classements
+//   SPEEDRUN /speedrun/start, /speedrun/report et /speedrun/top (voir speedrun.js, memes identites).
 
 import { handle, closed, newMeta } from './lobby.js';
 import { schema, rankedResponse } from './ratings.js';
+import { srSchema, handleSpeedrun } from './speedrun.js';
 
 export class Ratings {
   constructor(ctx) {
     this.sql = ctx.storage.sql;
     schema(this.sql);
+    srSchema(this.sql);
   }
 
   fetch(request) {
+    if (new URL(request.url).pathname.startsWith('/speedrun/')) return rankedResponse(this.sql, request, handleSpeedrun);
     return rankedResponse(this.sql, request);
   }
 }
@@ -68,7 +72,8 @@ export class Lobby {
 
 export default {
   fetch(request, env) {
-    if (new URL(request.url).pathname.startsWith('/ranked/')) {
+    const path = new URL(request.url).pathname;
+    if (path.startsWith('/ranked/') || path.startsWith('/speedrun/')) {
       return env.RATINGS.get(env.RATINGS.idFromName('global')).fetch(request);
     }
     return env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(request);

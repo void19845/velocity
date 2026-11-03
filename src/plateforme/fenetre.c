@@ -57,6 +57,7 @@ static int in_key_down(int sc, int repeat) {
             else if (loadoutOpen) { loadoutOpen = 0; cfg_save(); }
             else if (hostOpen) { hostOpen = 0; cfg_save(); }
             else if (skinOpen) { skinOpen = 0; cfg_save(); }
+            else if (challengeOpen) challengeOpen = 0;
             else if (appState == APP_JOIN) pendingAction = ACT_BACK;
             else set_capture(0);
         }

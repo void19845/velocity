@@ -76,6 +76,7 @@
 
 #include "src/combat/competences.c"              /* competences : MARQUE, CHARGE, RICOCHET, ALL IN ONE, MIRAGE, AIMANT (la piece en est une) */
 #include "src/jeu/course.c"                     /* mode COURSE : portes, chrono, fantome du record */
+#include "src/jeu/speedrun.c"                   /* speedrun : categories de classement, planchers, speedrun complet */
 #include "src/jeu/kill_zone.c"                  /* kill zone : chute dans le vide (killY de la carte), bots prudents au bord */
 
 #include "src/jeu/boucle.c"                      /* ramassage, game_tick (un pas de simulation), fx_tick */
@@ -100,6 +101,7 @@
 #include "src/plateforme/http.c"                 /* requete HTTP(S) simple : WinHTTP / curl (mode classe) */
 #include "src/interface/config.c"                /* velocity.ini : reglages et touches du joueur */
 #include "src/reseau/classe_serveur.c"           /* mode classe : requetes au serveur de classement (hello, top, rapport) */
+#include "src/reseau/speedrun_serveur.c"         /* speedrun : ticket, temps et classements au serveur */
 #include "src/interface/menus.c"                 /* boutons, menus, parametres, loadout, ecran SKIN */
 #include "src/interface/scores.c"                /* tableau des scores, killfeed, pseudos */
 

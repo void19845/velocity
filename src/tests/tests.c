@@ -3096,6 +3096,137 @@ static void run_tests(const char *path) {
             raceOn = 0; appState = APP_MENU;
             load_map(0); reset_game();
         }
+        {   /* --- Speedrun : categories, planchers (recopies dans worker/src/speedrun.js), ticket puis rapport, classement,
+             * speedrun complet (enchainement des cartes CHALLENGE, chrono global, record perso) --- */
+            char k0[40], k1[40], k2[40];
+            int rm = race_map(), so = onlineOn, savedBot = botMode;
+            char sid[33], skey[33];
+            FILE *logSave = botLog; botLog = NULL;
+            botMode = 0;                                  /* les bots n'envoient pas de temps : on simule un joueur */
+            memcpy(sid, rkId, 33); memcpy(skey, rkKey, 33);
+            sr_key(SR_MAP0 + rm, k0, sizeof k0); sr_key(SR_COMPLET, k1, sizeof k1); sr_key(SR_VAGUES100, k2, sizeof k2);
+            fprintf(f, "speedrun categories : %s, %s, %s, carte de partie refusee %d (attendu course:la_toile, complet, vagues100, 1)\n",
+                    k0, k1, k2, !sr_cat_ok(SR_MAP0 + 0));
+            fprintf(f, "speedrun planchers : course %s %d ms, complet %d ms, vague 100 %d ms (attendu 6975, 6975, 300000 : "
+                       "les memes que worker/src/speedrun.js)\n", maps[rm].name, sr_floor_ms(SR_MAP0 + rm), sr_floor_ms(SR_COMPLET),
+                    sr_floor_ms(SR_VAGUES100));
+            /* ticket demande au depart ; temps fini avant le ticket : il part a son arrivee, avec le ticket */
+            onlineOn = 1; snprintf(rkId, 33, "%032x", 7); snprintf(rkKey, 33, "%032x", 9);
+            rkQN = 0;
+            int cat = SR_MAP0 + rm, sp[3] = { 9000, 21000, 40000 };
+            speedrun_begin(cat);
+            int q1 = rkQN, k1ok = rkQN && rkQ[0].kind == RQ_SR_START && strstr(rkQ[0].body, "\"cat\":\"course:la_toile\"");
+            speedrun_begin(cat);                          /* R : le ticket en attente est remplace, pas double */
+            int q2 = rkQN, arg = rkQ[0].arg;
+            speedrun_report_splits(cat, 40000, sp, 3);
+            int waitSt = srRun[cat].state, q3 = rkQN;
+            snprintf(rkResp, sizeof rkResp, "{\"ok\":true,\"run\":\"00112233445566aa\",\"cat\":\"course:la_toile\"}");
+            sr_on_response(RQ_SR_START, arg - 256, 1);    /* ticket d'un depart remplace : ignore */
+            int stale = rkQN;
+            sr_on_response(RQ_SR_START, arg, 1);
+            const char *rb = rkQN > 1 ? rkQ[1].body : "";
+            fprintf(f, "speedrun ticket : demande %d (%d), une seule apres R %d, temps en attente du ticket %d sans requete %d, "
+                       "ancien ticket ignore %d, rapport parti %d avec ticket %d temps %d splits %d (attendu 1 1 1 1 1 1 1 1 1 1)\n",
+                    q1, k1ok, q2 == 1, waitSt == SRR_WAIT, q3 == 1, stale == 1, rkQN == 2 && rkQ[1].kind == RQ_SR_REPORT,
+                    strstr(rb, "\"run\":\"00112233445566aa\"") != NULL, strstr(rb, "\"ms\":40000") != NULL,
+                    strstr(rb, "\"splits\":[9000,21000,40000]") != NULL);
+            snprintf(rkResp, sizeof rkResp, "{\"ok\":true,\"state\":\"record\",\"best\":40000,\"prev\":41200,\"rank\":3}");
+            sr_on_response(RQ_SR_REPORT, cat, 1);
+            int recSt = srRun[cat].state, recRank = srRun[cat].rank, topAsked = rkQN == 3 && rkQ[2].kind == RQ_SR_TOP;
+            snprintf(rkResp, sizeof rkResp, "{\"ok\":false,\"err\":\"sous le plancher\"}");
+            sr_on_response(RQ_SR_REPORT, cat, 1);
+            fprintf(f, "speedrun reponse : record %d rang %d, classement redemande %d, refus %d (%s) (attendu 1 3 1 1, sous le plancher)\n",
+                    recSt == SRR_RECORD, recRank, topAsked, srRun[cat].state == SRR_REFUSED, srRun[cat].err);
+            onlineOn = 0;
+            speedrun_begin(cat); speedrun_report(cat, 40000);
+            fprintf(f, "speedrun hors ligne : aucune requete %d, etat hors ligne %d (attendu 1 1)\n", rkQN == 3, srRun[cat].state == SRR_OFFLINE);
+            sr_parse_top(cat, "{\"ok\":true,\"cat\":\"course:la_toile\",\"runners\":37,\"top\":[{\"name\":\"Tia\",\"ms\":38500},"
+                              "{\"name\":\"Sam\",\"ms\":40000}],\"wr\":{\"name\":\"Tia\",\"ms\":38500,\"splits\":[1000,2000,38500]},"
+                              "\"me\":{\"rank\":2,\"ms\":40000,\"splits\":[9000,21000,40000]}}");
+            SrTop *t = &srTop[cat];
+            fprintf(f, "speedrun top : %d temps, 1er %s %d, %d coureurs, record %s %d ms en %d splits, moi #%d %d ms %d splits "
+                       "(attendu 2, Tia 38500, 37, Tia 38500 en 3, #2 40000 3)\n", t->n, t->name[0], t->ms[0], t->runners, t->wrName,
+                    t->wrMs, t->wrN, t->meRank, t->meMs, t->meN);
+            memset(t, 0, sizeof *t); memset(srRun, 0, sizeof srRun); memset(srTicket, 0, sizeof srTicket);
+            rkQN = 0;
+#ifdef _WIN32
+#define SR_SLEEP(ms) Sleep(ms)
+#else
+#define SR_SLEEP(ms) usleep((useconds_t)(ms) * 1000)
+#endif
+            if (getenv("SPEEDRUN_LOBBY")) {               /* de bout en bout avec un lobby local (cd worker && node dev-server.js 8787),
+                                                           * SPEEDRUN_LOBBY=127.0.0.1:8787 : ticket, 7,5 s de vrai temps, rapport, top */
+                char sLobby[96];
+                snprintf(sLobby, sizeof sLobby, "%s", lobbyAddr); snprintf(lobbyAddr, sizeof lobbyAddr, "%s", getenv("SPEEDRUN_LOBBY"));
+                onlineOn = 1; rkId[0] = rkKey[0] = 0; rk_identity();
+                int fl = sr_floor_ms(cat), lsp[RACE_GATES], ngt = maps[rm].ngates;
+                for (int i = 0; i < ngt; i++) lsp[i] = (fl + 300) * (i + 1) / ngt;
+                speedrun_begin(cat);
+                for (int k = 0; k < 100 && srTicket[cat] == SRT_WAIT; k++) { SR_SLEEP(50); rk_net_poll(); }
+                int gotTicket = srTicket[cat] == SRT_OK;
+                speedrun_report_splits(cat, fl + 300, lsp, ngt);   /* trop tot : refuse (plus rapide que le temps reel) */
+                for (int k = 0; k < 100 && srRun[cat].state == SRR_SENT; k++) { SR_SLEEP(50); rk_net_poll(); }
+                int early = srRun[cat].state == SRR_REFUSED;
+                char earlyErr[40];
+                snprintf(earlyErr, sizeof earlyErr, "%s", srRun[cat].err);
+                speedrun_begin(cat);
+                for (int k = 0; k < 100 && srTicket[cat] == SRT_WAIT; k++) { SR_SLEEP(50); rk_net_poll(); }
+                SR_SLEEP(fl + 600);                          /* on "court" vraiment */
+                speedrun_report_splits(cat, fl + 300, lsp, ngt);
+                for (int k = 0; k < 100 && (srRun[cat].state == SRR_SENT || rkTh || rkQN); k++) { SR_SLEEP(50); rk_net_poll(); }
+                int rec = srRun[cat].state == SRR_RECORD, rank = srRun[cat].rank;
+                for (int k = 0; k < 100 && srTop[cat].state != 2; k++) { SR_SLEEP(50); rk_net_poll(); }
+                fprintf(f, "speedrun de bout en bout (%s) : ticket %d, temps trop tot refuse %d (%s), apres %d ms record %d rang %d, "
+                           "classement lu %d, mon temps %d ms (attendu 1, 1 (plus rapide que le temps reel), 1, 1, 1, %d)\n",
+                        lobbyAddr, gotTicket, early, earlyErr, fl + 600, rec, rank, srTop[cat].state == 2, srTop[cat].meMs, fl + 300);
+                snprintf(lobbyAddr, sizeof lobbyAddr, "%s", sLobby);
+                memset(srTop, 0, sizeof srTop); memset(srRun, 0, sizeof srRun); memset(srTicket, 0, sizeof srTicket); rkQN = 0;
+            }
+#undef SR_SLEEP
+            onlineOn = so; memcpy(rkId, sid, 33); memcpy(rkKey, skey, 33);
+            botMode = savedBot; botLog = logSave;
+
+            /* speedrun complet sur deux cartes (la meme deux fois : une seule carte CHALLENGE a ce jour) : 0,5 s par porte */
+            sr_maps_init();
+            int saveN = srMapN, save0 = srMaps[0], ng = maps[rm].ngates;
+            srMapN = 2; srMaps[0] = srMaps[1] = rm; srPbN = 0; srPbLoaded = 1;
+            sr_full_start(); appState = APP_GAME;
+            int ms1 = 0, idxMid = -1, doneMid = -1, idxNext = -1, cdNext = -1, doneEnd = 0, totEnd = 0, split0 = 0, nb = 0, pb1 = 0;
+            int restart = 0, nb2 = 0, d0 = 0, d1 = 0, pb2 = 0;
+            for (int run = 0; run < 2; run++) {           /* 2e run, 0,4 s par porte : record battu, ecarts a l'ancien record */
+                float per = run ? 0.4f : 0.5f;
+                for (int lap = 0; lap < 2; lap++) {
+                    const MapDef *md = &maps[curMap];
+                    raceCount = 0;
+                    for (int i = 0; i < md->ngates; i++) {
+                        V3 c = vsub(race_gate(i), v3(0, 0.9f, 0)), prev = i ? vsub(race_gate(i - 1), v3(0, 0.9f, 0)) : md->start;
+                        V3 d = vnorm(vsub(c, prev));
+                        P.prevPos = vsub(c, vmul(d, 3)); P.pos = vadd(c, vmul(d, 0.5f));
+                        race_tick(per);
+                    }
+                    if (!lap) {
+                        if (!run) { ms1 = sr_full_ms(); idxMid = srIdx; doneMid = srDone; }
+                        sr_full_tick(SR_NEXT_DELAY * 0.5f);
+                        sr_full_tick(SR_NEXT_DELAY * 0.5f + 0.01f);   /* carte suivante : nouveau depart, decompte */
+                        if (!run) { idxNext = srIdx; cdNext = raceCount > 0 && !raceDone && raceT == 0; }
+                    }
+                }
+                if (!run) {
+                    doneEnd = srDone; totEnd = sr_full_ms(); split0 = srSplit[0]; nb = srNewBest; pb1 = srPb[1];
+                    race_start();                         /* R : tout le speedrun depuis la premiere carte */
+                    restart = srIdx == 0 && !srDone && srFull;
+                } else { nb2 = srNewBest; d0 = sr_full_delta(0); d1 = sr_full_delta(1); pb2 = srPb[1]; }
+            }
+            fprintf(f, "speedrun complet : carte 1 en %d ms (carte %d, fini %d), puis carte %d avec decompte %d, fini %d en %d ms, "
+                       "temps a la carte 1 %d, record perso %d (%d), [R] repart de la carte 1 : %d (attendu %d (0, 0), 1, 1, 1 en %d, %d, 1 (%d), 1)\n",
+                    ms1, idxMid, doneMid, idxNext, cdNext, doneEnd, totEnd, split0, nb, pb1, restart,
+                    ng * 500, ng * 1000, ng * 500, ng * 1000);
+            fprintf(f, "speedrun complet, 2e run plus rapide : record battu %d, ecarts a l'ancien record %d et %d ms, nouveau record %d "
+                       "(attendu 2, %d et %d, %d)\n", nb2, d0, d1, pb2, -ng * 100, -ng * 200, ng * 800);
+            srFull = 0; raceOn = 0; srMapN = saveN; srMaps[0] = save0; srPbN = 0; srPbLoaded = 0;
+            memset(srRun, 0, sizeof srRun); rkQN = 0; appState = APP_MENU;
+            load_map(0); reset_game();
+        }
         {   /* --- Modes, specialisations, boutique (l'hote arbitre ; 4 joueurs : 0 et 2 BLEUS, 1 et 3 ROUGES ; l'Arene) --- */
             int cm = 0;
             load_map(cm); reset_game();

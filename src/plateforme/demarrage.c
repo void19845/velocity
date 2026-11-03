@@ -37,11 +37,18 @@ static void do_action(void) {
     pendingAction = ACT_NONE;
     if (!myName[0]) snprintf(myName, sizeof myName, "joueur");
     if (a == ACT_SOLO || a == ACT_HOST || a == ACT_BROWSE || a == ACT_QUICK || a == ACT_VSBOT || a == ACT_RANKED) cfg_save();
-    if (a != ACT_NONE && a != ACT_RESUME && a != ACT_RESTART && a != ACT_FULLSCREEN) raceOn = 0;   /* toute autre action quitte la course */
+    int wasRace = raceOn;
+    if (a != ACT_NONE && a != ACT_RESUME && a != ACT_RESTART && a != ACT_FULLSCREEN) raceOn = srFull = 0;   /* toute autre action quitte la course */
     switch (a) {
-    case ACT_RACE:                                        /* course au grappin (LA TOILE) */
+    case ACT_RACE:                                        /* course au grappin d'une carte CHALLENGE (pendingArg : la carte) */
         net_shutdown();
+        raceMap = pendingArg; challengeOpen = 0;
         race_start(); appState = APP_GAME; set_capture(1);
+        break;
+    case ACT_SPEEDRUN:                                    /* speedrun complet : toutes les cartes CHALLENGE a la suite */
+        net_shutdown();
+        challengeOpen = 0;
+        sr_full_start(); appState = APP_GAME; set_capture(1);
         break;
     case ACT_SOLO:
         net_shutdown();
@@ -123,6 +130,7 @@ static void do_action(void) {
         break;
     case ACT_LEAVE:
         net_shutdown(); set_capture(0); appState = APP_MENU; menu_backdrop();
+        if (wasRace) { challengeOpen = 1; rq_sr_top_all(); }   /* retour d'une course : l'ecran CHALLENGE et ses classements */
         break;
     case ACT_QUIT:
         PostQuitMessage(0);
@@ -349,7 +357,7 @@ static int velocity_main(const char *cmd) {
 
     if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu") || strstr(shotPath, "loadout") ||
                      strstr(shotPath, "heberger") || strstr(shotPath, "graphismes") ||
-                     strstr(shotPath, "update"))) {   /* "skinmenu" contient "menu" */   /* captures des menus */
+                     strstr(shotPath, "update") || strstr(shotPath, "challenge"))) {   /* "skinmenu" contient "menu" */   /* captures des menus */
         appState = APP_MENU;
         menu_backdrop();
         if (strstr(shotPath, "update")) {                 /* bouton de mise a jour en plein telechargement */
@@ -365,6 +373,19 @@ static int velocity_main(const char *cmd) {
         if (strstr(shotPath, "loadout")) { loadoutOpen = 1; if (strstr(shotPath, "charge")) wantSkill = SK_CHARGE; }
         if (strstr(shotPath, "heberger")) { hostOpen = 1; wantTeams = 2; hostBots = 1; }
         if (strstr(shotPath, "skinmenu")) { skinOpen = 1; wantSkin = SKN_POUSSIN; skinPrevTeam = 1; nowT = 0.4; }
+        if (strstr(shotPath, "challenge")) {              /* ecran CHALLENGE : classement factice de la course */
+            static const char *nm[8] = { "Vortex", "Kestrel", "Nyx", "Moi", "Orbit", "Pixel", "Zephyr", "Lumen" };
+            static const int tm[8] = { 31870, 33420, 34050, 36210, 38990, 41300, 44720, 52080 };
+            sr_maps_init();
+            challengeOpen = 1; srSel = SR_MAP0 + srMaps[0];
+            SrTop *t = &srTop[srSel];
+            t->state = 2; t->n = 8; t->runners = 37; t->meRank = 4; t->meMs = tm[3];
+            for (int i = 0; i < 8; i++) { snprintf(t->name[i], 16, "%s", nm[i]); t->ms[i] = tm[i]; }
+            snprintf(t->wrName, 16, "%s", nm[0]); t->wrMs = tm[0];
+            srTop[SR_COMPLET].state = 2; srTop[SR_COMPLET].meMs = 36900;
+            srTop[SR_VAGUES100].state = 3;
+            uiMX = (int)(winW * 0.5f - 400); uiMY = (int)(winH * 0.5f - 200);   /* survol de la 1re categorie */
+        }
         if (strstr(shotPath, "menu")) {                   /* mode classe : donnees factices pour l'encadre TOP 3 */
             static const RkTop fake[3] = { { "Vortex", 1612, 41, "MAITRE" }, { "Kestrel", 1418, 33, "PLATINE I" },
                                            { "Nyx", 1377, 25, "DIAMANT III" } };
@@ -542,8 +563,11 @@ static int velocity_main(const char *cmd) {
         save_bmp(shotPath);
         return 0;
     }
-    if (shotMode && strstr(shotPath, "course")) {         /* mode COURSE : course.bmp (en route, fantome devant), course_depart, course_fin */
-        race_start(); appState = APP_GAME;
+    if (shotMode && (strstr(shotPath, "course") || strstr(shotPath, "speedrun"))) {   /* mode COURSE : course.bmp (en route, fantome
+                                                       * devant), course_depart, course_fin ; speedrun complet : speedrun, speedrun_fin */
+        int full = strstr(shotPath, "speedrun") != NULL;
+        if (full) sr_full_start(); else race_start();
+        appState = APP_GAME;
         const MapDef *md = &maps[curMap];
         raceBest = 61.37f;
         for (int i = 0; i < md->ngates; i++) raceBestSplit[i] = 4.5f * (i + 1);
@@ -568,6 +592,17 @@ static int velocity_main(const char *cmd) {
             P.hook = HOOK_NONE; P.pos = P.prevPos = v3(-60, 30, 30); P.yaw = 0; P.pitch = 0.35f;
         }
         if (strstr(shotPath, "fin")) { raceDone = 1; raceT = 58.94f; raceNewBest = 2; raceFalls = 1; styleTopRank = ST_S; P.hook = HOOK_NONE; }
+        SrRun *sr = &srRun[SR_MAP0 + curMap];             /* classement en ligne : reponse factice du serveur */
+        sr->state = SRR_RECORD; sr->rank = 4; srTop[SR_MAP0 + curMap].state = 2; srTop[SR_MAP0 + curMap].runners = 37;
+        if (full) {                                       /* speedrun complet : record perso, puis bilan a l'arrivee */
+            for (int k = 0; k < srMapN; k++) srPb[k] = srCmp[k] = 61370 * (k + 1);
+            srPbN = srCmpN = srMapN;
+            if (raceDone) {
+                srSplit[srMapN - 1] = 58940; srDone = 1; srNewBest = 2;
+                srRun[SR_COMPLET].state = SRR_RECORD; srRun[SR_COMPLET].rank = 2;
+                srTop[SR_COMPLET].state = 2; srTop[SR_COMPLET].runners = 12;
+            }
+        }
         gameTime = 3;
         render(1, TICK);
         save_bmp(shotPath);
