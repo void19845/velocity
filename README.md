@@ -1,6 +1,7 @@
 # VELOCITY - binaires
 
-Construits automatiquement depuis `stable` (b1dcfd6), build 3. Ne pas modifier cette branche a la main.
+Construits automatiquement depuis `stable` (a68cfe2), build 4. Ne pas modifier cette branche a la main.
 
-- Windows : `velocity.exe`
+- Windows : `Velocity-Windows.zip` (`velocity.exe` + dossier `graphismes`, a extraire ensemble)
+  ou `velocity.exe` seul (textures generees, reglages graphiques par defaut)
 - macOS : `Velocity-macOS.zip` (au premier lancement : clic droit > Ouvrir)
