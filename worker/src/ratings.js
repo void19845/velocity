@@ -1,7 +1,8 @@
 // Classement du mode CLASSE : le serveur tient les cotes et calcule l'Elo.
-// Logique sans dependance, sur une base SQL au format de ctx.storage.sql (Durable Object SQLite) :
-//   sql.exec(requete, ...valeurs) -> curseur avec toArray()
-// dev-server.js fournit le meme objet au-dessus de node:sqlite (base en memoire).
+// Logique sans dependance, sur une base SQL au format de ctx.storage.sql, en asynchrone :
+//   await sql.exec(requete, ...valeurs) ; await sql.exec(...).toArray() -> lignes
+// En production : la base D1 « leaderboard » (d1Sql ci-dessous, voir wrangler.toml) ; dev-server.js fournit le
+// meme objet au-dessus de node:sqlite (base en memoire).
 //
 // La formule (Elo multijoueur par paires) est documentee a un seul endroit : docs/CODE.md, section
 // « Mode classe ». main.c (rank_delta, rank_tier) applique exactement les memes constantes pour ses tests
@@ -82,31 +83,41 @@ export function matchDeltas(body, rows) {
 }
 
 // --- base ----------------------------------------------------------------------------------------------
-export function schema(sql) {
-  sql.exec(`CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, keyhash TEXT NOT NULL, name TEXT NOT NULL,
+export async function schema(sql) {
+  await sql.exec(`CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, keyhash TEXT NOT NULL, name TEXT NOT NULL,
             mmr INTEGER NOT NULL, played INTEGER NOT NULL, wins INTEGER NOT NULL, updated INTEGER NOT NULL)`);
-  sql.exec('CREATE INDEX IF NOT EXISTS players_mmr ON players (played, mmr)');
-  sql.exec(`CREATE TABLE IF NOT EXISTS matches (mid TEXT PRIMARY KEY, created INTEGER NOT NULL, done INTEGER NOT NULL,
+  await sql.exec('CREATE INDEX IF NOT EXISTS players_mmr ON players (played, mmr)');
+  await sql.exec(`CREATE TABLE IF NOT EXISTS matches (mid TEXT PRIMARY KEY, created INTEGER NOT NULL, done INTEGER NOT NULL,
             result TEXT)`);
-  sql.exec(`CREATE TABLE IF NOT EXISTS reports (mid TEXT NOT NULL, reporter TEXT NOT NULL, body TEXT NOT NULL,
+  await sql.exec(`CREATE TABLE IF NOT EXISTS reports (mid TEXT NOT NULL, reporter TEXT NOT NULL, body TEXT NOT NULL,
             at INTEGER NOT NULL, PRIMARY KEY (mid, reporter))`);
-  sql.exec('CREATE TABLE IF NOT EXISTS rate (id TEXT PRIMARY KEY, win INTEGER NOT NULL, n INTEGER NOT NULL)');
+  await sql.exec('CREATE TABLE IF NOT EXISTS rate (id TEXT PRIMARY KEY, win INTEGER NOT NULL, n INTEGER NOT NULL)');
 }
 
-const rows = (sql, q, ...b) => sql.exec(q, ...b).toArray();
-const one = (sql, q, ...b) => rows(sql, q, ...b)[0] || null;
+// adaptateur D1 : la requete part tout de suite ; on attend l'objet (ecriture) ou toArray() (lecture)
+export function d1Sql(db) {
+  return {
+    exec(q, ...b) {
+      const p = db.prepare(q).bind(...b).all().then((r) => r.results || []);
+      return { toArray: () => p, then: (ok, ko) => p.then(ok, ko) };
+    },
+  };
+}
+
+const rows = async (sql, q, ...b) => sql.exec(q, ...b).toArray();
+const one = async (sql, q, ...b) => (await rows(sql, q, ...b))[0] || null;
 
 export async function sha256hex(text) {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
-function limited(sql, id, now) {
+async function limited(sql, id, now) {
   const win = Math.floor(now / 60000);
-  const r = one(sql, 'SELECT win, n FROM rate WHERE id = ?', id);
-  if (!r || r.win !== win) { sql.exec('INSERT OR REPLACE INTO rate (id, win, n) VALUES (?, ?, 1)', id, win); return false; }
+  const r = await one(sql, 'SELECT win, n FROM rate WHERE id = ?', id);
+  if (!r || r.win !== win) { await sql.exec('INSERT OR REPLACE INTO rate (id, win, n) VALUES (?, ?, 1)', id, win); return false; }
   if (r.n >= RANK.RATE_PER_MIN) return true;
-  sql.exec('UPDATE rate SET n = n + 1 WHERE id = ?', id);
+  await sql.exec('UPDATE rate SET n = n + 1 WHERE id = ?', id);
   return false;
 }
 
@@ -117,24 +128,24 @@ function playerView(p) {
 // identite : premiere requete = enregistrement de l'empreinte de la cle (confiance au premier usage)
 async function auth(sql, req, now, create) {
   if (!HEX32.test(req.id || '') || !HEX32.test(req.key || '')) return { err: 'identite invalide', status: 400 };
-  if (limited(sql, req.id, now)) return { err: 'trop de requetes', status: 429 };
+  if (await limited(sql, req.id, now)) return { err: 'trop de requetes', status: 429 };
   const kh = await sha256hex(req.key);
-  let p = one(sql, 'SELECT * FROM players WHERE id = ?', req.id);
+  let p = await one(sql, 'SELECT * FROM players WHERE id = ?', req.id);
   if (!p) {
     if (!create) return { err: 'inconnu', status: 404 };
     const name = NAME_RE.test(req.name || '') ? req.name : 'joueur';
     // OR IGNORE : deux premieres requetes simultanees ne creent qu'une ligne, la seconde est verifiee ci-dessous
-    sql.exec('INSERT OR IGNORE INTO players (id, keyhash, name, mmr, played, wins, updated) VALUES (?, ?, ?, ?, 0, 0, ?)',
+    await sql.exec('INSERT OR IGNORE INTO players (id, keyhash, name, mmr, played, wins, updated) VALUES (?, ?, ?, ?, 0, 0, ?)',
       req.id, kh, name, RANK.START, now);
-    p = one(sql, 'SELECT * FROM players WHERE id = ?', req.id);
+    p = await one(sql, 'SELECT * FROM players WHERE id = ?', req.id);
   }
   if (p.keyhash !== kh) return { err: 'mauvaise cle', status: 403 };
   return { p };
 }
 
-function rankOf(sql, p) {
+async function rankOf(sql, p) {
   if (p.played < RANK.PLACEMENT) return 0;
-  return 1 + one(sql, 'SELECT COUNT(*) AS n FROM players WHERE played >= ? AND mmr > ?', RANK.PLACEMENT, p.mmr).n;
+  return 1 + (await one(sql, 'SELECT COUNT(*) AS n FROM players WHERE played >= ? AND mmr > ?', RANK.PLACEMENT, p.mmr)).n;
 }
 
 // POST /ranked/hello { id, key, name } -> cote, palier, rang
@@ -142,19 +153,19 @@ export async function hello(sql, req, now) {
   const a = await auth(sql, req, now, true);
   if (a.err) return [a.status, { ok: false, err: a.err }];
   if (NAME_RE.test(req.name || '') && req.name !== a.p.name) {
-    sql.exec('UPDATE players SET name = ? WHERE id = ?', req.name, a.p.id);
+    await sql.exec('UPDATE players SET name = ? WHERE id = ?', req.name, a.p.id);
   }
-  return [200, { ok: true, ...playerView(a.p), rank: rankOf(sql, a.p) }];
+  return [200, { ok: true, ...playerView(a.p), rank: await rankOf(sql, a.p) }];
 }
 
 // GET /ranked/top?id=... -> les meilleurs (placement termine) et le rang de celui qui demande
-export function top(sql, id) {
-  const list = rows(sql, 'SELECT name, mmr, played FROM players WHERE played >= ? ORDER BY mmr DESC, updated ASC LIMIT ?',
-    RANK.PLACEMENT, RANK.TOP).map((p) => ({ name: p.name, mmr: p.mmr, tier: tierName(p.mmr), played: p.played }));
+export async function top(sql, id) {
+  const list = (await rows(sql, 'SELECT name, mmr, played FROM players WHERE played >= ? ORDER BY mmr DESC, updated ASC LIMIT ?',
+    RANK.PLACEMENT, RANK.TOP)).map((p) => ({ name: p.name, mmr: p.mmr, tier: tierName(p.mmr), played: p.played }));
   let me = null;
   if (HEX32.test(id || '')) {
-    const p = one(sql, 'SELECT * FROM players WHERE id = ?', id);
-    if (p) me = { rank: rankOf(sql, p), ...playerView(p) };
+    const p = await one(sql, 'SELECT * FROM players WHERE id = ?', id);
+    if (p) me = { rank: await rankOf(sql, p), ...playerView(p) };
   }
   return [200, { ok: true, top: list, me }];
 }
@@ -190,19 +201,19 @@ function accepted(body, reporters) {
   return body.left.includes(body.host) && agree.length >= 2;
 }
 
-function apply(sql, mid, body, now) {
+async function apply(sql, mid, body, now) {
   const ids = [...body.players.map((p) => p.id), ...body.left];
   const byId = {};
-  for (const id of ids) byId[id] = one(sql, 'SELECT * FROM players WHERE id = ?', id);
+  for (const id of ids) byId[id] = await one(sql, 'SELECT * FROM players WHERE id = ?', id);
   const d = matchDeltas(body, byId);
   const result = {};
   for (const id of ids) {
     const p = byId[id];
     const mmr = clampMmr(p.mmr + d[id]), played = p.played + 1, wins = p.wins + (body.winner === id ? 1 : 0);
-    sql.exec('UPDATE players SET mmr = ?, played = ?, wins = ?, updated = ? WHERE id = ?', mmr, played, wins, now, id);
+    await sql.exec('UPDATE players SET mmr = ?, played = ?, wins = ?, updated = ? WHERE id = ?', mmr, played, wins, now, id);
     result[id] = { delta: mmr - p.mmr, mmr, played, wins, tier: rankLabel(mmr, played) };
   }
-  sql.exec('UPDATE matches SET done = 1, result = ? WHERE mid = ?', JSON.stringify(result), mid);
+  await sql.exec('UPDATE matches SET done = 1, result = ? WHERE mid = ?', JSON.stringify(result), mid);
   return result;
 }
 
@@ -211,12 +222,12 @@ export async function report(sql, req, now) {
   const a = await auth(sql, req, now, false);
   if (a.err) return [a.status, { ok: false, err: a.err }];
   if (!validReport(req)) return [400, { ok: false, err: 'rapport invalide' }];
-  sql.exec('DELETE FROM reports WHERE at < ?', now - RANK.KEEP_MS);
-  sql.exec('DELETE FROM matches WHERE created < ?', now - RANK.KEEP_MS);
-  let m = one(sql, 'SELECT * FROM matches WHERE mid = ?', req.match);
+  await sql.exec('DELETE FROM reports WHERE at < ?', now - RANK.KEEP_MS);
+  await sql.exec('DELETE FROM matches WHERE created < ?', now - RANK.KEEP_MS);
+  let m = await one(sql, 'SELECT * FROM matches WHERE mid = ?', req.match);
   if (!m) {
-    sql.exec('INSERT INTO matches (mid, created, done, result) VALUES (?, ?, 0, NULL)', req.match, now);
-    m = one(sql, 'SELECT * FROM matches WHERE mid = ?', req.match);
+    await sql.exec('INSERT INTO matches (mid, created, done, result) VALUES (?, ?, 0, NULL)', req.match, now);
+    m = await one(sql, 'SELECT * FROM matches WHERE mid = ?', req.match);
   }
   const answer = (result) => {
     const me = result && result[req.id];
@@ -225,23 +236,33 @@ export async function report(sql, req, now) {
   if (m.done) return answer(JSON.parse(m.result));
   if (now - m.created > RANK.EXPIRE_MS) return [200, { ok: true, state: 'expired' }];
   const ids = [...req.players.map((p) => p.id), ...req.left];
-  const known = one(sql, `SELECT COUNT(*) AS n FROM players WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids).n;
+  const known = (await one(sql, `SELECT COUNT(*) AS n FROM players WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)).n;
   if (known !== ids.length) return [400, { ok: false, err: 'joueur inconnu' }];
   const body = canonical(req);
-  sql.exec('INSERT OR REPLACE INTO reports (mid, reporter, body, at) VALUES (?, ?, ?, ?)', req.match, req.id, body, now);
+  await sql.exec('INSERT OR REPLACE INTO reports (mid, reporter, body, at) VALUES (?, ?, ?, ?)', req.match, req.id, body, now);
   const groups = new Map();
-  for (const r of rows(sql, 'SELECT reporter, body FROM reports WHERE mid = ?', req.match)) {
+  for (const r of await rows(sql, 'SELECT reporter, body FROM reports WHERE mid = ?', req.match)) {
     if (!groups.has(r.body)) groups.set(r.body, []);
     groups.get(r.body).push(r.reporter);
   }
   for (const [b, reporters] of groups) {
-    if (accepted(JSON.parse(b), reporters)) return answer(apply(sql, req.match, JSON.parse(b), now));
+    if (accepted(JSON.parse(b), reporters)) return answer(await apply(sql, req.match, JSON.parse(b), now));
   }
   return [200, { ok: true, state: 'pending' }];
 }
 
 // Point d'entree commun (Durable Object et dev-server) : renvoie [statut, objet JSON]
-export async function handleRanked(sql, method, path, query, json, now) {
+// La base est asynchrone (D1) : une requete a la fois par base, sinon deux rapports du meme match
+// pourraient s'appliquer deux fois entre deux lectures.
+const chains = new WeakMap();
+export function handleRanked(sql, method, path, query, json, now) {
+  const prev = chains.get(sql) || Promise.resolve();
+  const run = prev.then(() => handleRankedNow(sql, method, path, query, json, now));
+  chains.set(sql, run.catch(() => {}));
+  return run;
+}
+
+async function handleRankedNow(sql, method, path, query, json, now) {
   if (method === 'GET' && path === '/ranked/top') return top(sql, query.get('id'));
   if (method !== 'POST') return [405, { ok: false, err: 'methode' }];
   if (!json || typeof json !== 'object') return [400, { ok: false, err: 'json' }];

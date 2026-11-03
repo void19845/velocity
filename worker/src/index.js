@@ -1,19 +1,39 @@
 // Worker + Durable Objects de VELOCITY.
 // - Lobby : une seule instance ("global") tient tous les salons ; ses WebSockets sont hibernables, donc
 //   rien n'est facture tant que personne n'envoie de message.
-// - Ratings : une seule instance ("global") tient le classement du mode CLASSE (SQLite) ; elle repond
-//   aux requetes HTTPS /ranked/hello, /ranked/report et /ranked/top (voir ratings.js).
+// - Ratings : une seule instance ("global") repond aux requetes HTTPS /ranked/hello, /ranked/report et /ranked/top
+//   (voir ratings.js) et les traite une par une ; les cotes sont dans la base D1 « leaderboard » (binding
+//   env.leaderboard, wrangler.toml), consultable avec `npx wrangler d1 execute leaderboard --remote --command ...`.
+//   Au premier demarrage, les joueurs de l'ancien stockage (SQLite du Durable Object) sont recopies dans D1.
 
 import { handle, closed, newMeta } from './lobby.js';
-import { schema, rankedResponse } from './ratings.js';
+import { schema, rankedResponse, d1Sql } from './ratings.js';
 
 export class Ratings {
-  constructor(ctx) {
-    this.sql = ctx.storage.sql;
-    schema(this.sql);
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.sql = d1Sql(env.leaderboard);
+    this.ready = null;
   }
 
-  fetch(request) {
+  async init() {
+    await schema(this.sql);
+    // reprise unique de l'ancien classement (Durable Object SQLite) si D1 est encore vide
+    const n = (await this.sql.exec('SELECT COUNT(*) AS n FROM players').toArray())[0].n;
+    if (n) return;
+    let old = [];
+    try {
+      old = this.ctx.storage.sql.exec('SELECT id, keyhash, name, mmr, played, wins, updated FROM players').toArray();
+    } catch (e) { /* pas d'ancienne table */ }
+    for (const p of old) {
+      await this.sql.exec('INSERT OR IGNORE INTO players (id, keyhash, name, mmr, played, wins, updated) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        p.id, p.keyhash, p.name, p.mmr, p.played, p.wins, p.updated);
+    }
+  }
+
+  async fetch(request) {
+    if (!this.ready) this.ready = this.init().catch((e) => { this.ready = null; throw e; });
+    await this.ready;
     return rankedResponse(this.sql, request);
   }
 }

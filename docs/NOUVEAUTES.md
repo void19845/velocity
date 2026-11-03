@@ -375,6 +375,22 @@ code.
 - **macOS** : plus d'App Nap (`beginActivityWithOptions`), le jeu ne ralentit pas fenêtre cachée.
 - Le menu ECHAP laissait déjà la partie tourner. Test : « hitstop ».
 
+## 29. Classement en ligne dans Cloudflare D1, encadré CLASSEMENT lisible sur Mac
+
+- **Classement partagé** : les cotes du mode CLASSE sont dans la base **D1 `leaderboard`** (binding `leaderboard`
+  dans `worker/wrangler.toml`, schéma `worker/schema.sql`) au lieu du stockage interne du Durable Object. Tous les
+  joueurs lisent et écrivent la même table `players` ; on la consulte avec
+  `npx wrangler d1 execute leaderboard --remote --command "SELECT name, mmr, played FROM players ORDER BY mmr DESC"`.
+  Le DO `Ratings` reste le point d'entrée unique et traite les requêtes une par une (pas de double application d'un
+  rapport) ; au premier démarrage il recopie dans D1 les joueurs de l'ancien stockage. Code : `worker/src/ratings.js`
+  (logique devenue asynchrone, adaptateur `d1Sql`), `worker/src/index.js`. Test : `node test.js` (55 vérifications).
+  Déploiement : `docs/PLAN_EN_LIGNE.md`, « À faire par le propriétaire ».
+- **Encadré CLASSEMENT du menu** : il demandait une fenêtre de plus de 1530 px de large, sinon il se repliait en une
+  ligne sous le titre ; sur Mac (fenêtre limitée à ~1440 ou 1280 pt) on ne voyait donc pas le TOP 3. Il se cale
+  maintenant contre le bord droit sans couvrir les touches de COMMANDES et s'amincit sur les petits écrans (cote seule
+  dans le TOP 3, lignes courtes) ; la ligne unique ne sert plus que sous ~1150 px. Code : `draw_rank_box`
+  (`src/interface/menus.c`). Vérifié par captures du menu en 1440 × 870 et 1280 × 760.
+
 ## Vérifications faites
 
 - Compilation macOS sans avertissement ; tous les tests `--test` conformes, y compris ceux d'`origin/dev` (stéréo,

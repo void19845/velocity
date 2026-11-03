@@ -18,3 +18,11 @@ new_sqlite_classes = ["Lobby"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["Ratings"]
+
+# Classement du mode CLASSE stocke dans D1 (base « leaderboard ») : toutes les copies du jeu lisent et ecrivent
+# la meme table players. Schema : schema.sql (cree aussi automatiquement au premier appel).
+# Consulter : npx wrangler d1 execute leaderboard --remote --command "SELECT name, mmr, played FROM players ORDER BY mmr DESC"
+[[d1_databases]]
+binding = "leaderboard"
+database_name = "leaderboard"
+database_id = "59a414f0-e230-4484-b437-e29c41b85f6b"

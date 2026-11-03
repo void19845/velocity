@@ -34,7 +34,7 @@ function frame(text) {
 export async function startDevServer(port = 8787) {
   const conns = [];
   const sql = await memorySql();
-  schema(sql);
+  await schema(sql);
   const server = http.createServer(async (req, res) => {
     if (!req.url.startsWith('/ranked/')) { res.end('VELOCITY lobby (dev)'); return; }
     const chunks = [];

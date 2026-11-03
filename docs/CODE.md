@@ -1163,7 +1163,7 @@ Plan et protocole complet : [`PLAN_EN_LIGNE.md`](PLAN_EN_LIGNE.md). Le jeu de co
 
 ### Mode classé (PARTIE CLASSEE, cote Elo tenue par le serveur)
 
-Pas de compte : le classement est tenu par le **serveur de classement** (Durable Object `Ratings` du worker, SQLite),
+Pas de compte : le classement est tenu par le **serveur de classement** (Durable Object `Ratings` du worker, base D1 `leaderboard`),
 qui calcule lui-même l'Elo à partir des rapports de fin de match. L'hôte fait autorité sur le déroulement du match
 (frags, gagnant, joueurs partis), comme pour le reste du jeu.
 

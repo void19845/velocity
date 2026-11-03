@@ -472,7 +472,17 @@ static void draw_rank_box(float cx, float cy) {
     const float *c = rank_col(myMmr);
     rank_label(myMmr, rankPlayed, tl, sizeof tl);
     float w = 380, x = cx + 380, y = cy - 214;
-    if (x + w > winW - 8) {                               /* fenetre etroite : une seule ligne sous le titre */
+    if (x + w > winW - 12) {                              /* fenetre moins large (macOS : ~1440 pt) : l'encadre se cale */
+        float ctl = 0;                                    /* a droite, sans couvrir les touches de COMMANDES */
+        for (int a = 0; a < A_COUNT; a++) {
+            float tw = fontW[0] * (float)strlen(bind_text(a));
+            if (tw > ctl) ctl = tw;
+        }
+        float minX = cx - 130 + 285 + ctl + 24;           /* draw_controls(cx - 130, ...) : touches en x + 285 */
+        x = winW - 12 - w;
+        if (x < minX) { x = minX; w = winW - 12 - x; }    /* encore trop etroit : encadre aminci */
+    }
+    if (w < 280) {                                        /* fenetre vraiment etroite : une seule ligne sous le titre */
         int k = snprintf(buf, sizeof buf, "%s %d", tl, myMmr);
         if (rkTopState == 1)
             for (int i = 0; i < rkTopN && k < (int)sizeof buf - 30; i++)
@@ -482,13 +492,19 @@ static void draw_rank_box(float cx, float cy) {
     }
     rect(x, y, w, 290, 0.03f, 0.04f, 0.08f, 0.82f);
     rect(x, y, 4, 290, c[0], c[1], c[2], 1);
+    int slim = w < 360;                                   /* encadre aminci (Mac 13 pouces : 1280 pt) : textes courts */
     text(1, x + 18, y + 34, "CLASSEMENT", 0.5f, 0.9f, 1.0f, 1);
-    snprintf(buf, sizeof buf, "%s  -  %d", tl, myMmr);
+    if (slim || rankPlayed < RANK_PLACEMENT) snprintf(buf, sizeof buf, "%s", tl);   /* la cote passe a la ligne suivante */
+    else snprintf(buf, sizeof buf, "%s  -  %d", tl, myMmr);
     text(1, x + 18, y + 70, buf, c[0], c[1], c[2], 1);
     if (rkRank > 0 || rkMeRank > 0) snprintf(buf, sizeof buf, "#%d  -  %d match%s, %d victoire%s", rkMeRank ? rkMeRank : rkRank,
                                            rankPlayed, rankPlayed > 1 ? "s" : "", rankWins, rankWins > 1 ? "s" : "");
     else snprintf(buf, sizeof buf, "%d match%s classe%s, %d victoire%s", rankPlayed, rankPlayed > 1 ? "s" : "",
                   rankPlayed > 1 ? "s" : "", rankWins, rankWins > 1 ? "s" : "");
+    if (slim || rankPlayed < RANK_PLACEMENT) {           /* cote, rang et matchs sur une ligne courte */
+        if (rkRank > 0 || rkMeRank > 0) snprintf(buf, sizeof buf, "cote %d  -  #%d  -  %d V", myMmr, rkMeRank ? rkMeRank : rkRank, rankWins);
+        else snprintf(buf, sizeof buf, "cote %d  -  %d V / %d", myMmr, rankWins, rankPlayed);
+    }
     text(0, x + 18, y + 96, buf, 0.7f, 0.75f, 0.85f, 1);
     text(0, x + 18, y + 132, "TOP 3", 0.9f, 0.9f, 1.0f, 1);
     rect(x + 18, y + 140, w - 36, 2, 0.4f, 0.85f, 1.0f, 0.35f);
@@ -496,7 +512,7 @@ static void draw_rank_box(float cx, float cy) {
         text(0, x + 18, y + 176, rkTopState == 2 ? "classement indisponible" : "chargement ...", 0.6f, 0.6f, 0.7f, 1);
         return;
     }
-    if (!rkTopN) text(0, x + 18, y + 176, "personne n'a fini son placement", 0.6f, 0.6f, 0.7f, 1);
+    if (!rkTopN) text(0, x + 18, y + 176, slim ? "aucun joueur classe" : "personne n'a fini son placement", 0.6f, 0.6f, 0.7f, 1);
     for (int i = 0; i < rkTopN; i++) {
         float yy = y + 150 + i * 32.0f;
         const float *m = medal[i];
@@ -504,12 +520,13 @@ static void draw_rank_box(float cx, float cy) {
         snprintf(buf, sizeof buf, "%d", i + 1);
         text_c(0, x + 31, yy + 19, buf, 0.08f, 0.08f, 0.1f, 1);
         text(0, x + 54, yy + 19, rkTop[i].name, m[0], m[1], m[2], 1);
-        snprintf(buf, sizeof buf, "%d  %s", rkTop[i].mmr, rkTop[i].tier);
+        if (slim) snprintf(buf, sizeof buf, "%d", rkTop[i].mmr);   /* pas la place pour le palier */
+        else snprintf(buf, sizeof buf, "%d  %s", rkTop[i].mmr, rkTop[i].tier);
         text(0, x + w - 18 - fontW[0] * (float)strlen(buf), yy + 19, buf, 0.85f, 0.85f, 0.9f, 1);
     }
     if (rkMeRank > 3 || (!rkMeRank && rankPlayed < RANK_PLACEMENT)) {   /* 4e ligne : moi, si je ne suis pas sur le podium */
         if (rkMeRank) snprintf(buf, sizeof buf, "toi : #%d, cote %d", rkMeRank, myMmr);
-        else snprintf(buf, sizeof buf, "toi : en placement (%d/%d), cote %d", rankPlayed, RANK_PLACEMENT, myMmr);
+        else snprintf(buf, sizeof buf, slim ? "toi : placement %d/%d" : "toi : en placement (%d/%d)", rankPlayed, RANK_PLACEMENT);   /* cote : 2e ligne */
         text(0, x + 18, y + 270, buf, c[0], c[1], c[2], 1);
     }
 }
