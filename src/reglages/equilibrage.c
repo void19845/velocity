@@ -146,7 +146,23 @@ enum { SK_COIN, SK_MARK, SK_CHARGE, SK_RICOCHET, SK_ALLIN, SK_DECOY, SK_AIM, SK_
 #define PARRY_PINGPONG    1.15f   /* chaque re-parry : +15 % de vitesse et de degats */
 #define PARRY_RANGE_SHRINK 0.85f  /* ... et une zone de parry 15 % plus courte */
 #define PARRY_AIM_COS     0.988f  /* aide a la visee du renvoi : ~9 degres */
-#define PVP_HIT_CAP       60.0f   /* en PvP, aucune touche ne retire plus de 60 PV */
+#define PVP_HIT_CAP       60.0f   /* en PvP, aucune touche ne retire plus de 60 PV (sauf tete et one-shot, arbitres par l'hote) */
+
+/* Tirs a la tete (src/combat/degats.c, head_*) : seules les armes de precision a tir direct (rail, Elan) ont une zone tete,
+ * et a la tete elles passent outre PVP_HIT_CAP. Le rail a la tete est un one-shot. L'hote valide la tete (host_handle) */
+#define HEAD_R            0.24f   /* rayon de la sphere de tete d'un joueur */
+#define HEAD_DROP         0.26f   /* centre de la tete sous le haut du joueur : debout a 1,54 m, accroupi a 0,84 m */
+#define HEAD_MULT_RAIL    1.5f    /* rail a la tete : x1,5 et one-shot */
+#define HEAD_MULT_KIN     1.35f   /* Elan a la tete : x1,35 sans plafond PvP (pas de one-shot : 90 PV au plus a pleine vitesse) */
+#define HEAD_ENEMY_FRAC   0.45f   /* drones et rushers : touche au-dessus de 45 % du rayon = point faible (memes multiplicateurs) */
+#define HEAD_HOST_TOL     0.6f    /* hote : ecart tolere entre le point d'impact declare et la tete qu'il voit (m)... */
+#define HEAD_HOST_LAG     0.15f   /* ...plus le deplacement de la cible pendant 0,15 s (latence) */
+#define HEAD_BOT_OFS      0.62f   /* bots : hauteur visee au-dessus du centre quand ils tentent la tete */
+
+/* Chaine de tirs pleine (STREAK_MAX touches, src/combat/degats.c, chain_*) : une touche a la tete compte double ; pleine,
+ * le prochain tir de rail ou d'Elan qui touche un joueur tue (one-shot arbitre par l'hote), puis la chaine repart de zero */
+#define CHAIN_HEAD_STEP   2       /* une touche a la tete avance la chaine de 2 */
+#define CHAIN_SEEN_T      0.5     /* hote : chaine vue pleine dans l'etat du tireur il y a moins de 0,5 s */
 
 /* Jauge de style (src/jeu/style.c) : seuils des rangs C, B, A, S et plafond */
 #define STYLE_C          60.0f
@@ -227,16 +243,28 @@ enum { SK_COIN, SK_MARK, SK_CHARGE, SK_RICOCHET, SK_ALLIN, SK_DECOY, SK_AIM, SK_
 #define SLAM_VY_MAX        45.0f   /* plafond de |vy| */
 #define SLAM_MIN_H         1.2f    /* hauteur minimale sous les pieds pour piquer (sinon : coup au sol) */
 #define SLAM_FULL_H        4.0f    /* hauteur de chute pour 100% des degats (0 = desactive) */
-#define SLAM_RADIUS        2.5f    /* rayon de base de l'onde */
-#define SLAM_RADIUS_PER_MS 0.06f   /* rayon en plus par m/s de chute */
+/* onde (plan 1b, PLAN_SUITE.md) : H = hauteur de chute, vh = vitesse horizontale a l'impact */
+#define SLAM_R_MIN         2.5f    /* rayon : 2,5 + 0,3 x H, de 2,5 a 9 m */
+#define SLAM_R_PER_M       0.3f
+#define SLAM_R_MAX         9.0f
+#define SLAM_WH_MIN        0.6f    /* hauteur du mur : 0,6 + 0,1 x H, de 0,6 a 2,6 m (pieds au-dessus : esquive) */
+#define SLAM_WH_PER_M      0.1f
+#define SLAM_WH_MAX        2.6f
+#define SLAM_FWD_PER_MS    0.04f   /* ovale : vers l'avant x(1 + 0,04 x vh), 1,8 au plus... */
+#define SLAM_FWD_MAX       1.8f
+#define SLAM_BACK_PER_MS   0.02f   /* ...vers l'arriere x(1 - 0,02 x vh), 0,6 au moins ; sur les cotes : le rayon */
+#define SLAM_BACK_MIN      0.6f
+#define SLAM_WAVE_SPEED    28.0f   /* propagation du front (m/s ; 0,3 s pour 8,5 m) */
 #define SLAM_DMG           25.0f   /* degats de base de l'onde */
 #define SLAM_DMG_PER_MS    1.5f    /* degats en plus par m/s de chute */
-#define SLAM_REACH_UP      1.0f    /* l'onde ne touche que les pieds a moins de 1 m du sol : un saut simple l'esquive */
-#define SLAM_REACH_DOWN    1.0f    /* ni ce qui est plus bas que le sol d'impact */
-#define SLAM_KNOCK_UP      12.0f   /* recul vertical des cibles */
+#define SLAM_REACH_UP      1.0f    /* contact direct : une cible a plus de 1 m du sol est touchee par le marteau, pas par l'onde */
+#define SLAM_REACH_DOWN    1.0f    /* l'onde ne touche pas ce qui est plus bas que le sol d'impact */
+#define SLAM_KNOCK_UP_MIN  6.0f    /* recul vertical des cibles : 6 + 3 x hauteur du mur */
 #define SLAM_KNOCK_OUT     8.0f    /* recul horizontal au centre */
 #define SLAM_BOUNCE        9.0f    /* rebond si l'onde touche */
-#define SLAM_STUN          0.6f    /* immobilisation si l'onde rate */
+#define SLAM_STUN          0.6f    /* immobilisation si l'onde rate : 0,6 s + 0,02 s par metre de chute, 1 s au plus */
+#define SLAM_STUN_PER_M    0.02f
+#define SLAM_STUN_MAX      1.0f
 #define SLAM_CD            0.8f    /* recharge apres l'atterrissage */
 #define SLAM_BREAK_VY      -15.0f  /* poussee vers le haut qui casse le pique */
 #define SLAM_PARRY_GRACE   0.2f    /* tolerance de l'hote pour parer l'onde */
@@ -353,13 +381,15 @@ enum { LS_IDLE, LS_THRUST, LS_COUCH };
 #define MINE_BOOST_MULT    1.5f    /* rail ou piece sur une mine */
 #define MINE_BOOST_RADIUS  5.0f
 #define MINE_HIT_R         0.45f   /* rayon de touche d'une mine (rail, plomb, arc) */
-#define MINE_STICK_GROW    0.15f   /* AABB des joueurs et rayon des drones agrandis pour coller */
+#define MINE_STICK_GROW    0.45f   /* AABB des joueurs et rayon des drones agrandis pour coller (0,15 avant) */
+#define MINE_PROX_R        2.0f    /* piege : une mine posee (decor) explose seule si un adversaire passe a moins de 2 m... */
+#define MINE_PROX_ARM      0.4f    /* ...une fois armee, 0,4 s apres le collage (le poseur fait autorite) */
 #define MINE_SKIN          0.06f   /* decollement de la surface */
 #define MINE_BEEP_SLOW     0.5f    /* intervalle du bip au collage */
 #define MINE_BEEP_FAST     0.08f   /* intervalle du bip juste avant l'explosion */
 enum { MS_NONE, MS_FLY, MS_WORLD, MS_ENEMY, MS_PLAYER };
 enum { MINE_EV_THROW, MINE_EV_WORLD, MINE_EV_PLAYER, MINE_EV_BOOM, MINE_EV_TORN, MINE_EV_CANCEL };   /* EV_MINE.sub */
-enum { MX_REMOTE, MX_FUSE, MX_THIRD, MX_SHOT, MX_FLY, MX_COUNT };   /* origine des explosions (journal) */
+enum { MX_REMOTE, MX_FUSE, MX_THIRD, MX_SHOT, MX_FLY, MX_PROX, MX_COUNT };   /* origine des explosions (journal) */
 /* --- fin Ventouse --- */
 /* --- Fleau a chaine : controle a longue portee, attire la cible vers soi (lanceur de combos) --- */
 #define FLAIL_RANGE         6.0f    /* portee de base */
@@ -494,7 +524,7 @@ static const AmmoDef ammoDef[WP_COUNT] = {
     { "EVENTAIL",  3,  6,   100, 1.00f, 0.85f, 0.35f },
     { "ELAN",      3,  6,   80,  0.55f, 1.00f, 0.55f },
     { "SCIE",      1,  1,   0,   0.90f, 0.90f, 0.95f },   /* objet unique : aucune jauge */
-    { "VENTOUSE",  1,  3,   150, 1.00f, 0.35f, 0.35f },
+    { "VENTOUSE",  2,  3,   150, 1.00f, 0.35f, 0.35f },   /* 2 mines au depart (1 avant la retouche) */
     { "TESLA",     60, 100, 2.5f, 0.60f, 0.70f, 1.00f },  /* 1 point = 0,4 de batterie */
 };
 static const char *meleeNames[MK_COUNT] = { "EPEE", "ENCLUME", "LANCE", "YOYO", "IMPULSION", "EGIDE" };

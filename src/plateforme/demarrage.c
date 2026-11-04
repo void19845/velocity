@@ -551,6 +551,9 @@ static int velocity_main(const char *cmd) {
         if (strstr(shotPath, "enclume")) {                /* adversaires a l'Enclume : coup au sol et pique */
             NP[1].st.pad = MK_ANVIL;
             NP[2].st.pad = MK_ANVIL | ST_SLAM; NP[2].disp = v3(-2, 5, 12); vf(NP[2].st.vel, v3(0, -34, 0));
+            V3 sd = vnorm(v3(1, 0, -0.4f));               /* onde d'un pique de 13 m en courant : mur de 1,9 m etire vers l'avant */
+            slam_vis_add(v3(-3, 0, 17), sd, slam_R(13), 18, slam_hw(13));
+            SV[0].t = 0.7f * slam_R(13) / SLAM_WAVE_SPEED;
         }
         if (strstr(shotPath, "lance")) {                  /* Lance : Rival lance couchee vers moi (pointe orange), Ninja au repos */
             NP[1].st.pad = MK_LANCE | ST_LANCE; NP[1].st.melee = 0; NP[1].st.flags = 0;
@@ -744,6 +747,14 @@ static int velocity_main(const char *cmd) {
             for (int i = 0; i < 4; i++) fx_tick(TICK);
             P.sgPumpT = P.sgPumpMax * 0.45f;              /* pompe en plein recul */
         }
+        if (strstr(shotPath, "tete")) {                   /* tirs a la tete : chiffres TETE et ONE-SHOT, chaine de tirs pleine */
+            P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2; P.fireCd = 0; P.meleeT = 0; msgT = 0;
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = vadd(eye_pos(), vmul(view_dir(), 10));
+            E[0].pos.y -= enemy_radius(EN_DRONE) * 0.75f;   /* le viseur sur le point faible, au sommet */
+            fire_rail();
+            dmg_number_k(vadd(E[0].pos, v3(1.6f, 0.2f, 0)), 105, DN_ONESHOT);
+            shotStreak = STREAK_MAX; impactT = 0; hitstop = 0;
+        }
         if (strstr(shotPath, "impact") || strstr(shotPath, "fx")) {   /* un kill au rail a pleine vitesse */
             P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2; P.fireCd = 0; P.meleeT = 0;
             E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 60; E[0].pos = vadd(eye_pos(), vmul(view_dir(), 9));
@@ -892,7 +903,14 @@ done:
             for (int w = 0; w < W_COUNT && n < (int)sizeof hb - 40; w++)
                 if (hitCount[w]) n += snprintf(hb + n, sizeof hb - n, "%s %d, ", weaponNames[w], hitCount[w]);
             netlog("touches arbitrees : %s parries %d", n ? hb : "aucune, ", parryCount);
+            n = 0;                                        /* tirs a la tete et chaine pleine */
+            for (int w = 0; w < W_COUNT && n < (int)sizeof hb - 40; w++)
+                if (headHostHits[w]) n += snprintf(hb + n, sizeof hb - n, "%s %d, ", weaponNames[w], headHostHits[w]);
+            netlog("tetes (arbitre) : %s one-shots a la tete %d, chaine pleine %d ; refus : tete %d, chaine %d",
+                   n ? hb : "aucune, ", headOneShots, chainOneShots, headRefused, chainRefused);
         }
+        netlog("tetes (moi) : %d ; chaine pleine %d fois, %d tirs chaine pleine dont %d touches", headShotsMine, chainFulls,
+               chainShots, chainShotHits);
         if (maps[curMap].killY > -999)                    /* kill zone */
             netlog("carte %s : chutes dans le vide %d (moi)%s", maps[curMap].name, voidFalls, "");
         if (netMode == NET_HOST && maps[curMap].killY > -999)
@@ -948,6 +966,7 @@ done:
                    "sur un joueur %.2f s",
                    mineThrows, mineStickW, mineStickP, mineStickE, mineBoom[MX_REMOTE], mineBoom[MX_FUSE], mineBoom[MX_THIRD],
                    mineBoom[MX_SHOT], mineBoom[MX_FLY], mineDetAll, mineDetOne, mineTorn, mineArmedT / (mineArmedN ? mineArmedN : 1));
+        if (mineThrows && mineBoom[MX_PROX]) netlog("ventouse (moi) : pieges declenches %d", mineBoom[MX_PROX]);
         if (netMode == NET_HOST && (mineHostBooms || mineHostTorn || hitCount[W_MINE]))
             netlog("ventouse (arbitre) : touches %d, explosions %d, arrachages %d, annulations %d, touches ignorees %d",
                    hitCount[W_MINE], mineHostBooms, mineHostTorn, mineCancels, mineHitsIgnored);

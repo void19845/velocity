@@ -556,10 +556,12 @@ static void maps_draw_panel(float x, float y, float w, float h) {
         for (int k = 0; k < 6 && y < yMax; k++) {
             KillFeed *f = &kfeed[k];
             if (f->t <= 0) continue;
-            if (f->info) snprintf(buf, sizeof buf, "%s %s", pname(f->victim), f->info == 1 ? "a rejoint" : "a quitte");
+            int joinLeave = f->info & (KF_JOIN | KF_LEAVE);
+            if (joinLeave) snprintf(buf, sizeof buf, "%s %s", pname(f->victim), f->info == KF_JOIN ? "a rejoint" : "a quitte");
             else if (f->killer == f->victim) snprintf(buf, sizeof buf, "%s s'est fait sauter", pname(f->victim));
-            else snprintf(buf, sizeof buf, "%s  [%s]  %s", pname(f->killer), weaponNames[f->kind % W_COUNT], pname(f->victim));
-            const float *c = f->killer >= 0 && f->killer < MAXP && !f->info ? pcolor(f->killer) : NULL;
+            else snprintf(buf, sizeof buf, "%s  [%s%s]  %s", pname(f->killer), weaponNames[f->kind % W_COUNT],
+                          (f->info & KF_ONESHOT) ? " ONE-SHOT" : (f->info & KF_HEAD) ? " TETE" : "", pname(f->victim));
+            const float *c = f->killer >= 0 && f->killer < MAXP && !joinLeave ? pcolor(f->killer) : NULL;
             text(0, x, y, buf, c ? c[0] * 0.5f + 0.5f : 0.85f, c ? c[1] * 0.5f + 0.5f : 0.85f, c ? c[2] * 0.5f + 0.5f : 0.85f,
                  clampf(f->t, 0.3f, 1));
             y += 28;

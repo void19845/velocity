@@ -18,12 +18,18 @@ static void save_bmp(const char *path) {
     free(px);
 }
 
-/* tests de l'Enclume : pique depuis `from` (vitesse `vel`), ticks jusqu'a la fin du pique */
+/* tests de l'Enclume : pique depuis `from` (vitesse `vel`), ticks jusqu'a la fin du pique puis de la propagation de l'onde */
 static void test_slam_drop(V3 from, V3 vel) {
     P.meleeKind = MK_ANVIL; P.anvilState = ANVIL_IDLE; P.meleeCd = 0;
     P.pos = P.prevPos = from; P.vel = vel; P.grounded = 0;
     anvil_press();
     for (int i = 0; i < 600 && P.anvilState == ANVIL_DIVE; i++) player_tick(TICK, 0, 0);
+    for (int i = 0; i < 120 && SW.alive; i++) player_tick(TICK, 0, 0);
+}
+/* degats attendus de l'onde sur une cible a d m du centre (onde ronde), pad = rayon de la cible */
+static float test_slam_expect(float H, float vy, float d, float pad) {
+    float f = 1 - d / (slam_R(H) + pad);
+    return slam_dmg(vy, H) * (0.3f + 0.7f * f);
 }
 
 /* tests de la Lance : remise a zero, Lance en melee, immobile en pos, vue vers -z */
@@ -185,6 +191,8 @@ static void egide_test_lan(V3 t, int shield, float yaw) {
     NP[1].lastShieldT = shield ? nowT : 0;
 }
 /* --- fin Egide : outils des tests --- */
+/* tirs a la tete : les tests des degats au corps visent le centre (a hauteur des yeux, un tir horizontal touche la tete) */
+static float test_pitch_to(V3 at) { V3 d = vsub(at, eye_pos()); return asinf(d.y / vlen(d)); }
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
 static void run_tests(const char *path) {
@@ -734,16 +742,19 @@ static void run_tests(const char *path) {
         P.meleeKind = MK_ANVIL; P.pos = P.prevPos = v3(-20, 13, 40); P.grounded = 0; P.meleeCd = 0;
         anvil_press();
         float dashBefore = P.dashCharge;
-        for (int i = 0; i < 600 && P.anvilState == ANVIL_DIVE; i++) { dashBefore = P.dashCharge; player_tick(TICK, 0, 0); }
+        int hits0 = slamWaveHits;
+        for (int i = 0; i < 700 && (P.anvilState == ANVIL_DIVE || (SW.alive && slamWaveHits == hits0)); i++) {
+            dashBefore = P.dashCharge; player_tick(TICK, 0, 0);
+        }
         fprintf(f, "enclume pique 13 m : |vy| %.1f, PV drone %.1f, vy apres %.1f, dash %+.2f, roquettes %d jauge %.0f "
-                   "(attendu ~39.0, ~36.8, 9.0, +1.00, 5 25)\n",
+                   "(attendu ~39.0, ~%.1f, 9.0, +1.00, 5 25)\n",
                 P.anvilLastVy, E[0].hp, P.vel.y, P.dashCharge - dashBefore - TICK / DASH_RECHARGE,
-                P.ammo[WP_ROCKET], P.ammoGauge[WP_ROCKET]);
+                P.ammo[WP_ROCKET], P.ammoGauge[WP_ROCKET], 100 - test_slam_expect(13, P.anvilLastVy, 2, enemy_radius(EN_DRONE)));
     }
-    {   /* 2. pique rate : immobilise 0,6 s (ni deplacement, ni saut, ni dash), puis libre */
+    {   /* 2. pique rate : immobilise 0,6 s + 0,02 s par metre de chute (ni deplacement, ni saut, ni dash), puis libre */
         reset_game();
         test_slam_drop(v3(-20, 13, 40), v3(0, 0, -5));
-        int st0 = P.anvilState; float hv = hlen(P.vel);
+        int st0 = P.anvilState; float hv = hlen(P.vel), left = P.anvilStunT;
         V3 p0 = P.pos;
         act[A_FWD] = 1;
         for (int i = 0; i < 36; i++) player_tick(TICK, 1, 1);
@@ -751,7 +762,8 @@ static void run_tests(const char *path) {
         for (int i = 0; i < 48; i++) player_tick(TICK, 0, 0);
         act[A_FWD] = 0;
         fprintf(f, "enclume rate : etat %d, vitesse horizontale %.1f, deplacement en 0,3 s (saut et dash appuyes) %.2f m etat %d, "
-                   "etat apres 0,7 s %d (attendu 2, 0.0, 0.00 2, 0)\n", st0, hv, moved, st1, P.anvilState);
+                   "etat apres 0,7 s %d ; immobilisation %.2f s, restante a la fin de l'onde %.2f (attendu 2, 0.0, 0.00 2, 0 ; %.2f, %.2f)\n",
+                st0, hv, moved, st1, P.anvilState, slamStunFull, left, slam_stun(13), slam_stun(13) - slam_R(13) / SLAM_WAVE_SPEED);
     }
     {   /* 3. trop pres du sol : c'est le coup au sol, meme en l'air */
         reset_game();
@@ -764,8 +776,8 @@ static void run_tests(const char *path) {
         reset_game();
         E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-18.6f, 1.0f, 40);
         test_slam_drop(v3(-20, 2, 40), v3(0, 0, 0));
-        fprintf(f, "enclume pique bas (2 m) : |vy| %.1f, kh %.2f, degats %.1f (attendu 31.6, 0.50, 29.5)\n",
-                P.anvilLastVy, slam_kh(2), 100 - E[0].hp);
+        fprintf(f, "enclume pique bas (2 m) : |vy| %.1f, kh %.2f, degats %.1f (attendu 31.6, 0.50, %.1f)\n",
+                P.anvilLastVy, slam_kh(2), 100 - E[0].hp, test_slam_expect(2, P.anvilLastVy, 1.4f, enemy_radius(EN_DRONE)));
     }
     {   /* 5. plafond de la vitesse de chute */
         reset_game();
@@ -794,9 +806,62 @@ static void run_tests(const char *path) {
                    "(attendu %d, 0, 1.8 (2 moins un tick de gravite), 2.00 -> 1.00, 0.80)\n",
                 s.pad, P.anvilState, P.vel.y, dc, P.dashCharge, P.meleeCd, MK_ANVIL | ST_SLAM);
     }
+    {   /* 7b. onde du plan 1b : taille et mur selon la hauteur, ovale selon la vitesse, propagation, une touche par onde */
+        static const float hs[4] = { 2, 7, 13, 20 };
+        char b[160]; int n = 0;
+        for (int k = 0; k < 4; k++) n += snprintf(b + n, sizeof b - n, "H %.0f : R %.1f mur %.1f ; ", hs[k], slam_R(hs[k]), slam_hw(hs[k]));
+        fprintf(f, "enclume onde : %s (attendu 3.1/0.8, 4.6/1.3, 6.4/1.9, 8.5/2.6)\n", b);
+        fprintf(f, "enclume ovale a 0 / 20 m/s : avant x%.2f / x%.2f, arriere x%.2f / x%.2f (attendu 1.00/1.80, 1.00/0.60)\n",
+                slam_fwd(0), slam_fwd(20), slam_back(0), slam_back(20));
+        /* drone a 6 m : touche quand le front passe (vers 0,2 s), pas avant ; il n'est touche qu'une fois */
+        reset_game();
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 0.95f, 34);
+        P.meleeKind = MK_ANVIL; P.pos = P.prevPos = v3(-20, 13, 40); P.vel = v3(0, 0, 0); P.grounded = 0; P.meleeCd = 0;
+        anvil_press();
+        for (int i = 0; i < 600 && P.anvilState == ANVIL_DIVE; i++) player_tick(TICK, 0, 0);
+        float tHit = -1, hpAt = E[0].hp;
+        for (int i = 0; i < 120 && SW.alive; i++) {
+            player_tick(TICK, 0, 0);
+            if (tHit < 0 && E[0].hp < hpAt) tHit = SW.t;
+        }
+        float dOnce = 1000 - E[0].hp;
+        fprintf(f, "enclume propagation : drone a 6 m touche a %.2f s, degats %.1f, une seule touche %d (attendu ~%.2f, %.1f, 1)\n",
+                tHit, dOnce, fabsf(dOnce - test_slam_expect(13, P.anvilLastVy, 6, enemy_radius(EN_DRONE))) < 0.5f,
+                6 / (slam_R(13) + enemy_radius(EN_DRONE)) * slam_R(13) / SLAM_WAVE_SPEED,
+                test_slam_expect(13, P.anvilLastVy, 6, enemy_radius(EN_DRONE)));
+        /* cible en l'air (pieds a 1,5 m) : un petit pique (2 m, mur 0,8 m) passe dessous, un gros (13 m, mur 1,9 m) la touche */
+        float hpSmall, hpBig;
+        reset_game();
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.5f + enemy_radius(EN_DRONE), 38.5f);
+        test_slam_drop(v3(-20, 2, 40), v3(0, 0, 0));
+        hpSmall = E[0].hp;
+        reset_game();
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.5f + enemy_radius(EN_DRONE), 38.5f);
+        test_slam_drop(v3(-20, 13, 40), v3(0, 0, 0));
+        hpBig = E[0].hp;
+        fprintf(f, "enclume mur : cible a 1,5 m du sol, petit pique PV %.0f, gros pique touche %d (attendu 1000, 1)\n", hpSmall, hpBig < 1000);
+        /* ovale : en courant a 20 m/s vers -z, un drone a 9 m devant est touche, le meme a 9 m derriere non */
+        float hpFront, hpBack;
+        for (int side = 0; side < 2; side++) {
+            reset_game();
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000;
+            P.meleeKind = MK_ANVIL; P.pos = P.prevPos = v3(-20, 13, 46); P.vel = v3(0, 0, -20); P.grounded = 0; P.meleeCd = 0;
+            V3 at; float vy, R, tf;
+            P.anvilState = ANVIL_DIVE; P.anvilStartY = P.pos.y; P.vel.y = -SLAM_VY;
+            slam_predict(&at, &vy, &R, &tf);
+            E[0].pos = v3(at.x, 0.95f, at.z + (side ? 9.0f : -9.0f));
+            P.anvilState = ANVIL_IDLE; P.vel = v3(0, 0, -20);
+            test_slam_drop(P.pos, P.vel);
+            if (side) hpBack = E[0].hp; else hpFront = E[0].hp;
+        }
+        fprintf(f, "enclume ovale : drone a 9 m devant touche %d, derriere touche %d (attendu 1, 0)\n", hpFront < 1000, hpBack < 1000);
+    }
     {   /* 8. pique sur le jump pad est : onde, puis le pad relance (pas d'immobilisation) */
         reset_game();
-        test_slam_drop(v3(ms(16), 5, 0), v3(0, 0, 0));
+        P.meleeKind = MK_ANVIL; P.anvilState = ANVIL_IDLE; P.meleeCd = 0;   /* sans test_slam_drop : vitesse lue au rebond */
+        P.pos = P.prevPos = v3(ms(16), 5, 0); P.vel = v3(0, 0, 0); P.grounded = 0;
+        anvil_press();
+        for (int i = 0; i < 600 && P.anvilState == ANVIL_DIVE; i++) player_tick(TICK, 0, 0);
         V3 L = v3(ms(13), 20, 0);
         fprintf(f, "enclume sur un jump pad : onde=%d, vitesse (%.1f, %.1f, %.1f), etat %d (attendu 1, (%.1f, %.1f, %.1f), 0)\n",
                 P.anvilLandT == 0, P.vel.x, P.vel.y, P.vel.z, P.anvilState, L.x, L.y, L.z);
@@ -983,7 +1048,7 @@ static void run_tests(const char *path) {
         float hpLeft[3];
         NP[1].disp = v3(-20, 0, 31); vf(NP[1].st.pos, NP[1].disp);
         for (int s = 0; s < 3; s++) {
-            P.pos = P.prevPos = v3(-20, 0, 41); P.yaw = 0; P.pitch = 0;
+            P.pos = P.prevPos = v3(-20, 0, 41); P.yaw = 0; P.pitch = test_pitch_to(np_center(1));
             P.ammo[WP_KINETIC] = 6; shotStreak = 0; P.kinDashT = 1; hitstop = 0;
             NP[1].hp = 100; NP[1].alive = 1;
             P.vel = v3(0, 0, -vs[s]);
@@ -1042,12 +1107,12 @@ static void run_tests(const char *path) {
         NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
         NP[1].disp = v3(-20, 0, 38); vf(NP[1].st.pos, NP[1].disp);
         nowT += 1;
-        test_slam_drop(v3(-20, 13, 40), v3(0, 0, 0));      /* 9. cible au sol a 2 m : f = 0,626, x 0,7 */
-        float hpGround = NP[1].hp;
-        NP[1].hp = 100; NP[1].disp.y = 1.6f; vf(NP[1].st.pos, NP[1].disp);
-        test_slam_drop(v3(-20, 13, 40), v3(0, 0, 0));      /* pieds a 1,6 m : au-dessus de l'onde */
-        fprintf(f, "enclume LAN : PV apres l'onde %.1f, cible en l'air (pieds a 1,6 m) %.0f, etat %d (attendu ~56.8, 100, 2)\n",
-                hpGround, NP[1].hp, P.anvilState);
+        test_slam_drop(v3(-20, 13, 40), v3(0, 0, 0));      /* 9. cible au sol a 2 m, x 0,7 */
+        float hpGround = NP[1].hp, vy13 = P.anvilLastVy;
+        NP[1].hp = 100; NP[1].disp.y = 2.2f; vf(NP[1].st.pos, NP[1].disp);
+        test_slam_drop(v3(-20, 13, 40), v3(0, 0, 0));      /* pieds a 2,2 m : au-dessus du mur (1,9 m pour 13 m de chute) */
+        fprintf(f, "enclume LAN : PV apres l'onde %.1f, cible en l'air (pieds a 2,2 m) %.0f, etat %d (attendu %.1f, 100, 2)\n",
+                hpGround, NP[1].hp, P.anvilState, 100 - test_slam_expect(13, vy13, 2, 0.5f) * PVP_SCALE);
 
         reset_game();                                      /* 10. la victime pare l'onde (0,18 s plus tot : tolerance 0,20 s) */
         dmMode = 1;
@@ -1055,7 +1120,10 @@ static void run_tests(const char *path) {
         nowT += 1;
         NP[1].lastParryT = nowT - 0.18;
         int parriesBefore = meleeParries;
-        test_slam_drop(v3(-20, 13, 40), v3(0, 0, 0));
+        P.meleeKind = MK_ANVIL; P.anvilState = ANVIL_IDLE; P.meleeCd = 0;   /* jusqu'au passage du front (parry), pas plus */
+        P.pos = P.prevPos = v3(-20, 13, 40); P.vel = v3(0, 0, 0); P.grounded = 0;
+        anvil_press();
+        for (int i = 0; i < 700 && (P.anvilState == ANVIL_DIVE || (SW.alive && meleeParries == parriesBefore)); i++) player_tick(TICK, 0, 0);
         float hpParried = NP[1].hp, vyAtt = P.vel.y, cdAtt = P.meleeCd;
         int rockets = P.ammo[WP_ROCKET];
         net_hit(1, 10, v3(0, 0, 0), W_MELEE);              /* une epee a la meme distance n'est plus paree (0,15 s) */
@@ -1809,7 +1877,7 @@ static void run_tests(const char *path) {
         fprintf(f, "ventouse mine-jump : collee %d, apogee %.2f, PV %.0f ; rocket jump sans saut %.2f (attendu 2, > 4.3 (~4.6), 96 ; ~4.0)\n",
                 st, top, hpM, topR);
     }
-    {   /* 4. drone colle : 90 garantis ; un 2e drone a 3 m de la mine */
+    {   /* 4. drone colle : MINE_DMG garantis ; un 2e drone a 3 m de la mine */
         mine_test_reset(v3(-20, 0, 40), 0, 0.13f);
         tesla_test_drone(0, v3(-20, 1.6f, 30), 1000);
         fire_mine();
@@ -1818,8 +1886,9 @@ static void run_tests(const char *path) {
         int st = m->mineState;
         tesla_test_drone(1, vadd(m->pos, v3(3, 0, 0)), 1000);
         mine_detonate(m, MX_REMOTE);
-        fprintf(f, "ventouse drone colle : etat %d, degats %.2f, 2e drone a 3 m %.2f (attendu 3, 90.00, 51.43)\n",
-                st, 1000 - E[0].hp, 1000 - E[1].hp);
+        fprintf(f, "ventouse drone colle : etat %d, degats %.2f, 2e drone a 3 m %.2f (attendu 3, %.2f, %.2f)\n",
+                st, 1000 - E[0].hp, 1000 - E[1].hp, MINE_DMG,
+                MINE_DMG * (0.3f + 0.7f * (1 - 3 / (MINE_RADIUS + enemy_radius(EN_DRONE)))));
     }
     {   /* 5. rail dans une mine posee a 2 m d'un drone (le drone derriere la mine n'est pas touche par le rail) */
         mine_test_reset(v3(-20, 0, 40), 0, 0);
@@ -1827,8 +1896,9 @@ static void run_tests(const char *path) {
         tesla_test_drone(0, v3(-20, 1.6f, 28), 1000);
         P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2;
         fire_rail();
-        fprintf(f, "ventouse rail : mine %d, degats au drone %.2f, message \"%s\", chaine %d (attendu 0, 102.97, MINE x1,5 !, 1)\n",
-                m->alive, 1000 - E[0].hp, popText, shotStreak);
+        fprintf(f, "ventouse rail : mine %d, degats au drone %.2f, message \"%s\", chaine %d (attendu 0, %.2f, MINE x1,5 !, 1)\n",
+                m->alive, 1000 - E[0].hp, popText, shotStreak,
+                MINE_DMG * MINE_BOOST_MULT * (0.3f + 0.7f * (1 - 2 / (MINE_BOOST_RADIUS + enemy_radius(EN_DRONE)))));
         hitstop = 0;
     }
     {   /* 5b. un plomb de l'Eventail, puis l'arc de la Tesla, dans une mine a 2 m d'un drone (x1) */
@@ -1842,7 +1912,21 @@ static void run_tests(const char *path) {
             dm[k] = 1000 - E[0].hp;
             hitstop = 0;
         }
-        fprintf(f, "ventouse plomb / arc : degats au drone %.2f / %.2f (attendu 64.29 / 64.29)\n", dm[0], dm[1]);
+        float dx1 = MINE_DMG * (0.3f + 0.7f * (1 - 2 / (MINE_RADIUS + enemy_radius(EN_DRONE))));
+        fprintf(f, "ventouse plomb / arc : degats au drone %.2f / %.2f (attendu %.2f / %.2f)\n", dm[0], dm[1], dx1, dx1);
+    }
+    {   /* 5c. piege : une mine posee explose seule quand un drone passe a moins de 2 m, une fois armee (0,4 s) ; pas a 4 m */
+        int n[2];
+        for (int k = 0; k < 2; k++) {
+            mine_test_reset(v3(-20, 0, 40), 0, 0);
+            Proj *m = mine_test_put(v3(-20, 1.6f, 30), MS_WORLD, myId);
+            m->mineT = 0;
+            tesla_test_drone(0, v3(-20 + (k ? 4.0f + enemy_radius(EN_DRONE) : 1.5f), 1.6f, 30), 1000);
+            n[k] = 0;
+            while (n[k] < 1000 && m->alive) { proj_tick(TICK); n[k]++; }
+        }
+        fprintf(f, "ventouse piege : drone a 1,5 m -> explosion apres %d ticks ; a 4 m du bord -> %d ticks (attendu %d, meche %d)\n",
+                n[0], n[1], (int)(MINE_PROX_ARM / TICK + 0.5f), (int)(MINE_FUSE / TICK + 0.5f));
     }
     {   /* 6. limite de 2 : la 3e fait sauter la plus ancienne */
         mine_test_reset(v3(-20, 0, 40), PI, -0.3f);
@@ -2454,6 +2538,7 @@ static void run_tests(const char *path) {
         {   /* 3. tireur, cible bouclier leve de face : rail 1 -> jauge 60, rail 2 -> brise, rail 3 -> 60 de degats */
             egide_test_reset();
             egide_test_lan(v3(-20, 0, 31), 1, PI);
+            P.pitch = test_pitch_to(np_center(1));
             fire_rail(); hitstop = 0;
             float hp1 = NP[1].hp, g1 = NP[1].shieldGauge;
             P.ammo[WP_RAIL] = 2; P.fireCd = 0; shotStreak = 0;
@@ -2467,6 +2552,7 @@ static void run_tests(const char *path) {
         {   /* 4. de flanc (bouclier tourne de 90 degres) : touche */
             egide_test_reset();
             egide_test_lan(v3(-20, 0, 31), 1, PI * 0.5f);
+            P.pitch = test_pitch_to(np_center(1));
             fire_rail(); hitstop = 0;
             fprintf(f, "egide de flanc : PV %.0f, jauge %.0f (attendu 40, 120)\n", NP[1].hp, NP[1].shieldGauge);
         }
@@ -2652,6 +2738,115 @@ static void run_tests(const char *path) {
     fire_rail();
     fprintf(f, "contre-jeu : piece adverse detruite=%d, PV du lanceur=%.0f (attendu 1, %.0f), message \"%s\"\n",
             !CO[0].alive, NP[1].hp, 100 - fminf(RAIL_DMG * PVP_SCALE, PVP_HIT_CAP), popText);
+
+    /* Tirs a la tete et chaine de tirs pleine (LAN, je suis l'hote) : rail a la tete = one-shot qui passe le plafond, au
+     * corps = plafond ; la tete avance la chaine de 2 (miroir de l'hote aussi) ; pleine, le rail suivant tue ; l'hote refuse
+     * une chaine ou une tete qu'il ne peut pas confirmer */
+    {
+        reset_game();
+        dmMode = 1;
+        memset(NP, 0, sizeof NP);
+        memset(hostChain, 0, sizeof hostChain); memset(hostChainSaid, 0, sizeof hostChainSaid);
+        NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi");
+        NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
+        NP[1].disp = v3(-20, 0, 30); vf(NP[1].st.pos, NP[1].disp);
+        P.pos = P.prevPos = v3(-20, 0, 41); shotStreak = 0;
+        host_tick(TICK);
+#define AIM_AT(pt) do { V3 dd_ = vsub((pt), eye_pos()); P.yaw = atan2f(dd_.x, -dd_.z); P.pitch = asinf(dd_.y / vlen(dd_)); } while (0)
+#define CIBLE_NEUVE() do { NP[1].alive = 1; NP[1].hp = 100; } while (0)
+        int hr0 = headRefused, cr0 = chainRefused;
+        AIM_AT(np_head(1));
+        fire_rail();
+        int deadHead = !NP[1].alive, kfHead = kfeed[0].info, cHead = shotStreak, mHead = hostChain[0];
+        CIBLE_NEUVE(); AIM_AT(np_center(1));
+        fire_rail();
+        float hpBody = NP[1].hp;
+        fprintf(f, "tete : rail a la tete mort=%d, killfeed tete+one-shot=%d ; au corps PV=%.0f (attendu 1, 1, %.0f)\n",
+                deadHead, kfHead == (KF_HEAD | KF_ONESHOT), hpBody, 100 - PVP_HIT_CAP);
+        fprintf(f, "chaine de tirs : apres une tete %d (miroir hote %d), puis un corps %d (attendu %d, %d, %d)\n",
+                cHead, mHead, shotStreak, CHAIN_HEAD_STEP, CHAIN_HEAD_STEP, CHAIN_HEAD_STEP + 1);
+        shotStreak = hostChain[0] = hostChainSaid[0] = STREAK_MAX - 1;   /* comme apres 7 touches */
+        CIBLE_NEUVE(); fire_rail();                       /* 8e touche : chaine pleine */
+        int cFull = shotStreak;
+        host_tick(TICK);                                  /* l'hote voit ma chaine pleine */
+        CIBLE_NEUVE(); fire_rail();                       /* au corps, chaine pleine : one-shot */
+        fprintf(f, "chaine pleine (%d) : tir au corps mort=%d, killfeed one-shot=%d, chaine apres %d (attendu %d, 1, 1, 0)\n",
+                cFull, !NP[1].alive, (kfeed[0].info & KF_ONESHOT) != 0, shotStreak, STREAK_MAX);
+        shotStreak = STREAK_MAX; hostChain[0] = 0;        /* chaine "pleine" que l'hote n'a jamais vue se remplir */
+        host_tick(TICK);
+        CIBLE_NEUVE(); fire_rail();
+        fprintf(f, "chaine pleine non confirmee par l'hote : PV=%.0f, refus %d (attendu %.0f, 1)\n",
+                NP[1].hp, chainRefused - cr0, 100 - PVP_HIT_CAP);
+        hostChain[0] = hostChainSaid[0] = STREAK_MAX; shotStreak = 0;   /* un tir rate : la chaine annoncee retombe */
+        host_tick(TICK);
+        fprintf(f, "chaine retombee a 0 chez le tireur : miroir de l'hote %d (attendu 0)\n", hostChain[0]);
+        /* Elan a la tete : x1,35 sans plafond, pas de one-shot ; a l'arret 20 PvE, a 15 m/s 95 PvE */
+        CIBLE_NEUVE(); shotStreak = 0; P.vel = v3(0, 0, 0); P.kinDashT = 10; AIM_AT(np_head(1));
+        P.ammo[WP_KINETIC] = 3;
+        fire_kinetic();
+        float hpKin0 = NP[1].hp;
+        CIBLE_NEUVE(); shotStreak = 0; P.vel = v3(0, 0, -KIN_SPEED_CAP); P.kinDashT = 10; P.kinPreDash = KIN_SPEED_CAP;
+        fire_kinetic();
+        fprintf(f, "elan a la tete : a l'arret PV=%.1f, a 15 m/s PV=%.1f, vivant=%d (attendu %.1f, %.1f, 1 : au-dela du plafond, sans tuer)\n",
+                hpKin0, NP[1].hp, NP[1].alive, 100 - KIN_DMG_BASE * PVP_SCALE * HEAD_MULT_KIN,
+                100 - (KIN_DMG_BASE + KIN_DMG_PER_MS * KIN_SPEED_CAP) * PVP_SCALE * HEAD_MULT_KIN);
+        P.vel = v3(0, 0, 0);
+        /* l'hote arbitre une tete declaree par un client : point sur ma tete = one-shot, point aux pieds = refuse */
+        nowT += 1; host_tick(TICK);
+        NetEvent e = ev_new(EV_HIT);
+        e.from = 1; e.target = 0; e.sub = W_RAIL; e.f[0] = RAIL_DMG * PVP_SCALE * HEAD_MULT_RAIL; e.pad[0] = HF_HEAD;
+        e.eid = 0x02F00001; vf(e.f + 4, v3(P.pos.x, P.pos.y + 0.1f, P.pos.z));   /* "tete" aux pieds */
+        host_event_in(&e);
+        float hpForged = NP[0].hp;
+        NP[0].hp = 100; e.eid++; vf(e.f + 4, np_head(0)); e.pad[0] = HF_HEAD;   /* host_handle a retire le drapeau refuse */
+        host_event_in(&e);
+        fprintf(f, "hote : tete declaree aux pieds PV=%.0f (refus %d), tete sur la tete mort=%d (attendu %.0f, 1, 1)\n",
+                hpForged, headRefused - hr0, !NP[0].alive, 100 - PVP_HIT_CAP);
+        /* hauteur de la tete : debout et accroupi */
+        V3 hs = np_head(1);
+        NP[1].st.flags = NF_CROUCH;
+        V3 hc = np_head(1);
+        NP[1].st.flags = 0;
+        fprintf(f, "tete : centre debout %.2f m, accroupi %.2f m au-dessus des pieds (attendu %.2f, %.2f)\n",
+                hs.y - NP[1].disp.y, hc.y - NP[1].disp.y, H_STAND - HEAD_DROP, H_CROUCH - HEAD_DROP);
+#undef AIM_AT
+#undef CIBLE_NEUVE
+    }
+    /* solo : point faible au sommet d'un drone (x1,5 au rail) ; visee des bots */
+    {
+        reset_game();
+        memset(E, 0, sizeof E);
+        E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 3, 30);
+        P.pos = P.prevPos = v3(-20, 0, 41); shotStreak = 0;
+        V3 top = vadd(E[0].pos, v3(0, enemy_radius(EN_DRONE) * 0.8f, 0)), d0 = vsub(top, eye_pos());
+        P.yaw = atan2f(d0.x, -d0.z); P.pitch = asinf(d0.y / vlen(d0));
+        fire_rail();
+        float hpTop = E[0].hp;
+        shotStreak = 0; E[0].hp = 1000;
+        d0 = vsub(vadd(E[0].pos, v3(0, -0.3f, 0)), eye_pos());
+        P.yaw = atan2f(d0.x, -d0.z); P.pitch = asinf(d0.y / vlen(d0));
+        fire_rail();
+        fprintf(f, "drone : rail au point faible %.0f, au centre %.0f degats (attendu %.0f, %.0f)\n",
+                1000 - hpTop, 1000 - E[0].hp, RAIL_DMG * HEAD_MULT_RAIL, RAIL_DMG);
+        /* chaine pleine : un drone meurt d'un coup, un boss des VAGUES prend une touche normale */
+        int deadE[2]; float hpE[2];
+        for (int k = 0; k < 2; k++) {
+            E[0].alive = 1; E[0].type = k ? EN_PYRA : EN_DRONE; E[0].hp = 5000; shotStreak = STREAK_MAX;
+            d0 = vsub(E[0].pos, eye_pos());
+            P.yaw = atan2f(d0.x, -d0.z); P.pitch = asinf(d0.y / vlen(d0));
+            P.ammo[WP_RAIL] = 2; fire_rail();
+            deadE[k] = !E[0].alive; hpE[k] = E[0].hp;
+        }
+        fprintf(f, "chaine pleine contre les ennemis : drone mort=%d, boss mort=%d (PV %.0f), chaine apres %d (attendu 1, 0, < 5000, 0)\n",
+                deadE[0], deadE[1], hpE[1], shotStreak);
+        int heads = 0;
+        int lv0 = botLevel;
+        botLevel = 1;
+        for (int i = 0; i < 20000; i++) { float ox, oy; if (bot_roll_aim(10, &ox, &oy) && oy > 0.4f) heads++; }
+        botLevel = lv0;
+        fprintf(f, "bots (normal, 10 m) : tirs vises a la tete %.1f %% (attendu ~%.1f)\n", heads / 200.0f,
+                100 * botHitP[1] * botHeadP[1] * clampf(1.15f - 10 / 80.0f, 0.5f, 1));
+    }
 
     /* en ligne : analyse STUN, lignes du lobby, adresses */
     {
@@ -3869,7 +4064,7 @@ static void run_tests(const char *path) {
     {   /* fusion : 2e ecran opt-in ; protocole */
         fprintf(f, "second ecran : actif par defaut %d (attendu 0)\n", secondScreen);
         PkAnnounce pa;
-        fprintf(f, "protocole : NET_VER %d, PkAnnounce %d octets avec ranked a l'octet %d (attendu 18, %d, %d)\n", NET_VER,
+        fprintf(f, "protocole : NET_VER %d, PkAnnounce %d octets avec ranked a l'octet %d (attendu 19, %d, %d)\n", NET_VER,
                 (int)sizeof(PkAnnounce), (int)((unsigned char *)&pa.ranked - (unsigned char *)&pa), (int)sizeof(PkHead) + 16 + 8, (int)sizeof(PkHead) + 20);
         double sNow = nowT;                               /* chargement de carte : l'arrivant a NET_LOAD_GRACE de plus */
         nowT = 100;

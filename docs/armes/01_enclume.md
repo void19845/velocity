@@ -3,6 +3,12 @@
 > Source : [`../IDEES_ARMES_CARTES.md`](../IDEES_ARMES_CARTES.md) § 2.1 (validé), § 1.2 (chiffres PvP), § 1.5 (munitions).
 > Interfaces figées : [`PLAN.md`](PLAN.md) § 3. Loadout, `P.meleeKind`, `ammo_points` (jauges, fiche 00), `NET_VER` 4 : fiche `00_infra_loadout_munitions.md` (non redéfinis ici).
 > Identifiants : `MK_ANVIL` (1), `W_SLAM` (7), `EV_SLAM` (21), `ST_SLAM` (0x10 dans `NetPState.pad`). **Rien n'est implémenté.**
+> **Onde refaite le 04/11/2026** selon le plan 1b de [`../PLAN_SUITE.md`](../PLAN_SUITE.md) (`NOUVEAUTES.md` §31) : rayon
+> `2,5 + 0,3 × H` (9 m au plus) et hauteur du mur `0,6 + 0,1 × H` (2,6 m au plus) selon la hauteur de chute `H`, ovale
+> étiré vers l'avant `×(1 + 0,04 × vh)` (1,8 au plus) et raccourci derrière `×(1 − 0,02 × vh)` (0,6 au moins), front qui
+> se propage à 28 m/s (chaque cible jugée une fois, au passage du front : pieds au-dessus du mur = esquive),
+> immobilisation `0,6 + 0,02 × H` s (1 s au plus) annulée par la première touche, recul vertical `6 + 3 × mur`.
+> Les § 1 à 3 ci-dessous décrivent la première version (rayon `2,5 + 0,06 × |vy|`, onde instantanée).
 
 ---
 

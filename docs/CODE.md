@@ -340,6 +340,20 @@ vitesse **relative** : foncer sur quelqu'un qui fonce sur vous frappe très fort
   un raté. `streak_mult` = 1 + `STREAK_DMG` × chaîne, `streak_rate` = 1 + `STREAK_RATE` × chaîne
   (plafonné à `STREAK_MAX`). La recharge vaut `RAIL_CD / streak_rate()`. Le rayon vire à l'or avec la
   chaîne. « CHAINE PERDUE » s'affiche si l'on perd une chaîne d'au moins 2 (`streakLostT`).
+  Une touche à la tête la fait avancer de `CHAIN_HEAD_STEP` (2) ; elle est bornée à `STREAK_MAX`.
+- **Chaîne pleine = one-shot** (`chain_begin` / `chain_end`, `src/combat/degats.c`) : quand `shotStreak` atteint
+  `STREAK_MAX` (son `S_CHAIN_FULL`, « ONE-SHOT PRET » dans le cadre CHAINE DE TIR), le prochain tir de **rail ou
+  d'Élan** l'engage (`chainArmed`) : s'il touche un joueur (ou un ennemi en solo), il tue ; puis la chaîne repart de
+  zéro, touche ou non. Les touches portent le drapeau `HF_CHAIN`, que l'hôte valide (voir §4, autorité de l'hôte).
+- **Tirs à la tête** (`head_*`, `src/combat/degats.c` ; réglages `HEAD_*` dans `equilibrage.c`) : sphère de rayon
+  `HEAD_R` centrée `HEAD_DROP` sous le haut du joueur (`np_head` : 1,54 m debout, 0,84 m accroupi, comme la tête des
+  skins) ; ennemis : point faible au-dessus de `HEAD_ENEMY_FRAC` × rayon. Seuls les tirs directs de précision en ont :
+  **rail** ×`HEAD_MULT_RAIL` (1,5) et **one-shot**, **Élan** ×`HEAD_MULT_KIN` (1,35) **sans plafond PvP** (90 PV au plus
+  à pleine vitesse, pas de one-shot). Le ricochet de pièce vise tout seul (pas de tête), les armes de zone non plus.
+  `hitscan_seg` teste la tête (`head_hit_player`) et appelle `hit_player_fl` avec le drapeau `HF_HEAD` et le point
+  d'impact sur la tête (`EV_HIT.f[4..6]`). Retours : chiffre doré « TETE » (`DN_HEAD`) ou « ONE-SHOT » (`DN_ONESHOT`),
+  son `S_HEADSHOT`, éclat doré, « TETE ! » chez la victime, killfeed `[RAIL TETE]` / `[RAIL ONE-SHOT]` (`KF_*`),
+  caméra de mort « ONE-SHOT A LA TETE ». Bots : `botHeadP` (3 / 12 / 25 % des tirs cadrés visent la tête, `HEAD_BOT_OFS`).
 - **Recharges** (cellules bleues, `Pickup PU`) : `pickup_tick` ; +`PICKUP_AMMO`, réapparition après
   `PICKUP_RESPAWN` s. En solo `pickup_taken` direct ; en LAN l'hôte arbitre (`EV_PICKUP` →
   `host_take_pickup` → `EV_PICKUP_TAKEN`).
@@ -1197,8 +1211,17 @@ noms affichés dans le fil des kills sont dans `weaponNames`, dans le même ordr
      il y a moins de `MELEE_PARRY_GRACE` s (`NP[v].lastParryT`, mis à jour par `host_tick` pour l'hôte
      et par `NF_PARRY` dans `PK_STATE` pour les clients), le coup est annulé et l'hôte émet
      `EV_MELEE_PARRY` (choc d'épées si l'attaquant paraît aussi) ;
-  3. sinon retire `min(dégâts, PVP_HIT_CAP)` PV (`W_SELF` n'est pas plafonné) ;
-  4. à 0 PV : `host_kill(tueur, victime, arme)`.
+  3. **tête et chaîne pleine** (drapeaux `HF_*` dans `EV_HIT.pad[0]`) : `head_host_ok` vérifie que le point d'impact
+     déclaré (`f[4..6]`) est sur la tête de la cible telle que l'hôte la voit (`HEAD_HOST_TOL`, `HEAD_HOST_LAG` ;
+     bien plus strict en hauteur) ; `chain_host_claim` vérifie la chaîne : l'hôte tient une **chaîne miroir** par
+     joueur (`hostChain`, +1 par touche d'une arme de chaîne qu'il arbitre, +2 à la tête validée, ramenée à la valeur
+     annoncée dans `NetPState.spare[1]` quand celle-ci baisse : un plafond de la vraie chaîne), et exige qu'elle soit
+     pleine **et** vue pleine dans l'état du tireur depuis moins de `CHAIN_SEEN_T`. Un drapeau refusé est retiré de
+     l'événement relayé (journal : « tete refusee », « chaine pleine refusee ») ;
+  4. sinon retire `min(dégâts, PVP_HIT_CAP)` PV (`W_SELF` n'est pas plafonné). **Seules exceptions au plafond**
+     (`host_apply_damage_fl`) : une touche à la tête validée (rail, Élan) n'est pas plafonnée, et un **one-shot**
+     (rail à la tête, ou tir chaîne pleine validé) retire au moins tous les PV restants, spécialisations comprises ;
+  5. à 0 PV : `host_kill(tueur, victime, arme)` ; `EV_KILL.pad[0]` porte `HF_HEAD` / `HF_CHAIN` / `HF_ONESHOT`.
 - `EV_PARRY` → soigne l'auteur du parry de `PARRY_HEAL`.
 
 `host_kill` : marque la victime morte (réapparition dans `RESPAWN_TIME`), +1 kill et +`KILL_HEAL` PV
@@ -1216,7 +1239,9 @@ Où s'applique quoi :
 - Les clients reçoivent leurs PV par `PK_SNAP` (`apply_snap` écrase `P.hp`).
 
 Statistiques d'équilibrage tenues par l'hôte pour le journal du bot : `hitCount`, `parryCount`,
-`ttkSum`/`ttkN` (temps pour tuer), `oneShots`, `meleeParries`, `clashes`.
+`ttkSum`/`ttkN` (temps pour tuer), `oneShots`, `meleeParries`, `clashes` ; tirs à la tête par arme (`headHostHits`),
+one-shots à la tête / chaîne pleine (`headOneShots`, `chainOneShots`) et refus (`headRefused`, `chainRefused`), dans la
+ligne « tetes (arbitre) » du journal.
 
 ### Découverte et connexion
 
@@ -1456,8 +1481,10 @@ deux ; 15 règles de partie et objectifs (`PkSnap` : `rMode`…, `obj` ; `EV_OBJ
 **16** fusion avec le mode classé du dépôt original (qui avait pris 14 de son côté) : `PkJoin` (`rid`, `mmr`,
 `rplay`), `PkRoster` (cotes, identifiants, `ranked`, `mid`, partis), `PkAnnounce.ranked`, `PkWelcome.pad[1]` et
 `refused = 2` ; **17** cartes LA CITADELLE et L'OASIS retirées (ordre de `maps[]`), objectifs sur les cartes néon
-(plateau du Canyon, balcons du Puits) ; **18** horloge de match commune (`PkSnap.clk`, `clkSrv`). La valeur fait foi
-dans `src/reseau/protocole.c`.
+(plateau du Canyon, balcons du Puits) ; **18** horloge de match commune (`PkSnap.clk`, `clkSrv`) ; **19** tirs à la tête
+et chaîne pleine (`EV_HIT.pad[0]` = `HF_*`, `f[4..6]` = point sur la tête, `EV_KILL.pad[0]`, `NetPState.spare[1]` =
+chaîne de tirs) et onde de l'Enclume du plan 1b (`EV_SLAM` : centre, rayon, hauteur du mur, cap et vitesse de l'ovale,
+`actor` = |vy|). La valeur fait foi dans `src/reseau/protocole.c`.
 
 ### Horloge de match commune (`src/reseau/horloge.c`)
 
@@ -1577,7 +1604,7 @@ plafonné à 0,1 s) ou pendant le `hitstop`, la simulation ralentit mais pas le 
 | `PARRY_PINGPONG` | 1,15 | chaque nouveau renvoi : +15 % de vitesse et de dégâts |
 | `PARRY_RANGE_SHRINK` | 0,85 | chaque renvoi réduit la zone de parry de 15 % |
 | `PARRY_AIM_COS` | 0,988 | aide à la visée du renvoi (~9°) |
-| `PVP_HIT_CAP` | 60 PV | en PvP, une touche ne retire jamais plus de 60 PV |
+| `PVP_HIT_CAP` | 60 PV | en PvP, une touche ne retire jamais plus de 60 PV, sauf à la tête (rail, Élan) et un one-shot (rail à la tête, chaîne pleine), validés par l'hôte |
 | `MELEE_PARRIED_CD` | 1 s | épée bloquée pour l'attaquant dont le coup est paré |
 | `MELEE_PARRY_GRACE` | 0,15 s | tolérance de latence de l'hôte pour le parry d'épée |
 
@@ -1588,6 +1615,14 @@ plafonné à 0,1 s) ou pendant le `hitstop`, la simulation ralentit mais pas le 
 | `STREAK_MAX` | 8 | longueur maximale prise en compte |
 | `STREAK_DMG` | 0,15 | +15 % de dégâts par touche successive |
 | `STREAK_RATE` | 0,05 | +5 % de cadence par touche successive |
+| `CHAIN_HEAD_STEP` | 2 | une touche à la tête fait avancer la chaîne de 2 |
+| `CHAIN_SEEN_T` | 0,5 s | hôte : chaîne vue pleine dans l'état du tireur depuis moins de 0,5 s pour valider un one-shot |
+| `HEAD_R` / `HEAD_DROP` | 0,24 / 0,26 m | sphère de tête : rayon, centre sous le haut du joueur |
+| `HEAD_MULT_RAIL` | 1,5 | rail à la tête : ×1,5 et one-shot |
+| `HEAD_MULT_KIN` | 1,35 | Élan à la tête : ×1,35 sans plafond PvP |
+| `HEAD_ENEMY_FRAC` | 0,45 | point faible des ennemis : au-dessus de 45 % du rayon |
+| `HEAD_HOST_TOL` / `HEAD_HOST_LAG` | 0,6 m / 0,15 s | hôte : tolérance du point d'impact déclaré sur la tête |
+| `HEAD_BOT_OFS` | 0,62 m | bots : hauteur visée au-dessus du centre quand ils tentent la tête |
 
 ### Audio
 
@@ -1628,7 +1663,7 @@ plafonné à 0,1 s) ou pendant le `hitstop`, la simulation ralentit mais pas le 
 | `PVP_SCALE` | 0,7 | dégâts contre les joueurs = 70 % des dégâts contre les monstres |
 | `KILL_HEAL` | 30 PV | soin du tueur |
 | `NET_MAGIC` | `0x564C4F43` | signature des paquets (« VLOC ») |
-| `NET_VER` | 17 | version du protocole (historique : §4, « `NET_VER` ») ; 15 = règles et objectifs, 16 = mode classé, 17 = cartes néon seulement |
+| `NET_VER` | 19 | version du protocole (historique : §4, « `NET_VER` ») ; 15 = règles et objectifs, 16 = mode classé, 17 = cartes néon seulement, 18 = horloge commune, 19 = tirs à la tête, chaîne pleine, onde de l'Enclume |
 | `RANK_*` | voir §4 | mode classé : `RANK_START` 1000, bornes 100 à 3000, `RANK_K` 32, `RANK_K_PLACE` 64 sur `RANK_PLACEMENT` 10 matchs, paliers, `RANK_END_WAIT`, `RANK_RETRY`, `RANK_TRIES` |
 | `MAXSPEC` | 4 | spectateurs en direct sur l'hôte |
 | `MAXFOUND` | 12 | parties mémorisées (LAN + en ligne ; 7 affichées) |

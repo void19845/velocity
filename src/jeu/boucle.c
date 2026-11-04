@@ -220,6 +220,7 @@ static void fx_tick(float dt) {
     }
     for (int i = 0; i < MAXBM; i++) BM[i].life -= dt;
     for (int i = 0; i < MAXTR; i++) TR[i].t += dt;       /* Eventail : traceurs */
+    slam_vis_tick(dt);                                    /* Enclume : murs d'onde */
     tesla_fx_tick(dt);                                    /* Tesla : liens d'arc, arcs des autres */
     for (int i = 0; i < nb; i++)                         /* particules des jump pads */
         if (boxes[i].kind == B_PAD && frand() < 0.15f) {

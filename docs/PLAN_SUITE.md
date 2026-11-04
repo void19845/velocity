@@ -22,7 +22,7 @@ Chaque phase se termine par un build propre, `--test`, les captures et un commit
 |---|---|---|---|---|
 | **0b** | **Bouton MISE A JOUR (dernière version depuis GitHub) — primordial, en premier** | M | — | non (HTTPS vers GitHub, CI modifiée) |
 | 1 | Saut plus haut | S | — | non (mais réglage partagé : même exe pour tous) |
-| 1b | Refonte de l'onde de l'Enclume (taille, hauteur, portée) | M | 1 | oui : `EV_SLAM` grossit, `NET_VER` |
+| 1b | Refonte de l'onde de l'Enclume (taille, hauteur, portée) — **fait** (`NET_VER` 19, `NOUVEAUTES.md` §31) | M | 1 | oui : `EV_SLAM` grossit, `NET_VER` |
 | 2 | Menus : tout proportionnel à la fenêtre, aucune valeur fixe | M-L | — | non |
 | 3 | Infrastructure des cartes (`MapDef`) + kill zone — **fait** (`NET_VER` 13, voir `CODE.md` §3.18) | M | 2 (bouton de carte) | oui : `NET_VER` |
 | 4 | Nouvelles cartes : Le Puits, Le Canyon, La Boucle, Le Dojo — **fait** (v1) | S chacune | 3 | oui : `NET_VER` |

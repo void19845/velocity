@@ -88,18 +88,19 @@ static void kill_enemy(int i, int byPlayer) {
     if (vagOn) vg_on_kill(i);                             /* VAGUES : credits, effets de la boutique */
 }
 
-static void damage_enemy(int i, float dmg, V3 knock) {
+static void damage_enemy_k(int i, float dmg, V3 knock, int kind) {   /* kind : chiffre DN_* (tete, one-shot) */
     Enemy *e = &E[i];
     if (!e->alive) return;
     int charged = P.chargeT > 0, marked = markE[i] > 0;   /* VAGUES : contextes des chemins CHARGE et MARQUE */
     dmg = skill_out(-1, i, dmg);                          /* Competences : MARQUE, CHARGE */
     if (vagOn) dmg = vg_dmg_filter(i, dmg);               /* VAGUES : armure des boss, bouclier du bastion */
     e->hp -= dmg; e->flash = 0.12f; e->lastDmg = dmg;
-    dmg_number(e->pos, dmg);
+    dmg_number_k(e->pos, dmg, kind);
     if (!EN_BOSS(e->type)) e->vel = vadd(e->vel, knock);  /* un boss ne recule pas */
     if (vagOn && dmg > 0) vg_on_hit(i, dmg, charged, marked);
     if (e->hp <= 0 && e->alive) kill_enemy(i, 1);
 }
+static void damage_enemy(int i, float dmg, V3 knock) { damage_enemy_k(i, dmg, knock, DN_NORMAL); }
 
 /* byPlayer : 0 = ennemi, 1 = joueur, 2 = joueur sans recul ni degat sur soi (projectile renvoye).
  * knock : recul des joueurs (et de soi) au centre ; weapon : W_* des touches LAN ; skipEnemy / skipPlayer : cible deja
@@ -157,12 +158,61 @@ static void explode_fx(V3 c) {
     play(S_EXPLO, 0.9f * atten(c), frange(0.9f, 1.1f));
 }
 
+/* --- Tirs a la tete et chaine de tirs pleine ------------------------------------------------- */
+/* Tete : sphere en haut du joueur (np_head), point faible au sommet des ennemis. Seuls le rail et l'Elan (tirs directs de
+ * precision) en ont une, et a la tete ils passent outre le plafond PvP ; le rail a la tete tue d'un coup. Le ricochet de
+ * piece vise tout seul et les armes de zone n'ont pas de tete. La chaine de tirs (shotStreak) avance de 2 sur une touche a
+ * la tete ; pleine (STREAK_MAX), le prochain tir de rail ou d'Elan la consomme, et s'il touche un joueur il le tue. Meme
+ * regle pour tous ; en LAN l'hote valide la tete et la chaine pleine (host_handle). */
+enum { HF_HEAD = 1, HF_CHAIN = 2, HF_ONESHOT = 4 };       /* EV_HIT.pad[0] (tireur, filtre par l'hote) ; EV_KILL.pad[0] (hote) */
+static int chainArmed, shotHeads;                         /* tir en cours : chaine pleine engagee ; touches a la tete */
+static int chainFulls, chainShots, chainShotHits, headShotsMine;   /* journal (moi) */
+static float head_mult(int w) { return w == W_RAIL ? HEAD_MULT_RAIL : w == W_KINETIC ? HEAD_MULT_KIN : 1; }
+static int head_oneshot(int w) { return w == W_RAIL; }   /* a la tete, seul le rail tue d'un coup */
+static int chain_direct_w(int w) { return w == W_RAIL || w == W_KINETIC; }   /* tirs qui ont une tete et portent la chaine pleine */
+static int chain_w(int w) {                               /* touches qui font avancer la chaine (armes qui appellent shot_result) */
+    return w == W_RAIL || w == W_COIN || w == W_KINETIC || w == W_SHOTGUN || w == W_ROCKET || w == W_MINE;
+}
+/* le rayon (o, d) touche-t-il la tete du joueur i avant maxT ? *at = point d'impact sur la tete */
+static int head_hit_player(int i, V3 o, V3 d, float maxT, V3 *at) {
+    float t;
+    if (!ray_sphere(o, d, np_head(i), HEAD_R, maxT, &t)) return 0;
+    *at = vadd(o, vmul(d, t));
+    return 1;
+}
+static int head_hit_enemy(int i, V3 at) { return at.y > E[i].pos.y + enemy_radius(E[i].type) * HEAD_ENEMY_FRAC; }
+static int hit_flags(int w, int head) {
+    return (head && head_mult(w) > 1 ? HF_HEAD : 0) | (chainArmed && chain_direct_w(w) ? HF_CHAIN : 0);
+}
+static void head_fx(V3 at) {                              /* eclat dore et tintement : distinct d'une touche au corps */
+    for (int k = 0; k < 18; k++) add_part(at, vmul(rand_dir(), 7), k & 1 ? v3(1, 0.85f, 0.3f) : v3(1, 1, 1), 0.35f, 0.08f, 4);
+    play(S_HEADSHOT, 0.75f, frange(0.97f, 1.03f));
+}
+
 static float streak_mult(void) { return 1 + STREAK_DMG * (float)(shotStreak < STREAK_MAX ? shotStreak : STREAK_MAX); }
 static float streak_rate(void) { return 1 + STREAK_RATE * (float)(shotStreak < STREAK_MAX ? shotStreak : STREAK_MAX); }
 static void shot_result(int hit) {
-    if (hit) shotStreak++;
+    int was = shotStreak;
+    if (hit) shotStreak += shotHeads ? CHAIN_HEAD_STEP : 1;   /* tete : la chaine avance de 2 */
     else { if (shotStreak >= 2) streakLostT = 1.0f; shotStreak = 0; }
+    if (shotStreak > STREAK_MAX) shotStreak = STREAK_MAX;
+    shotHeads = 0;
+    if (was < STREAK_MAX && shotStreak >= STREAK_MAX) {   /* elle vient de se remplir : le prochain rail ou Elan peut tuer */
+        chainFulls++;
+        play(S_CHAIN_FULL, 0.6f, 1.0f);
+        if (botMode) netlog("chaine de tirs pleine");
+    }
 }
+/* debut d'un tir de rail ou d'Elan : une chaine pleine est engagee sur ce tir */
+static void chain_begin(void) { chainArmed = shotStreak >= STREAK_MAX; shotHeads = 0; }
+/* fin du tir (apres shot_result) : la chaine engagee est consommee, touche ou non */
+static void chain_end(int hit) {
+    if (!chainArmed) return;
+    chainArmed = 0; shotStreak = 0; chainShots++; chainShotHits += hit;
+    if (hit) { snprintf(popText, sizeof popText, "ONE-SHOT !"); popT = 1.2f; hitstop = fmaxf(hitstop, 0.06f); }
+    if (botMode) netlog("chaine pleine engagee : %s", hit ? "touche" : "ratee");
+}
+/* --- fin Tirs a la tete --- */
 
 static void parry_feedback(V3 where) {
     impact_frame(where, 0.1f);

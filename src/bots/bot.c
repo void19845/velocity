@@ -286,15 +286,15 @@ static void bot_think(float dt) {
     }
     /* --- fin Lance --- */
 
-    /* Enclume adverse : un pique tombe pres de nous. Juste avant l'impact, une fois sur deux on pare l'onde ;
-     * sinon on saute (un saut simple passe au-dessus de l'onde) ou, deja en l'air, on sort du rayon par un dash */
+    /* Enclume adverse : un pique tombe pres de nous. Juste avant que le front arrive, une fois sur deux on pare l'onde ;
+     * sinon on saute (saut puis double saut au sommet, pour passer le mur) ou, deja en l'air, on sort de l'onde par un dash */
     static double slamSeenT[MAXP];
     static int slamPlan[MAXP];                            /* 1 = parer, 2 = esquiver, 3 = esquive en cours */
     for (int i = 0; i < MAXP; i++) {
         if (!np_target(i) || !(NP[i].st.pad & ST_SLAM)) continue;
         V3 d = NP[i].disp, away = v3(P.pos.x - d.x, 0, P.pos.z - d.z);
-        if (hlen(away) > 6) continue;
-        float t = (d.y - P.pos.y) / fmaxf(-NP[i].st.vel[1], SLAM_VY);
+        if (hlen(away) > 10) continue;                    /* onde du plan 1b : jusqu'a 9 m de rayon (plus en ovale) */
+        float t = (d.y - P.pos.y) / fmaxf(-NP[i].st.vel[1], SLAM_VY) + hlen(away) / SLAM_WAVE_SPEED;   /* arrivee du front */
         if (nowT - slamSeenT[i] > 1.5) { slamSeenT[i] = nowT; slamPlan[i] = frand() < 0.5f ? 1 : 2; }
         if (slamPlan[i] == 1 && t < 0.12f && P.meleeCd <= 0 &&
             (P.meleeKind != MK_ANVIL || P.grounded || anvil_ground_dist(P.pos) < SLAM_MIN_H)) {

@@ -145,6 +145,16 @@ static int mine_tear(Proj *p, V3 f) {
     return 1;
 }
 
+/* piege : mine posee sur le decor, armee depuis MINE_PROX_ARM, un adversaire (ou un drone) a moins de MINE_PROX_R */
+static int mine_prox(const Proj *p) {
+    if (p->mineT < MINE_PROX_ARM - 0.5f * TICK) return 0;
+    for (int j = 0; j < MAXE; j++)
+        if (E[j].alive && vlen(vsub(E[j].pos, p->pos)) < MINE_PROX_R + enemy_radius(E[j].type)) return 1;
+    for (int j = 0; j < MAXP; j++)
+        if (np_target(j) && vlen(vsub(np_center(j), p->pos)) < MINE_PROX_R + 0.5f) return 1;
+    return 0;
+}
+
 static void mine_stuck_fx(Proj *p, float vol) {
     p->mineT = p->mineFell ? p->mineT : 0;                /* retombee d'un porteur : la meche continue */
     p->vel = v3(0, 0, 0); p->mineBeepT = MINE_BEEP_SLOW;
@@ -243,6 +253,11 @@ static void mine_tick(Proj *p, float dt) {
         int armed = p->mineState != MS_PLAYER || p->mineArmT <= 0;
         if (armed && p->mineDet) { mineBoom[p->mineDet - 1]++; mine_explode(p, 0, 0); }
         else if (armed && p->mineT >= MINE_FUSE - 0.5f * TICK) { mineBoom[MX_FUSE]++; mine_explode(p, 0, 0); }
+        else if (p->mineState == MS_WORLD && mine_prox(p)) {   /* piege : un adversaire passe a cote */
+            mineBoom[MX_PROX]++;
+            if (botMode) netlog("ventouse : piege declenche");
+            mine_explode(p, 0, 0);
+        }
     } else if (!mine && p->mineState >= MS_WORLD && p->mineT > MINE_FUSE + 1) {
         p->alive = 0;                                     /* EV_MINE BOOM perdu : suppression silencieuse */
     }

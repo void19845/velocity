@@ -5,6 +5,11 @@
 > Loadout, `P.ammo[]` et jauges de points, `ammo_points`, cellules, `NET_VER` 4 : voir `00_infra_loadout_munitions.md` (non redéfinis ici). Conventions croisées : PLAN.md § 4 (elles l'emportent sur cette fiche).
 > Document de design : **rien n'est implémenté**. Le pseudo-code n'est pas un patch.
 > Mise à jour du 27/10 : deux commandes de détonation séparées (`A_DETONATE_ALL`, `A_DETONATE_ONE`) ; munitions par jauge (150 points par mine, 3 au maximum, 1 au spawn, aucune recharge passive).
+> **Retouche du 04/11/2026** (option A, « piège », choisie avec le propriétaire ; `NOUVEAUTES.md` §31) : avant elle, 0 touche
+> arbitrée en deux matchs bot (mines collées au décor, explosées à la mèche loin de tout). Désormais : collage plus large
+> (`MINE_STICK_GROW` 0,45 m au lieu de 0,15), **piège** (une mine posée sur le décor explose seule quand un adversaire passe
+> à moins de `MINE_PROX_R` 2 m, une fois armée depuis `MINE_PROX_ARM` 0,4 s ; le poseur fait autorité), **2 mines au
+> départ** (1 avant). Dégâts et rayon inchangés (90, 4 m).
 
 ---
 

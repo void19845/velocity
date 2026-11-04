@@ -432,6 +432,60 @@ Le solo devient le mode **VAGUES** (bouton VAGUES du menu, à la place de « SOL
   captures `challenge`, `course_fin`, `speedrun`, `speedrun_fin` ; de bout en bout contre un lobby local avec
   `SPEEDRUN_LOBBY=127.0.0.1:8791` (voir `CODE.md`).
 
+## 31. Tirs à la tête, chaîne de tirs pleine, Ventouse piège, onde de l'Enclume
+
+Branche `claude/equilibrage-tete-1385aa`. `NET_VER` **19**.
+
+- **Tirs à la tête** (§3.4) : une sphère de tête en haut de chaque joueur (1,54 m debout, 0,84 m accroupi, calée sur
+  la tête des skins) et un point faible au sommet des drones et rushers. Seuls les tirs directs de précision en ont :
+  - **rail** ×1,5, et c'est un **one-shot** ;
+  - **Élan** ×1,35, **sans plafond PvP** (jusqu'à 90 PV à pleine vitesse, pas de one-shot) ;
+  - le ricochet de pièce (il vise tout seul) et les armes de zone n'ont pas de tête.
+  Le tireur envoie le point d'impact ; **l'hôte vérifie** qu'il est sur la tête de la cible telle qu'il la voit et
+  retire le drapeau sinon. Le plafond `PVP_HIT_CAP` ne saute que pour ces touches validées (`host_apply_damage_fl`).
+- **Chaîne de tirs pleine = one-shot** : pas de nouvelle jauge, c'est la CHAINE DE TIR existante. Une touche à la tête
+  la fait avancer de 2 ; pleine (8), « ONE-SHOT PRET » s'affiche dans son cadre (son de verrou) et le prochain tir de
+  rail ou d'Élan qui touche un joueur le tue ; la chaîne repart ensuite de zéro, touche ou non. Même règle pour tous ;
+  l'hôte tient une chaîne miroir par joueur (+ la valeur annoncée dans `NetPState.spare[1]`) et refuse un one-shot qu'il
+  n'a pas vu venir. Contre les ennemis du solo et des VAGUES : même règle, la touche les tue, **sauf les boss** des
+  VAGUES (touche normale : pas de boss tué d'un coup) ; l'armure des boss et le bouclier du bastion s'appliquent après.
+- **Retours** : chiffres « TETE » (doré) et « ONE-SHOT » (or et rouge), son `S_HEADSHOT`, éclat doré sur la tête,
+  « TETE ! » chez la victime, killfeed `[RAIL TETE]` / `[RAIL ONE-SHOT]`, caméra de mort « ONE-SHOT A LA TETE ».
+- **Ventouse** (option A, « piège ») : collage plus large (0,45 m au lieu de 0,15), une mine posée sur le décor explose
+  seule quand un adversaire passe à moins de 2 m (armée 0,4 s après le collage), **2 mines au départ**. Dégâts et rayon
+  inchangés.
+- **Enclume** (plan 1b de `PLAN_SUITE.md`) : l'onde dépend de la **hauteur de chute** (rayon 2,5 + 0,3 × H jusqu'à 9 m,
+  mur de 0,6 + 0,1 × H jusqu'à 2,6 m) et de la **vitesse horizontale** (ovale étiré vers l'avant jusqu'à ×1,8,
+  raccourci derrière jusqu'à ×0,6). Elle **se propage** à 28 m/s : chaque cible est jugée une fois, au passage du
+  front, et ses pieds au-dessus du mur l'esquivent. Un piqué raté immobilise 0,6 s + 0,02 s par mètre de chute ; la
+  première touche annule l'immobilisation (rebond, dash, vitesse rendue). Mur d'onde orange dessiné chez tous
+  (`EV_SLAM` : rayon, mur, cap et vitesse de l'ovale), repère d'impact en ovale avec la hauteur du mur, HUD
+  « PIQUE … mur … m ». Les bots sautent au passage du front.
+- Réglages : `HEAD_*`, `CHAIN_*`, `MINE_STICK_GROW`, `MINE_PROX_*`, `SLAM_R_*`, `SLAM_WH_*`, `SLAM_FWD_*`, `SLAM_BACK_*`,
+  `SLAM_WAVE_SPEED`, `SLAM_STUN_*` dans `src/reglages/equilibrage.c`.
+- Tests (`--test`) : « tete », « chaine de tirs », « chaine pleine », « elan a la tete », « hote : tete declaree… »,
+  « drone : rail au point faible », « bots : tirs vises a la tete », « ventouse piege », « enclume onde / ovale /
+  propagation / mur ». Captures : `--shot tete.bmp` (chiffres TETE / ONE-SHOT, chaîne pleine), `dm_enclume` (mur d'onde).
+- **Match bot avant / après** (6 matchs de 2 min de chaque côté, mêmes loadouts ; temps pour tuer moyen et kills) :
+
+  | Loadouts (hôte / client) | Avant | Après |
+  |---|---|---|
+  | défaut (rail, roquettes, épée) | 8,4 s, 9 kills | 5,4 s, 10 kills |
+  | rail + Élan, épée / Enclume | 5,1 s, 9 kills | 7,3 s, 11 kills |
+  | Ventouse + Élan + Enclume des deux côtés | 2,6 s, 7 kills | 5,4 s, 8 kills |
+  | Ventouse, roquettes, Enclume / rail, roquettes, épée | 2,2 s, 7 kills | 2,4 s, 7 kills |
+  | Éventail + Scie, Lance / Yoyo | 15,4 s, 8 kills | 4,9 s, 1 kill (peu de combats) |
+  | Tesla + rail, Poings / rail + Tesla, Égide | 12,9 s, 8 kills | 4,4 s, 9 kills |
+
+  Ce que les bots en tirent : 3 têtes à l'Élan (validées par l'hôte, aucun refus), pas de tête au rail sur cette série
+  (1 à 5 par match sur la série précédente), **jamais la chaîne pleine** (8 touches de suite : c'est une récompense de
+  joueur précis, les bots touchent ~38 % de leurs tirs). **Ventouse : toujours 0 touche** : les bots lancent leurs
+  mines à 10–20 m d'une cible qui bouge, elles collent au décor et le piège ne s'est jamais déclenché (les bots ne
+  posent pas de pièges sur les passages). **Enclume** : l'onde touche ~1 fois sur 8 avant comme après, car les bots
+  piquent de 2–3 m (petites ondes : 3,1 m de rayon) ; le plan récompense les gros piqués, qu'ils ne cherchent pas.
+  Le temps pour tuer varie surtout avec le hasard des rencontres (un match de 2 min fait 1 à 11 kills) : à
+  vérifier en partie humaine, surtout la Ventouse et l'Enclume.
+
 ## Vérifications faites
 
 - Compilation macOS sans avertissement ; tous les tests `--test` conformes, y compris ceux d'`origin/dev` (stéréo,
