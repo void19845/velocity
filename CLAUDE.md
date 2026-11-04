@@ -19,7 +19,8 @@ Le propriétaire est francophone : réponses, commentaires et docs **en françai
 - **Mode classé** (PARTIE CLASSEE, cote Elo, encadré CLASSEMENT / TOP 3) : **§4 « Mode classé » de `docs/CODE.md`**.
   Le serveur fait foi : la cote est calculée par le worker et stockée dans sa base **D1 `leaderboard`**
   (binding `LEADERBOARD`, `worker/src/ratings.js`) ; côté jeu, `src/reseau/classe.c` (Elo, paliers, identité), `src/reseau/classe_match.c` (rapports de fin de match),
-  `src/reseau/classe_serveur.c` (requêtes au serveur) et `src/plateforme/http.c` (HTTP : WinHTTP / curl). Une partie classée est toujours en chacun pour soi, aux
+  `src/reseau/classe_serveur.c` (requêtes au serveur), `src/reseau/discord.c` (connexion Discord : un compte Discord =
+  une identité, `worker/src/discord.js`) et `src/plateforme/http.c` (HTTP : WinHTTP / curl). Une partie classée est toujours en chacun pour soi, aux
   règles par défaut, sans bots, hors cartes CHALLENGE (LA TOILE).
 - **Mode VAGUES** (le solo : 100 vagues, boss aux vagues 25/50/75/100, sélecteur de carte toutes les 10, boutique de
   comportements, INFINI) : **§3.5 de `docs/CODE.md`**, code dans `src/solo/`. Aucune inflation : les dégâts des ennemis

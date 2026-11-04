@@ -56,6 +56,7 @@ static void cfg_save(void) {
     if (lobbyIni[0] && strcmp(lobbyIni, LOBBY_DEFAULT)) fprintf(f, "lobby=%s" "\n", lobbyIni);   /* pas --lobby ; le defaut peut changer */
     if (hex_ok(rkId, 32) && hex_ok(rkKey, 32))           /* mode classe : identite, puis cache de la cote (le serveur fait foi) */
         fprintf(f, "ranked_id=%s" "\n" "ranked_key=%s" "\n", rkId, rkKey);
+    if (rkDiscord[0]) fprintf(f, "discord=%s" "\n", rkDiscord);   /* compte Discord lie (affichage seulement) */
     fprintf(f, "mmr=%d" "\n" "ranked_played=%d" "\n" "ranked_wins=%d" "\n", myMmr, rankPlayed, rankWins);
     for (int a = 0; a < A_COUNT; a++) fprintf(f, "bind_%s=%d,%d" "\n", actId[a], binds[a][0], binds[a][1]);
     fclose(f);
@@ -93,6 +94,7 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
         else if (!strcmp(line, "lobby") && v[0]) { snprintf(lobbyAddr, sizeof lobbyAddr, "%s", v); snprintf(lobbyIni, sizeof lobbyIni, "%s", v); }
         else if (!strcmp(line, "ranked_id") && hex_ok(v, 32)) snprintf(rkId, sizeof rkId, "%s", v);
         else if (!strcmp(line, "ranked_key") && hex_ok(v, 32)) snprintf(rkKey, sizeof rkKey, "%s", v);
+        else if (!strcmp(line, "discord")) dc_name_set(v);
         else if (!strcmp(line, "mmr")) myMmr = rank_clamp(atoi(v));
         else if (!strcmp(line, "ranked_played")) rankPlayed = atoi(v) < 0 ? 0 : atoi(v);
         else if (!strcmp(line, "ranked_wins")) rankWins = atoi(v) < 0 ? 0 : atoi(v);

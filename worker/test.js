@@ -4,6 +4,7 @@
 import { startDevServer } from './dev-server.js';
 import { eloDelta, tierName, rankLabel, handleRanked, RANK } from './src/ratings.js';
 import { handleSpeedrun, runError, SR } from './src/speedrun.js';
+import { dcName } from './src/discord.js';
 import crypto from 'node:crypto';
 
 const PORT = 8799;
@@ -338,6 +339,61 @@ check('speedrun : depart par HTTP', [r.status, r.ok], [200, true]);
 let srLimited = false;
 for (let n = 0; n < SR.RATE_PER_MIN + 2 && !srLimited; n++) srLimited = (await sr('/speedrun/start', { ...S2, cat: toile }, now))[0] === 429;
 check('speedrun : limite de debit (compteur a part du mode classe)', srLimited, true);
+
+// --- connexion Discord : un compte Discord = une identite (faux Discord du dev-server) ---
+const dcGet = (path, follow = false) => fetch(`http://127.0.0.1:${PORT}${path}`, { redirect: follow ? 'follow' : 'manual' });
+const dcBack = (code, state) => dcGet(`/auth/discord/callback?code=${code}&state=${state}`);
+const D1 = ident('Dana'), E1 = ident('Autre'), s1 = hex(16), s2 = hex(16), s3 = hex(16), s4 = hex(16);
+await post('/ranked/hello', D1);
+r = await post('/auth/discord/start', { ...D1, state: s1 });
+check('discord : demande enregistree', r.ok, true);
+r = await post('/auth/discord/start', { ...E1, state: s1 });
+check('discord : state deja pris par un autre', r.status, 409);
+r = await post('/auth/discord/poll', { ...D1, state: s1 });
+check('discord : en attente du navigateur', r.state, 'pending');
+let hr = await dcGet(`/auth/discord/go?s=${s1}`);
+const loc = new URL(hr.headers.get('location') || 'http://x/');
+check('discord : redirection vers la page d\'autorisation',
+  [hr.status, loc.pathname, loc.searchParams.get('state'), loc.searchParams.get('scope')], [302, '/fake-discord/authorize', s1, 'identify']);
+hr = await dcBack('fake.111.dana_dc', s1);
+check('discord : retour de Discord', [hr.status, (await hr.text()).includes('Connecte : dana_dc')], [200, true]);
+r = await post('/auth/discord/poll', { ...D1, key: hex(16), state: s1 });
+check('discord : poll avec une mauvaise cle', r.status, 403);
+r = await post('/auth/discord/poll', { ...E1, state: s1 });
+check('discord : poll par une autre identite', r.state, 'expired');
+r = await post('/auth/discord/poll', { ...D1, state: s1 });
+check('discord : premiere connexion, l\'identite est liee', [r.state, r.id, r.key, r.name, r.discord], ['done', D1.id, D1.key, 'Dana', 'dana_dc']);
+r = await post('/auth/discord/poll', { ...D1, state: s1 });
+check('discord : la demande ne sert qu\'une fois', r.state, 'expired');
+// second appareil : meme compte Discord -> meme identite, cle a lui, l'ancienne cle marche toujours
+await post('/ranked/hello', E1);
+await post('/auth/discord/start', { ...E1, state: s2 });
+await dcBack('fake.111.dana_dc', s2);
+r = await post('/auth/discord/poll', { ...E1, state: s2 });
+check('discord : second appareil, meme identite, cle neuve', [r.state, r.id, r.key !== E1.key, r.name], ['done', D1.id, true, 'Dana']);
+const D2 = { id: r.id, key: r.key };
+r = await post('/ranked/hello', { ...D2, name: 'DanaPC2' });
+check('discord : la cle du second appareil est acceptee', r.ok, true);
+check('discord : pseudo change pour ce compte Discord', (await db.prepare('SELECT name FROM players WHERE id = ?').bind(D1.id).first()).name, 'DanaPC2');
+r = await post('/ranked/hello', D1);
+check('discord : la cle du premier appareil reste valable', r.ok, true);
+// identite deja liee, autre compte Discord : identite neuve pour ce compte
+await post('/auth/discord/start', { ...D1, state: s3 });
+await dcBack('fake.222.zed', s3);
+r = await post('/auth/discord/poll', { ...D1, state: s3 });
+check('discord : autre compte -> identite neuve', [r.state, r.id !== D1.id, r.name, r.discord], ['done', true, 'zed', 'zed']);
+r = await post('/ranked/hello', { id: r.id, key: r.key });
+check('discord : identite neuve utilisable', [r.ok, r.mmr, r.played], [true, RANK.START, 0]);
+// tout le chemin par le navigateur : go -> (faux) Discord -> callback
+const F1 = ident('Fab');
+await post('/auth/discord/start', { ...F1, state: s4 });
+hr = await dcGet(`/auth/discord/go?s=${s4}`, true);
+check('discord : chemin complet dans le navigateur', [hr.status, (await hr.text()).includes('Connecte : testeur')], [200, true]);
+r = await post('/auth/discord/poll', { ...F1, state: s4 });
+check('discord : chemin complet, compte lie', [r.state, r.id, r.discord], ['done', F1.id, 'testeur']);
+hr = await dcBack('fake.333.x', hex(16));
+check('discord : retour pour une demande inconnue', hr.status, 400);
+check('discord : nom du compte nettoye', dcName('ab c<>é_.-9'), 'abc_.-9');
 
 console.log(fails ? `${fails} echec(s)` : 'tous les tests passent');
 server.close();

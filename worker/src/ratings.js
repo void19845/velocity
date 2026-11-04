@@ -25,9 +25,9 @@ export const RANK = {
   TOP: 10,
 };
 
-const HEX32 = /^[0-9a-f]{32}$/;
+export const HEX32 = /^[0-9a-f]{32}$/;
 const MID_RE = /^[0-9a-f]{16}$/;
-const NAME_RE = /^[\w.\-]{1,15}$/;
+export const NAME_RE = /^[\w.\-]{1,15}$/;
 
 // --- Elo ---------------------------------------------------------------------------------------------
 export function expectScore(ra, rb) { return 1 / (1 + Math.pow(10, (rb - ra) / 400)); }
@@ -102,6 +102,8 @@ export function schema(db) {
     `CREATE TABLE IF NOT EXISTS reports (mid TEXT NOT NULL, reporter TEXT NOT NULL, body TEXT NOT NULL,
      at INTEGER NOT NULL, PRIMARY KEY (mid, reporter))`,
     'CREATE TABLE IF NOT EXISTS rate (id TEXT PRIMARY KEY, win INTEGER NOT NULL, n INTEGER NOT NULL)',
+    // cles supplementaires d'une identite : une par appareil connecte avec Discord (discord.js)
+    'CREATE TABLE IF NOT EXISTS player_keys (keyhash TEXT PRIMARY KEY, pid TEXT NOT NULL, created INTEGER NOT NULL)',
   ].map((q) => db.prepare(q)));
 }
 
@@ -137,7 +139,10 @@ export async function auth(db, req, now, create, rate = { key: req.id, perMin: R
       req.id, kh, name, RANK.START, now);
     p = await one(db, 'SELECT * FROM players WHERE id = ?', req.id);
   }
-  if (p.keyhash !== kh) return { err: 'mauvaise cle', status: 403 };
+  // la cle d'origine, ou celle d'un autre appareil donnee par une connexion Discord (player_keys)
+  if (p.keyhash !== kh && !(await one(db, 'SELECT 1 AS k FROM player_keys WHERE keyhash = ? AND pid = ?', kh, p.id))) {
+    return { err: 'mauvaise cle', status: 403 };
+  }
   return { p };
 }
 

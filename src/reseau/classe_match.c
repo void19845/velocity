@@ -19,6 +19,12 @@ static void client_send_join(void) {                      /* PK_JOIN : aussi ren
 }
 
 static int rk_slot_ok(int i) { return i >= 0 && i < MAXP && NP[i].active && rid_set(rkRid[i]); }
+/* cote annoncee par une identite (PkJoin -> PkRoster) : la place d'un joueur parti la garde tant qu'elle n'est pas reprise */
+static int rk_mmr_of(const unsigned char *rid) {
+    for (int i = 0; i <= MAXP; i++)
+        if (rid_set(rkRid[i]) && !memcmp(rkRid[i], rid, 16)) return rkMmr[i] ? rkMmr[i] : RANK_START;
+    return myMmr;                                         /* inconnue : supposee egale a la mienne */
+}
 
 /* hostGone : l'hote est parti en plein match (il rejoint les partis, pas de gagnant) */
 static void rk_send_report(int hostGone) {
@@ -57,13 +63,13 @@ static void rk_send_report(int hostGone) {
         n += snprintf(body + n, sizeof body - n, "%s\"%s\"", nl++ ? "," : "", h);
     }
     snprintf(body + n, sizeof body - n, "]}");
-    n = 0;                                                /* estimation locale (meme formule que le serveur, partis exclus) */
+    n = 0;                                                /* estimation locale (meme formule que le serveur) */
     for (int i = 0; i < MAXP; i++) {
         if (i == myId || !rk_slot_ok(i) || (hostGone && i == 0)) continue;
         opp[n] = rkMmr[i] ? rkMmr[i] : RANK_START;
         sc[n++] = rank_score(NP[myId].kills, NP[i].kills, win == myId, win == i);
     }
-    for (int k = 0; k < ln; k++) { opp[n] = myMmr; sc[n++] = 1; }   /* partis : cote inconnue ici, supposee egale */
+    for (int k = 0; k < ln; k++) { opp[n] = rk_mmr_of(lst[k]); sc[n++] = 1; }   /* partis : battus, a leur cote annoncee */
     rkEstimate = rank_delta(myMmr, rankPlayed, n, opp, sc);
     snprintf(rkRepBody, sizeof rkRepBody, "%s", body);
     rkRepState = RS_PENDING; rkRepTries = 0; rkRepRetryT = 0;

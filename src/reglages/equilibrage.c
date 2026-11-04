@@ -598,3 +598,5 @@ static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, M
 #define RANK_END_WAIT  0.5f   /* fin de match : attente des derniers frags (PK_SNAP) avant le rapport */
 #define RANK_RETRY     2.5f   /* rapport en attente des autres joueurs : renvoye toutes les 2,5 s ... */
 #define RANK_TRIES     24     /* ... pendant 60 s au plus */
+#define RANK_MENU_RETRY   15.0 /* menu : cote et TOP 3 redemandes 15 s apres un echec (serveur qui se reveille) ... */
+#define RANK_MENU_REFRESH 60.0 /* ... et toutes les 60 s sinon, tant que le menu est affiche */

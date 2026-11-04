@@ -106,6 +106,7 @@
 #include "src/interface/config.c"                /* velocity.ini : reglages et touches du joueur */
 #include "src/reseau/classe_serveur.c"           /* mode classe : requetes au serveur de classement (hello, top, rapport) */
 #include "src/reseau/speedrun_serveur.c"         /* speedrun : ticket, temps et classements au serveur */
+#include "src/reseau/discord.c"                  /* connexion Discord : un compte Discord = une identite de classement */
 #include "src/interface/menus.c"                 /* boutons, menus, parametres, loadout, ecran SKIN */
 #include "src/interface/scores.c"                /* tableau des scores, killfeed, pseudos */
 

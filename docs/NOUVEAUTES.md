@@ -512,6 +512,37 @@ Branche `claude/equilibrage-tete-1385aa`. `NET_VER` **19**.
 - Tests : les lignes « specialisations » et « SOUTIEN » sont retirées ; nouvelle ligne « reglages : ancien regles=
   (6 champs) ».
 
+## 34. Pseudo verrouillé et connexion Discord
+
+- Le champ **PSEUDO** du menu ne s'ouvre plus d'un clic : il faut un **double-clic** (astuce « double-clic pour
+  modifier » au survol). Quand la saisie se termine avec un nouveau pseudo, le jeu le renvoie tout de suite au serveur
+  (`/ranked/hello`) : le classement et les speedruns affichent le nouveau nom.
+- Bouton **DISCORD** à droite du pseudo : ouvre la connexion Discord dans le navigateur, puis le jeu attend la
+  validation. Un compte Discord = **une seule identité de classement** : sur un autre PC, la même connexion redonne
+  la même cote, les mêmes matchs, les mêmes temps et le même pseudo (chaque PC reçoit sa propre clé). La première
+  connexion rattache l'identité actuelle au compte. Le compte lié s'affiche en vert au-dessus du bouton.
+- `velocity.ini` : nouvelle clé `discord=` (affichage). Réseau de jeu inchangé (pas de `NET_VER`).
+- **À faire par le propriétaire** : créer l'application Discord, déclarer la redirection
+  `https://<worker>/auth/discord/callback`, mettre `DISCORD_CLIENT_ID` dans `worker/wrangler.toml`,
+  `npx wrangler secret put DISCORD_CLIENT_SECRET`, puis `npx wrangler deploy`. Sans ça, le bouton répond
+  « DISCORD indisponible : discord non configure ».
+- Code : `src/reseau/discord.c`, `field_click` dans `src/interface/menus.c`, `rkNameSent` dans
+  `src/reseau/classe_serveur.c`, `worker/src/discord.js` (+ `player_keys` dans `ratings.js`). Tests : lignes
+  « discord » et « menus : PSEUDO » de `--test`, 19 lignes « discord » de `node test.js` ; de bout en bout avec le faux
+  Discord du `dev-server.js` : `DISCORD_LOBBY=127.0.0.1:8787` (§4 « Mode classé » de `CODE.md`).
+
+## 35. Classement relu au lancement, estimation de fin de match, bots muets
+
+- Le classement (cote, rang, TOP 3) est demandé au lancement **et redemandé tout seul** dans le menu : 15 s après un
+  échec (serveur Cloudflare qui se réveille, réseau pas encore prêt), puis toutes les 60 s (`RANK_MENU_RETRY`,
+  `RANK_MENU_REFRESH`). Avant, un échec au lancement laissait « classement indisponible » et l'ancienne cote du
+  cache jusqu'à la prochaine partie classée.
+- Estimation de fin de match classée : un joueur parti compte à la **cote qu'il avait annoncée** (et plus à la
+  mienne) : l'estimation affichée en attendant le serveur est la même que la variation du serveur.
+- `--bot` : son et musique coupés.
+- Tests : ligne « classe rapport : estimation avec la cote du parti » ; vérifié en vrai : lancement sans lobby, lobby
+  démarré 6 s plus tard, cote reçue à 15 s ; match classé de bots (5 matchs appliqués, ±60 des deux côtés).
+
 ## Vérifications faites
 
 - Compilation macOS sans avertissement ; tous les tests `--test` conformes, y compris ceux d'`origin/dev` (stéréo,

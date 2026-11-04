@@ -10,15 +10,31 @@ static int button(float x, float y, float w, float h, const char *label) {
     return 0;
 }
 
+/* le champ PSEUDO (id 1) est verrouille : il faut un double-clic (deux clics en moins de UI_DBLCLICK ms) pour
+   le modifier, pour ne pas le changer par megarde ; les autres champs s'ouvrent d'un clic. 1 = ouvrir la saisie */
+#define UI_DBLCLICK 450
+static int fieldLastId;
+static unsigned fieldLastMs;
+static int field_click(int id, unsigned ms) {
+    int dbl = fieldLastId == id && ms - fieldLastMs < UI_DBLCLICK;
+    fieldLastId = id; fieldLastMs = ms;
+    if (id != 1 || uiFocus == id || dbl) { fieldLastId = 0; return 1; }   /* un troisieme clic ne recompte pas */
+    return 0;
+}
+
 static void field(float x, float y, float w, float h, const char *label, const char *val, int id) {
     int hover = uiMX >= x && uiMX < x + w && uiMY >= y && uiMY < y + h, focus = uiFocus == id;
     char buf[64];
     text(0, x, y - 8, label, 0.7f, 0.75f, 0.85f, 1);
+    if (id == 1 && hover && !focus) {                     /* champ verrouille : l'astuce au survol */
+        const char *tip = "double-clic pour modifier";
+        text(0, x + w - fontW[0] * (float)strlen(tip), y - 8, tip, 0.55f, 0.6f, 0.7f, 1);
+    }
     rect(x, y, w, h, 0.05f, 0.06f, 0.1f, 0.9f);
     rect(x, y + h - 2, w, 2, focus ? 1.0f : 0.4f, focus ? 0.8f : 0.4f, focus ? 0.35f : 0.5f, 1);
     snprintf(buf, sizeof buf, "%s%s", val, (focus && ((GetTickCount() / 400) & 1)) ? "_" : "");
     text(1, x + 10, y + h * 0.5f + fontH[1] * 0.3f, buf, 1, 1, 1, 1);
-    if (hover && uiClick) { uiClick = 0; uiFocus = id; }
+    if (hover && uiClick) { uiClick = 0; if (field_click(id, GetTickCount())) uiFocus = id; }
 }
 
 /* aide : les commandes actuelles (reaffectables dans PARAMETRES) et les astuces de jeu */
@@ -303,7 +319,9 @@ static void draw_skin_menu(float cx, float cy) {
     text_c(2, cx, cy - 300, "SKIN", 0.5f, 0.9f, 1.0f, 1);
     text_c(0, cx, cy - 266, "la couleur de ton perso est celle de ton equipe (ou la tienne en chacun pour soi)", 0.7f, 0.75f, 0.85f, 1);
     float bx = cx - 520, y = cy - 220;
+    if (!skin_unlocked(wantSkin)) wantSkin = SKN_ROBOT;
     for (int k = 0; k < SKN_COUNT; k++) {
+        if (!skin_unlocked(k)) continue;                  /* easter egg : POUSSIN cache tant qu'il n'est pas debloque */
         if (button(bx, y, 320, 54, skinNames[k])) { wantSkin = k; cfg_save(); }
         if (wantSkin == k) {
             rect(bx, y, 320, 3, 1, 0.85f, 0.4f, 1); rect(bx, y + 51, 320, 3, 1, 0.85f, 0.4f, 1);
@@ -319,9 +337,7 @@ static void draw_skin_menu(float cx, float cy) {
     if (button(bx, y, 320, 52, "VALIDER")) { skinOpen = 0; cfg_save(); }
     float px = cx - 140, py = cy - 230, pw = 640, ph = 520;   /* apercu 3D */
     rect(px, py, pw, ph, 0.05f, 0.06f, 0.1f, 0.7f);
-    if (!skin_unlocked(wantSkin)) wantSkin = SKN_ROBOT;
     rect(px, py + ph - 3, pw, 3, 0.5f, 0.9f, 1.0f, 0.5f);
-        if (!skin_unlocked(k)) continue;                  /* easter egg : POUSSIN cache tant qu'il n'est pas debloque */
     {
         static const float freeCol[3] = { 1.0f, 0.85f, 0.3f };
         const float *c = skinPrevTeam < 2 ? teamCol[skinPrevTeam] : freeCol;
@@ -610,7 +626,17 @@ static void draw_main_menu(float cx, float cy) {
     rect(bx - 30, y - 30, bw + 60, 610, 0.03f, 0.04f, 0.08f, 0.55f);        /* panneau derriere les boutons */
     rect(bx - 30, y - 30, bw + 60, 2, 0.5f, 0.9f, 1.0f, 0.5f);
     rect(bx - 30, y + 578, bw + 60, 2, 0.5f, 0.9f, 1.0f, 0.25f);
-    field(bx, y, bw, 48, "PSEUDO", myName, 1);
+    field(bx, y, bw - 136, 48, "PSEUDO", myName, 1);
+    {                                                     /* compte Discord : meme identite sur tous les PC */
+        float dx = bx + bw - 128;
+        const char *dl = dcState != DC_IDLE ? "navigateur ..." : rkDiscord[0] ? rkDiscord : "COMPTE";
+        char dlb[20];
+        snprintf(dlb, sizeof dlb, "%.*s", (int)(128 / (fontW[0] > 0 ? fontW[0] : 8)), dl);   /* tronque a la largeur */
+        text(0, dx, y - 8, dlb, rkDiscord[0] ? 0.55f : 0.7f, rkDiscord[0] ? 0.95f : 0.75f, rkDiscord[0] ? 0.6f : 0.85f, 1);
+        if (button(dx, y, 128, 48, dcState != DC_IDLE ? "..." : "DISCORD")) dc_begin();
+        if (rkDiscord[0]) rect(dx, y + 45, 128, 3, 0.35f, 0.95f, 0.5f, 0.9f);   /* liseret vert : compte lie */
+        else rect(dx, y + 45, 128, 3, 0.45f, 0.5f, 1.0f, 0.9f);                /* liseret Discord : a connecter */
+    }
     y += 76;
     draw_map_row(bx, y, bw);                              /* carte : solo (cartes solo seulement), duel, heberger */
     y += 54;

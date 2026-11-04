@@ -171,6 +171,7 @@ velocity/
 | `reseau/client.c` | client | `on_welcome`, `apply_snap`, `client_recv`, `net_update`, `net_connect` |
 | `reseau/en_ligne.c` | lobby et STUN (voir §4) | `stun_*`, `lb_*`, `join_found`, `quick_play`, `ranked_play` |
 | `reseau/classe.c` | mode classé (§4 « Mode classé ») : état, formule Elo, paliers, identité, cartes et règles imposées | `rank_delta`, `rank_tier`, `rank_div`, `rank_label`, `rank_col`, `rk_identity`, `rk_new_match`, `rk_map_ok`, `rk_map_pick`, `rk_counts` |
+| `reseau/discord.c` | connexion Discord (§4 « Mode classé ») : un compte Discord = une identité de classement | `dc_begin`, `dc_take`, `dc_on_response`, `dc_tick` |
 | `reseau/classe_match.c` | mode classé : suivi du match et rapport de fin | `rk_send_report`, `rk_tick`, `rk_host_gone`, `rk_shutdown` |
 | `reseau/classe_serveur.c` | mode classé : file de requêtes au serveur de classement (fil de fond), lecture des réponses JSON | `rk_http`, `rk_thread`, `rk_push`, `rq_hello`, `rq_top`, `rk_on_hello`, `rk_on_report`, `rk_net_poll`, `rk_bot_final` |
 | `reseau/speedrun_serveur.c` | speedrun (§4 « Speedrun ») : ticket, rapport de temps, classements | `speedrun_begin`, `speedrun_report`, `speedrun_report_splits`, `rq_sr_top`, `rq_sr_top_all`, `sr_parse_top`, `sr_on_response` |
@@ -653,7 +654,7 @@ F2/F3 (sensibilité), F11 (plein écran), R (recommencer en solo, `latch[SC_R]`)
   `name`, `sens`, `fov`, `volume`, `invert_y`, `show_fps`, `fullscreen`, `impact_frames`, `screen_fx`,
   `online`, `update_check` (vérifier les mises à jour au démarrage), `map` (carte choisie, §3.18), `map_rotate`,
   `second_ecran` (**0 par défaut**, §3.15), `ranked_id` / `ranked_key` (identité du mode classé, créée au premier
-  lancement, §4 « Mode classé »), `mmr` / `ranked_played` / `ranked_wins` (simple **cache d'affichage** de la cote :
+  lancement, §4 « Mode classé »), `discord` (compte Discord lié, affichage), `mmr` / `ranked_played` / `ranked_wins` (simple **cache d'affichage** de la cote :
   le serveur fait foi), puis `bind_<actId>=code1,code2`.
 - `cfg_load` lit au démarrage (pas en mode bot ni `--shot`), borne les valeurs (`clampf`) et ignore
   les clés inconnues. Il renvoie 1 si le plein écran est demandé.
@@ -1308,7 +1309,34 @@ dans `src/plateforme/demarrage.c` ; tests dans `src/tests/tests.c`.
 **Identité** — au premier lancement, `rk_identity` tire `ranked_id` (128 bits) et `ranked_key` (128 bits secrets,
 `RtlGenRandom` sous Windows, `arc4random_buf` sous macOS), écrits dans `velocity.ini`. Le serveur enregistre le SHA-256
 de la clé au premier contact (confiance au premier usage) ; toute requête ensuite doit présenter la clé (sinon 403).
-Le pseudo peut changer. Les bots (`--bot … --ranked`) utilisent une identité temporaire (jamais sauvegardée).
+Le pseudo peut changer : le champ PSEUDO du menu est **verrouillé** (double-clic pour le modifier, `field_click` dans
+`menus.c`) et, dès que la saisie se termine avec un pseudo différent, `rk_net_poll` renvoie un `hello` (`rkNameSent`) :
+le serveur met à jour `players.name` de cette identité. Les bots (`--bot … --ranked`) utilisent une identité
+temporaire (jamais sauvegardée).
+
+**Connexion Discord** (bouton DISCORD à droite du pseudo ; `src/reseau/discord.c`, `worker/src/discord.js`) — un
+compte Discord = **une seule identité** (`players.id`) sur tous les PC :
+
+| Requête | Corps / paramètres | Réponse |
+|---|---|---|
+| `POST /auth/discord/start` | `{id, key, name, state}` (`state` : 32 hex tirés par le jeu) | `{ok}` ; 503 `discord non configure` |
+| `GET /auth/discord/go?s=STATE` | ouvert dans le navigateur du système (`open_url`) | 302 vers la page d'autorisation Discord (`scope=identify`) |
+| `GET /auth/discord/callback?code&state` | retour de Discord | page HTML « Connecte : <compte> » ; le Worker échange le code avec son secret |
+| `POST /auth/discord/poll` | `{id, key, state}` (toutes les 2 s, `DC_POLL`, abandon après 300 s) | `{ok, state:"pending"}`, `expired`, ou `done` + `{id, key, name, discord}` |
+
+- Tables D1 : `discord (did → pid, unique des deux côtés, dname)`, `dc_logins` (demandes, 10 min, à usage unique),
+  `player_keys` (clés supplémentaires d'une identité : `auth()` accepte la clé d'origine ou l'une d'elles).
+- Compte Discord **déjà lié** à P : le jeu passe sur P avec une **clé neuve** pour ce PC (les autres PC gardent la
+  leur) et reprend le pseudo enregistré ; compte **nouveau** : l'identité actuelle lui est liée (cote, matchs et temps
+  gardés) ; si elle est déjà liée à un autre compte, une identité neuve est créée (pseudo = nom du compte Discord).
+- `poll` exige l'identité qui a lancé la demande (le `state` passe par l'historique du navigateur). Limite :
+  40 requêtes/min par identité (compteur `dc:<id>`). `velocity.ini` : `discord=<compte>` (affichage seulement).
+- Configuration du propriétaire : application sur https://discord.com/developers/applications, URL de redirection
+  `https://<worker>/auth/discord/callback` (OAuth2 > Redirects), `DISCORD_CLIENT_ID` dans `[vars]` de
+  `wrangler.toml`, `npx wrangler secret put DISCORD_CLIENT_SECRET`, puis `npx wrangler deploy`.
+- Local : `dev-server.js` remplace Discord par un faux (`/fake-discord/authorize` accepte tout de suite le compte
+  `DISCORD_FAKE_USER`, `424242.testeur` par défaut). De bout en bout : `DISCORD_LOBBY=127.0.0.1:8787` puis `--test`
+  (ligne « discord de bout en bout » : liaison, 2e PC sur la même identité avec sa clé, pseudo mis à jour au serveur).
 
 **Requêtes HTTP** (`rk_http` dans `src/reseau/classe_serveur.c`, sur `http_request` de `src/plateforme/http.c`, une à la fois dans un fil : WinHTTP sous Windows, `curl` du système sous macOS ; même
 hôte que le lobby, `lobbyAddr`, donc `--lobby 127.0.0.1:8787` vise le `dev-server.js`) :
@@ -1319,7 +1347,10 @@ hôte que le lobby, `lobbyAddr`, donc `--lobby 127.0.0.1:8787` vise le `dev-serv
 | `POST /ranked/report` | `{id, key, match, host, winner, players:[{id, kills}], left:[id]}` | `{ok, state:"pending"}` ou `{ok, state:"applied", delta, mmr, played, wins, tier}` ; `expired`, `ignored` |
 | `GET /ranked/top?id=…` | — | `{ok, top:[{name, mmr, tier, played}] (10 max, placement fini), me:{rank, mmr, …}}` |
 
-Au démarrage (hors `--shot`/`--test`, et hors bots sans `--ranked`) : `hello` puis `top`. Le menu principal affiche
+Au démarrage (hors `--shot`/`--test`, et hors bots sans `--ranked`) : `hello` puis `top`. Ensuite, tant que le
+menu principal est affiché (`rkMenuAuto`, jeu normal seulement), `rk_net_poll` les redemande tout seul :
+`RANK_MENU_RETRY` (15 s) après un échec (serveur qui se réveille, réseau pas prêt au lancement), sinon toutes les
+`RANK_MENU_REFRESH` (60 s) (`src/reglages/equilibrage.c`). Le menu principal affiche
 l'encadré **CLASSEMENT** (`draw_rank_box`) : mon palier et ma cote, `#rang`, puis le **TOP 3** (podium or / argent /
 bronze) et une 4e ligne « toi : #rang, cote » si je n'y suis pas ; « classement indisponible » sans réseau. Sous
 ~1540 px de large, l'encadré devient une ligne sous le titre. Il est rafraîchi après chaque match classé.
@@ -1395,7 +1426,7 @@ peut pas le déclarer parti) ; la cote annoncée dans `PkJoin` (affichage, match
 Tests : lignes `classe …` de `run_tests()` (`src/tests/tests.c` : Elo, abandon, paliers, placement, identité, `velocity.ini` de test,
 lecture du TOP, construction du rapport) ; `node test.js` (lobby classé, Elo, enregistrement, mauvaise clé,
 concordance, désaccord, rapport seul, abandon, hôte parti, expiration, rapports simultanés, deux matchs simultanés
-du même joueur, top, limite de débit) ;
+du même joueur, top, limite de débit, connexion Discord : liaison, 2e appareil, clé propre, pseudo, autre compte) ;
 `--shot ranked.bmp` (fin de match classée) et `--shot menu.bmp` (encadré TOP 3 avec données factices).
 
 ### Speedrun : classements des meilleurs temps
@@ -1801,6 +1832,7 @@ velocity.exe --bot host|join [--name N] [--time S] [--log fichier.txt] [--botsho
   (20 par défaut). `--log` : journal (`netlog`). `--botshot` : capture BMP à la fin. `--map N` : carte hébergée
   (§3.18 ; le client reçoit celle de l'hôte). Sur une carte à vide, le résumé ajoute les chutes (« carte … : chutes
   dans le vide », et côté hôte « vide (arbitre) : … chutes, … creditees a l'attaquant, … suicides »).
+- Son et musique coupés (`masterVol = musicVol = 0`), quel que soit `velocity.ini`.
 - Fenêtres réduites à 800 × 450, l'hôte à gauche, le client à droite ; souris jamais capturée ;
   `velocity.ini` jamais lu ni écrit.
 - **Visée** : un tirage par tir (`bot_roll_aim`) : cadré avec la probabilité `botHitP[niveau]` (18 / 38 / 60 %,

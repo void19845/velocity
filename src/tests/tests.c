@@ -3406,6 +3406,39 @@ static void run_tests(const char *path) {
                 snprintf(lobbyAddr, sizeof lobbyAddr, "%s", sLobby);
                 memset(srTop, 0, sizeof srTop); memset(srRun, 0, sizeof srRun); memset(srTicket, 0, sizeof srTicket); rkQN = 0;
             }
+            if (getenv("DISCORD_LOBBY")) {                /* connexion Discord de bout en bout avec le faux Discord du lobby local
+                                                           * (cd worker && node dev-server.js 8787), DISCORD_LOBBY=127.0.0.1:8787 */
+                char sLobby[96], sName[16], sDc[33], page[2048], path[96], id0[33], key0[33];
+                int sMm = myMmr, sPl = rankPlayed, sWi = rankWins, uf = uiFocus;
+                snprintf(sLobby, sizeof sLobby, "%s", lobbyAddr); snprintf(lobbyAddr, sizeof lobbyAddr, "%s", getenv("DISCORD_LOBBY"));
+                memcpy(sName, myName, 16); memcpy(sDc, rkDiscord, 33);
+                onlineOn = 1; uiFocus = 0; rkId[0] = rkKey[0] = 0; rk_identity(); rkDiscord[0] = 0; dcState = DC_IDLE;
+                memcpy(id0, rkId, 33); memcpy(key0, rkKey, 33);
+                snprintf(myName, sizeof myName, "Avant");
+                int waiting = 0, nav = 0, linked = 0, same = 0, ownKey = 0;
+                for (int dev = 0; dev < 2; dev++) {       /* 1er PC, puis un 2e PC (identite neuve) avec le meme compte Discord */
+                    if (dev) { rkId[0] = rkKey[0] = 0; rk_identity(); rkDiscord[0] = 0; snprintf(myName, sizeof myName, "Autre"); }
+                    dc_begin();
+                    for (int k = 0; k < 100 && dcState == DC_START; k++) { SR_SLEEP(50); rk_net_poll(); }
+                    waiting += dcState == DC_WAITING;
+                    snprintf(path, sizeof path, "/auth/discord/go?s=%s", dcStateHex);   /* le navigateur : redirections suivies */
+                    nav += http_request(lobbyAddr, path, NULL, page, sizeof page) && strstr(page, "Connecte : testeur") != NULL;
+                    for (int k = 0; k < 200 && dcState == DC_WAITING; k++) { SR_SLEEP(20); nowT += 0.05; rk_net_poll(); }
+                    if (!dev) {
+                        linked = dcState == DC_IDLE && !strcmp(rkId, id0) && !strcmp(rkDiscord, "testeur");
+                        snprintf(myName, sizeof myName, "Apres");   /* pseudo change : le serveur le note pour ce compte */
+                    } else {
+                        same = !strcmp(rkId, id0);
+                        ownKey = hex_ok(rkKey, 32) && strcmp(rkKey, key0) != 0;
+                    }
+                    for (int k = 0; k < 100 && (k < 5 || rkTh || rkQN || rkHelloBusy); k++) { SR_SLEEP(20); nowT += 0.05; rk_net_poll(); }
+                }
+                fprintf(f, "discord de bout en bout (%s) : attente navigateur %d, page %d, lie %d, 2e PC meme identite %d, cle propre %d, "
+                           "pseudo du compte %s (attendu 2, 2, 1, 1, 1, Apres)\n", lobbyAddr, waiting, nav, linked, same, ownKey, myName);
+                snprintf(lobbyAddr, sizeof lobbyAddr, "%s", sLobby);
+                memcpy(myName, sName, 16); memcpy(rkDiscord, sDc, 33);
+                myMmr = sMm; rankPlayed = sPl; rankWins = sWi; uiFocus = uf; dcState = DC_IDLE; rkQN = 0; rkNameSent[0] = 0;
+            }
 #undef SR_SLEEP
             onlineOn = so; memcpy(rkId, sid, 33); memcpy(rkKey, skey, 33);
             botMode = savedBot; botLog = logSave;
@@ -4002,6 +4035,46 @@ static void run_tests(const char *path) {
         cfgPath[0] = 0;
         botMode = savedBot;
 
+        {                                                 /* connexion Discord : reponse du serveur, pseudo, velocity.ini */
+            char sId[33], sKey[33], sName[16], sDc[33];
+            int sMm = myMmr, sPl = rankPlayed, sWi = rankWins;
+            memcpy(sId, rkId, 33); memcpy(sKey, rkKey, 33); memcpy(sName, myName, 16); memcpy(sDc, rkDiscord, 33);
+            snprintf(myName, sizeof myName, "Avant");
+            int bad = dc_take("{\"ok\":true,\"state\":\"done\",\"id\":\"xyz\",\"key\":\"k\",\"name\":\"Pirate\"}");
+            char afterBad[16];
+            memcpy(afterBad, myName, 16);
+            int good = dc_take("{\"ok\":true,\"state\":\"done\",\"id\":\"0123456789abcdef0123456789abcdef\","
+                               "\"key\":\"fedcba9876543210fedcba9876543210\",\"name\":\"Dana\",\"discord\":\"dana<b>_dc\"}");
+            fprintf(f, "discord : reponse invalide %d (pseudo %s), valide %d, identite %.6s, pseudo %s, compte %s (attendu 0 (Avant), 1, 012345, Dana, danab_dc)\n",
+                    bad, afterBad, good, rkId, myName, rkDiscord);
+            dc_take("{\"ok\":true,\"state\":\"done\",\"id\":\"0123456789abcdef0123456789abcdef\","
+                    "\"key\":\"fedcba9876543210fedcba9876543210\",\"name\":\"a b\",\"discord\":\"dana_dc\"}");
+            int keep = !strcmp(myName, "Dana");
+            botMode = 0;                                  /* velocity.ini de test (jamais le vrai) */
+            snprintf(cfgPath, sizeof cfgPath, "cfg_dc_test.ini");
+            cfg_save();
+            rkDiscord[0] = 0;
+            cfg_load();
+            fprintf(f, "discord : pseudo invalide ignore %d, compte relu de velocity.ini %s (attendu 1, dana_dc)\n", keep, rkDiscord);
+            remove(cfgPath);
+            cfgPath[0] = 0;
+            botMode = savedBot;
+            memcpy(rkId, sId, 33); memcpy(rkKey, sKey, 33); memcpy(myName, sName, 16); memcpy(rkDiscord, sDc, 33);
+            myMmr = sMm; rankPlayed = sPl; rankWins = sWi;
+        }
+        {                                                 /* champ PSEUDO verrouille : double-clic pour le modifier */
+            int uf = uiFocus;
+            uiFocus = 0; fieldLastId = 0;
+            int c1 = field_click(1, 1000), c2 = field_click(1, 1300);
+            uiFocus = 0;
+            int c3 = field_click(1, 5000), c4 = field_click(1, 5600), c5 = field_click(2, 9000);
+            uiFocus = 1;
+            int c6 = field_click(1, 20000);
+            fprintf(f, "menus : PSEUDO 1er clic %d, double-clic %d, clics lents %d %d, champ IP %d, deja en saisie %d (attendu 0 1, 0 0, 1, 1)\n",
+                    c1, c2, c3, c4, c5, c6);
+            uiFocus = uf; fieldLastId = 0;
+        }
+
         rk_parse_top("{\"ok\":true,\"top\":[{\"name\":\"Alice\",\"mmr\":1420,\"tier\":\"PLATINE III\",\"played\":31},"
                      "{\"name\":\"Bob\",\"mmr\":1301,\"tier\":\"PLATINE III\",\"played\":12}],"
                      "\"me\":{\"rank\":7,\"mmr\":1093,\"played\":14,\"wins\":6,\"tier\":\"OR II\"}}");
@@ -4028,6 +4101,10 @@ static void run_tests(const char *path) {
         rb = rkQN > 1 ? rkQ[1].body : "";
         fprintf(f, "classe hote parti : sans gagnant=%d, hote une fois dans les partis=%d (attendu 1 1)\n", strstr(rb, "\"winner\":\"\"") != NULL,
                 strstr(rb, "\"left\":[\"33000000000000000000000000000000\",\"10000000000000000000000000000000\"]") != NULL);
+        rkRid[2][0] = 0x33; rkMmr[2] = 1400; rkQN = 0;      /* le parti a garde sa place (inactive) : sa cote annoncee sert */
+        rk_send_report(0);
+        fprintf(f, "classe rapport : estimation avec la cote du parti (1400) %+d (attendu +7, comme le serveur)\n", rkEstimate);
+        rkRid[2][0] = 0; rkMmr[2] = 0;
         /* aucun rapport hors chacun pour soi FRAGS (equipes, autre mode) ni hors partie classee */
         rkQN = 0;
         teamSize = 2; rk_send_report(0);

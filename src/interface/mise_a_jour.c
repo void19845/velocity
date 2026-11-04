@@ -301,15 +301,16 @@ static void upd_start(DWORD (WINAPI *fn)(LPVOID), int state) {
     if (!updTh) upd_fail("impossible de lancer le telechargement", 0);
 }
 
-static void upd_open_page(void) {
+static void open_url(const char *url) {                  /* ouvre une page dans le navigateur du systeme */
 #ifdef _WIN32
-    ShellExecuteA(NULL, "open", UPD_PAGE, NULL, NULL, SW_SHOWNORMAL);
+    ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOWNORMAL);
 #else
-    char *argv[] = { "/usr/bin/open", UPD_PAGE, NULL };
+    char *argv[] = { "/usr/bin/open", (char *)url, NULL };
     pid_t pid;
     if (upd_spawn(argv, &pid)) waitpid(pid, NULL, 0);
 #endif
 }
+static void upd_open_page(void) { open_url(UPD_PAGE); }
 
 /* remplace le jeu par la version telechargee et la relance (appele sur le fil principal) */
 static void upd_install(void) {
