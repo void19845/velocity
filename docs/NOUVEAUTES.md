@@ -486,6 +486,20 @@ Branche `claude/equilibrage-tete-1385aa`. `NET_VER` **19**.
   Le temps pour tuer varie surtout avec le hasard des rencontres (un match de 2 min fait 1 à 11 kills) : à
   vérifier en partie humaine, surtout la Ventouse et l'Enclume.
 
+## 32. Classements dans une base D1
+
+- Le mode CLASSE (cotes, rapports de match, TOP) et les classements SPEEDRUN sont maintenant stockés dans la base
+  **Cloudflare D1 `leaderboard`** (binding `LEADERBOARD`, `worker/wrangler.toml`) au lieu du Durable Object `Ratings`,
+  supprimé par la migration `v3`. Le serveur calcule toujours l'Elo et vérifie les temps : mêmes routes, mêmes
+  réponses, **rien ne change dans le jeu** (pas de `NET_VER`).
+- Les écritures tiennent chacune en une requête pour rester justes quand plusieurs instances du Worker répondent en
+  même temps : un match n'est appliqué qu'une fois (`matches.done` = 2 pendant le calcul), cotes modifiées en
+  relatif, ticket speedrun consommé par `DELETE … RETURNING` (détails au §4 « Mode classé » de `CODE.md`).
+- **À déployer** par le propriétaire : `cd worker && npx wrangler deploy` (les tables se créent à la première
+  requête). Vérifier : `curl https://<lobby>/ranked/top` → `{"ok":true,"top":[],"me":null}`.
+- Code : `worker/src/ratings.js`, `speedrun.js`, `index.js` ; `dev-server.js` imite D1 (`memoryD1`). Tests :
+  `node test.js` (nouveaux : rapports simultanés, deux matchs simultanés du même joueur, ticket rejoué en même temps).
+
 ## Vérifications faites
 
 - Compilation macOS sans avertissement ; tous les tests `--test` conformes, y compris ceux d'`origin/dev` (stéréo,

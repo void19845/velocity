@@ -17,15 +17,15 @@ Le propriétaire est francophone : réponses, commentaires et docs **en françai
   pour un lobby local — Node 22.5+ pour `node:sqlite` ; le déploiement `npx wrangler deploy` est à faire par le
   propriétaire).
 - **Mode classé** (PARTIE CLASSEE, cote Elo, encadré CLASSEMENT / TOP 3) : **§4 « Mode classé » de `docs/CODE.md`**.
-  Le serveur fait foi : la cote est calculée et stockée par le worker (Durable Object `Ratings`,
-  `worker/src/ratings.js`) ; côté jeu, `src/reseau/classe.c` (Elo, paliers, identité), `src/reseau/classe_match.c` (rapports de fin de match),
+  Le serveur fait foi : la cote est calculée par le worker et stockée dans sa base **D1 `leaderboard`**
+  (binding `LEADERBOARD`, `worker/src/ratings.js`) ; côté jeu, `src/reseau/classe.c` (Elo, paliers, identité), `src/reseau/classe_match.c` (rapports de fin de match),
   `src/reseau/classe_serveur.c` (requêtes au serveur) et `src/plateforme/http.c` (HTTP : WinHTTP / curl). Une partie classée est toujours en chacun pour soi, aux
   règles par défaut, sans bots, hors cartes CHALLENGE (LA TOILE).
 - **Mode VAGUES** (le solo : 100 vagues, boss aux vagues 25/50/75/100, sélecteur de carte toutes les 10, boutique de
   comportements, INFINI) : **§3.5 de `docs/CODE.md`**, code dans `src/solo/`. Aucune inflation : les dégâts des ennemis
   ne montent jamais, aucun achat n'augmente une stat. Temps de la vague 100 pour le speedrun : `vagues_temps_100()`.
 - **Speedrun** (écran CHALLENGE, classements de temps par carte CHALLENGE, speedrun complet, vague 100) : **§4 « Speedrun »
-  de `docs/CODE.md`**. Serveur : `worker/src/speedrun.js` (même DO `Ratings`, même identité) ; jeu : `src/jeu/speedrun.c`,
+  de `docs/CODE.md`**. Serveur : `worker/src/speedrun.js` (même base D1, même identité) ; jeu : `src/jeu/speedrun.c`,
   `src/reseau/speedrun_serveur.c` ; point d'entrée `speedrun_begin(cat)` / `speedrun_report(cat, ms)`. Les planchers de
   temps existent en double (`sr_floor_ms` et `SR.CATS`) : nouvelle carte CHALLENGE = nouvelle catégorie dans le worker.
 - Mode équipes 1v1 à 4v4 (implémenté) : **§3.11 de `docs/CODE.md`** ; éclairage, ombres, bloom : **§3.12**

@@ -7,7 +7,7 @@ import { handleSpeedrun, runError, SR } from './src/speedrun.js';
 import crypto from 'node:crypto';
 
 const PORT = 8799;
-const { server, sql } = await startDevServer(PORT);
+const { server, db } = await startDevServer(PORT);
 let fails = 0;
 
 function check(label, got, want) {
@@ -215,9 +215,31 @@ const J = ident('Jo'), K = ident('Kim');
 await post('/ranked/hello', J); await post('/ranked/hello', K);
 const m5 = hex(8), body5 = (who) => ({ id: who.id, key: who.key, match: m5, host: J.id, winner: J.id,
   players: [{ id: J.id, kills: 15 }, { id: K.id, kills: 2 }], left: [] });
-await handleRanked(sql, 'POST', '/ranked/report', new URLSearchParams(), body5(J), Date.now());
-const [, late] = await handleRanked(sql, 'POST', '/ranked/report', new URLSearchParams(), body5(K), Date.now() + 11 * 60000);
+await handleRanked(db, 'POST', '/ranked/report', new URLSearchParams(), body5(J), Date.now());
+const [, late] = await handleRanked(db, 'POST', '/ranked/report', new URLSearchParams(), body5(K), Date.now() + 11 * 60000);
 check('match expire', late.state, 'expired');
+
+// D1 : plusieurs instances du Worker repondent en meme temps ; trois rapports simultanes d'un match a 3
+// (dont deux suffisent a la majorite) n'appliquent l'Elo qu'une fois
+const L = ident('Lea'), M = ident('Max'), N = ident('Noa');
+for (const p of [L, M, N]) await post('/ranked/hello', p);
+const m6 = hex(8), score6 = [[L, 15], [M, 8], [N, 4]];
+const states6 = (await Promise.all([L, M, N].map((p) => rep(p, m6, L, L, score6)))).map((x) => x.state);
+check('rapports simultanes : applique au moins une fois', states6.includes('applied'), true);
+const after6 = await Promise.all([L, M, N].map((p) => rep(p, m6, L, L, score6)));
+check('rapports simultanes : un seul match compte', after6.map((x) => [x.state, x.played]), [['applied', 1], ['applied', 1], ['applied', 1]]);
+r = await post('/ranked/hello', L);
+check('rapports simultanes : cote du gagnant appliquee une fois', [r.mmr, r.played, r.wins], [1000 + after6[0].delta, 1, 1]);
+// deux matchs du meme joueur appliques en meme temps : aucune variation perdue
+const O = ident('Oli'), P2 = ident('Pia'), Q = ident('Quy');
+for (const p of [O, P2, Q]) await post('/ranked/hello', p);
+const m7 = hex(8), m8 = hex(8);
+await rep(O, m7, O, O, [[O, 15], [P2, 3]]);
+await rep(O, m8, O, O, [[O, 15], [Q, 3]]);
+const both = await Promise.all([rep(P2, m7, O, O, [[O, 15], [P2, 3]]), rep(Q, m8, O, O, [[O, 15], [Q, 3]])]);
+r = await post('/ranked/hello', O);
+check('deux matchs simultanes du meme joueur', [both.map((x) => x.state), r.played, r.wins, r.mmr],
+  [['applied', 'applied'], 2, 2, 1000 - both[0].delta - both[1].delta]);
 
 // classement : seuls les joueurs sortis du placement ; rang de celui qui demande
 for (let n = 0; n < 9; n++) {
@@ -237,7 +259,7 @@ for (let n = 0; n < RANK.RATE_PER_MIN + 2 && !limitedHit; n++) limitedHit = (awa
 check('limite de debit par identite', limitedHit, true);
 
 // --- speedrun : classements des meilleurs temps (course par carte CHALLENGE, speedrun complet, vague 100) ---
-const sr = (path, body, at) => handleSpeedrun(sql, 'POST', path, new URLSearchParams(), body, at);
+const sr = (path, body, at) => handleSpeedrun(db, 'POST', path, new URLSearchParams(), body, at);
 const toile = 'course:la_toile', gates = SR.CATS[toile].splits[0];
 const splitsOf = (ms, n) => Array.from({ length: n }, (_, i) => Math.round(ms * (i + 1) / n));
 const S1 = ident('Sam'), S2 = ident('Tia'), S3 = ident('Uma');
@@ -291,6 +313,12 @@ check('speedrun : ticket expire (30 min pour une course)', [st, sb.err], [400, '
 check('speedrun : mauvaise cle', [st, sb.ok], [403, false]);
 [st, sb] = await sr('/speedrun/start', { ...S3, cat: 'course:inconnue' }, now);
 check('speedrun : categorie inconnue', [st, sb.err], [400, 'categorie inconnue']);
+// le meme ticket envoye deux fois en meme temps : un seul rapport passe
+[, sb] = await sr('/speedrun/start', { ...S3, cat: toile }, now);
+const twice = await Promise.all([0, 1].map(() =>
+  sr('/speedrun/report', { ...S3, cat: toile, run: sb.run, ms: 42000, splits: splitsOf(42000, gates) }, now + 60000)));
+check('speedrun : ticket rejoue en meme temps', twice.map(([s, x]) => [s, x.state || x.err]).sort(),
+  [[200, 'record'], [400, 'ticket inconnu']]);
 // vague 100 (point d'entree du mode VAGUES) et speedrun complet : memes regles, leurs propres classements
 [, sb] = await sr('/speedrun/start', { ...S3, cat: 'vagues100' }, now);
 [, sb] = await sr('/speedrun/report', { ...S3, cat: 'vagues100', run: sb.run, ms: 1500000, splits: splitsOf(1500000, 4) }, now + 1501000);
@@ -300,9 +328,9 @@ check('speedrun : vague 100', [sb.state, sb.rank], ['record', 1]);
 check('speedrun : complet', [sb.state, sb.rank], ['record', 1]);
 // classement par HTTP (meme route que le Durable Object)
 const top1 = await (await fetch(`http://127.0.0.1:${PORT}/speedrun/top?cat=${encodeURIComponent(toile)}&id=${S1.id}`)).json();
-check('speedrun : top du plus rapide au plus lent', top1.top.map((p) => [p.name, p.ms]), [['Tia', 38500], ['Sam', 40000]]);
+check('speedrun : top du plus rapide au plus lent', top1.top.map((p) => [p.name, p.ms]), [['Tia', 38500], ['Sam', 40000], ['Uma', 42000]]);
 check('speedrun : record du monde et son detail', [top1.wr.name, top1.wr.splits.length, top1.wr.splits[gates - 1]], ['Tia', gates, 38500]);
-check('speedrun : mon rang et mon meilleur temps', [top1.me.rank, top1.me.ms, top1.me.splits.length, top1.runners], [2, 40000, gates, 2]);
+check('speedrun : mon rang et mon meilleur temps', [top1.me.rank, top1.me.ms, top1.me.splits.length, top1.runners], [2, 40000, gates, 3]);
 const top2 = await (await fetch(`http://127.0.0.1:${PORT}/speedrun/top?cat=complet&id=${S1.id}`)).json();
 check('speedrun : classement complet a part, sans temps pour moi', [top2.top.length, top2.me], [1, null]);
 r = await post('/speedrun/start', { ...ident('Vic'), cat: 'complet' });

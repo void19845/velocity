@@ -1293,8 +1293,8 @@ Plan et protocole complet : [`PLAN_EN_LIGNE.md`](PLAN_EN_LIGNE.md). Le jeu de co
 
 ### Mode classé (PARTIE CLASSEE, cote Elo tenue par le serveur)
 
-Pas de compte : le classement est tenu par le **serveur de classement** (Durable Object `Ratings` du worker, SQLite),
-qui calcule lui-même l'Elo à partir des rapports de fin de match. L'hôte fait autorité sur le déroulement du match
+Pas de compte : le classement est tenu par le **serveur de classement** (le Worker et sa base **D1 `leaderboard`**,
+binding `LEADERBOARD`), qui calcule lui-même l'Elo à partir des rapports de fin de match. L'hôte fait autorité sur le déroulement du match
 (frags, gagnant, joueurs partis), comme pour le reste du jeu.
 
 **Où est le code** : `src/reseau/classe.c` (état, formule, paliers, identité, cartes et règles imposées) et
@@ -1373,6 +1373,20 @@ présents** l'a envoyé (1 contre 1 : les deux) ; s'il déclare des partis, l'h�
 l'hôte est lui-même parti et au moins 2 joueurs confirment. Un match non confirmé en 10 min (`EXPIRE_MS`) est perdu ;
 un match appliqué ne l'est qu'une fois (anti-rejeu, gardé 7 jours). Limite de débit : 30 requêtes/min par identité.
 
+**Base D1** (`worker/src/ratings.js`, `speedrun.js`) : tables `players`, `matches`, `reports`, `rate`, `sr_tickets`,
+`sr_best`, créées au premier usage par chaque instance du Worker (`CREATE … IF NOT EXISTS`, `ensureSchema` dans
+`index.js` : aucune migration D1 à lancer). D1 n'a pas de transaction interactive et plusieurs instances du Worker
+répondent en même temps (le Durable Object d'avant sérialisait tout) : chaque écriture sensible tient en une requête.
+`matches.done` vaut 0 (en attente), **2** (calcul en cours : seule la requête qui fait passer 0 → 2 applique l'Elo, les
+autres répondent `pending` et le jeu redemande) puis 1 (appliqué, résultat gardé) ; les cotes changent en relatif
+(`mmr = MIN(MAX, MAX(MIN, mmr + Δ))`, `played + 1`) pour qu'un autre match du même joueur ne soit pas écrasé ; le
+compteur de débit est un upsert ; un ticket speedrun est lu et effacé d'un coup (`DELETE … RETURNING`) et un meilleur
+temps n'est remplacé que par plus rapide (`ON CONFLICT … WHERE`). En cas d'erreur D1, réponse 503 « base
+indisponible » (le jeu affiche « classement indisponible »). `dev-server.js` imite l'API D1 (`memoryD1`, au-dessus de
+`node:sqlite`) en rendant la main à chaque requête, ce qui permet à `node test.js` de vérifier ces cas simultanés.
+Consulter la base en ligne : `npx wrangler d1 execute leaderboard --remote --command "SELECT name, mmr, played FROM
+players ORDER BY mmr DESC LIMIT 10"`.
+
 **Limites (pas de vrai anti-triche sans serveur de jeu)** : un hôte truqué peut mentir sur les frags ou déclarer
 parti un client en 1 contre 1 (l'hôte fait déjà autorité sur tout le match) ; plusieurs identités jetables peuvent
 s'arranger entre elles (pas de compte) ; en 1 contre 1, un hôte qui quitte n'est pas sanctionné (un client seul ne
@@ -1380,13 +1394,14 @@ peut pas le déclarer parti) ; la cote annoncée dans `PkJoin` (affichage, match
 
 Tests : lignes `classe …` de `run_tests()` (`src/tests/tests.c` : Elo, abandon, paliers, placement, identité, `velocity.ini` de test,
 lecture du TOP, construction du rapport) ; `node test.js` (lobby classé, Elo, enregistrement, mauvaise clé,
-concordance, désaccord, rapport seul, abandon, hôte parti, expiration, top, limite de débit) ;
+concordance, désaccord, rapport seul, abandon, hôte parti, expiration, rapports simultanés, deux matchs simultanés
+du même joueur, top, limite de débit) ;
 `--shot ranked.bmp` (fin de match classée) et `--shot menu.bmp` (encadré TOP 3 avec données factices).
 
 ### Speedrun : classements des meilleurs temps
 
-Trois familles de classements, tenus par le **même Durable Object `Ratings`** que le mode classé (mêmes tables
-`players`, même identité `ranked_id` / `ranked_key`, aucune nouvelle migration) : le **serveur fait foi**.
+Trois familles de classements, tenus dans la **même base D1 `leaderboard`** que le mode classé (même table
+`players`, même identité `ranked_id` / `ranked_key`) : le **serveur fait foi**.
 
 | Catégorie (jeu) | Clé (serveur) | Temps intermédiaires | Plancher | Ticket valable |
 |---|---|---|---|---|

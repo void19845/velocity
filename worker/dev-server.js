@@ -1,7 +1,7 @@
 // Lobby en local pour les tests : meme logique que le Durable Object, WebSocket ecrit a la main
 // (RFC 6455, trames texte uniquement) pour ne dependre d'aucun paquet npm.
 // Sert aussi le classement (/ranked/...) et les classements speedrun (/speedrun/...) avec la meme logique
-// que le DO Ratings, sur une base SQLite
+// que le Worker et sa base D1, sur une base SQLite
 // en memoire (node:sqlite, integre a Node 22.5+ ; vide a chaque lancement).
 //   node dev-server.js [port]      (8787 par defaut)
 
@@ -12,14 +12,36 @@ import { handle, closed, newMeta } from './src/lobby.js';
 import { schema, rankedResponse } from './src/ratings.js';
 import { srSchema, handleSpeedrun } from './src/speedrun.js';
 
-// meme interface que ctx.storage.sql d'un Durable Object : exec(requete, ...valeurs).toArray()
-export async function memorySql() {
+// meme interface (partielle) qu'une base D1 : prepare(q).bind(...v).all() / first() / run(), batch([...])
+// Chaque appel rend la main (await) comme D1 : les tests peuvent entrelacer des requetes simultanees.
+export async function memoryD1() {
   const { DatabaseSync } = await import('node:sqlite');
   const db = new DatabaseSync(':memory:');
+  const exec = (q, b) => {
+    const results = db.prepare(q).all(...b);
+    return { results, meta: { changes: db.prepare('SELECT changes() AS n').get().n } };
+  };
+  const tick = () => new Promise((r) => setImmediate(r));
+  const statement = (q, b = []) => ({
+    q, b,
+    bind: (...v) => statement(q, v),
+    all: async () => { await tick(); return exec(q, b); },
+    run: async () => { await tick(); return exec(q, b); },
+    first: async () => { await tick(); return exec(q, b).results[0] || null; },
+  });
   return {
-    exec(q, ...b) {
-      const r = db.prepare(q).all(...b);
-      return { toArray: () => r };
+    prepare: (q) => statement(q),
+    async batch(list) {   // une transaction, comme D1
+      await tick();
+      db.exec('BEGIN');
+      try {
+        const out = list.map((s) => exec(s.q, s.b));
+        db.exec('COMMIT');
+        return out;
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
     },
   };
 }
@@ -35,16 +57,16 @@ function frame(text) {
 
 export async function startDevServer(port = 8787) {
   const conns = [];
-  const sql = await memorySql();
-  schema(sql);
-  srSchema(sql);
+  const db = await memoryD1();
+  await schema(db);
+  await srSchema(db);
   const server = http.createServer(async (req, res) => {
     const sr = req.url.startsWith('/speedrun/');
     if (!req.url.startsWith('/ranked/') && !sr) { res.end('VELOCITY lobby (dev)'); return; }
     const chunks = [];
     for await (const ch of req) chunks.push(ch);
     const body = req.method === 'POST' ? Buffer.concat(chunks) : undefined;
-    const r = await rankedResponse(sql, new Request(`http://127.0.0.1${req.url}`, { method: req.method, body }),
+    const r = await rankedResponse(db, new Request(`http://127.0.0.1${req.url}`, { method: req.method, body }),
       sr ? handleSpeedrun : undefined);
     res.writeHead(r.status, { 'Content-Type': 'application/json' });
     res.end(await r.text());
@@ -91,7 +113,7 @@ export async function startDevServer(port = 8787) {
     socket.on('error', drop);
   });
 
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, conns, sql })));
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, conns, db })));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -70,12 +70,13 @@ connexion. **Non vérifié** : le perçage de NAT entre deux vrais réseaux diff
 5. **Déploiement** (à faire par le propriétaire, compte Cloudflare) — `cd worker && npx wrangler deploy`,
    puis mettre l'adresse `xxx.workers.dev` dans `velocity.ini` (`lobby=`) ou dans `LOBBY_DEFAULT`.
 
-## Mode classé : serveur de classement (Durable Object `Ratings`)
+## Mode classé : serveur de classement (base D1 `leaderboard`)
 
 Le même Worker sert, sur HTTPS, le classement du mode CLASSE : `POST /ranked/hello`, `POST /ranked/report`,
-`GET /ranked/top` (détails, formule Elo et règles de concordance : `docs/CODE.md`, « Mode classé »). Une seule
-instance (`idFromName("global")`) avec SQLite : tables `players (id, keyhash, name, mmr, played, wins, updated)`,
-`matches (mid, created, done, result)`, `reports (mid, reporter, body, at)` et `rate` (limite de débit). Logique :
+`GET /ranked/top` (détails, formule Elo et règles de concordance : `docs/CODE.md`, « Mode classé »). Le Worker
+interroge directement une base **Cloudflare D1** (`leaderboard`, binding `LEADERBOARD`, SQLite) : tables `players (id, keyhash, name, mmr, played, wins, updated)`,
+`matches (mid, created, done, result)`, `reports (mid, reporter, body, at)`, `rate` (limite de débit), et pour le
+speedrun `sr_tickets`, `sr_best`, créées au premier usage. Logique :
 `worker/src/ratings.js` (testée par `node test.js`) ; `dev-server.js` sert les mêmes routes sur une base SQLite en
 mémoire (`node:sqlite`, Node 22.5+), ce qui permet le match bot contre bot classé en local avec `--lobby`.
 Côté jeu : `src/reseau/classe.c` (Elo, identité), `classe_match.c` (rapports), `classe_serveur.c` (requêtes en fil de fond) et `src/plateforme/http.c` (requête HTTP,
@@ -86,12 +87,15 @@ WinHTTP / `curl`) ; le salon classé du lobby (`quick … 1 <cote>`, `host … 1
 - **Le serveur calcule l'Elo** : l'hôte et chaque client envoient le rapport de fin de match (identifiant de
   match tiré par l'hôte, présents et frags, gagnant, partis listés par l'hôte) ; il n'est appliqué que si une
   majorité des présents concorde (1 contre 1 : les deux), dans les 10 minutes. Un joueur parti perd contre tous.
-- **Coût** : quelques requêtes par match et par joueur, dans le plan gratuit (Durable Objects SQLite).
+- **Coût** : quelques requêtes par match et par joueur, dans le plan gratuit de D1 (5 millions de lignes lues et
+  100 000 écrites par jour, 5 Go).
 
 ### À faire par le propriétaire (déploiement)
 
-1. `cd worker && npx wrangler deploy` : la migration **`v2`** (`new_sqlite_classes = ["Ratings"]`, déjà dans
-   `wrangler.toml`) crée la classe `Ratings` ; le binding `RATINGS` est déclaré à côté de `LOBBY`.
+1. La base D1 `leaderboard` existe déjà (`npx wrangler d1 create leaderboard`, région WEUR) ; son `database_id` est
+   dans `wrangler.toml` (binding `LEADERBOARD`). `cd worker && npx wrangler deploy` : les tables se créent à la
+   première requête. La migration **`v3`** (`deleted_classes = ["Ratings"]`) supprime l'ancien Durable Object du
+   classement **et ses données** (il était vide au passage à D1 : aucun joueur placé, aucun temps).
 2. Vérifier : `curl https://<lobby>/ranked/top` doit répondre `{"ok":true,"top":[],"me":null}`.
 3. Rien à changer dans le jeu : l'URL suit `lobby=` / `LOBBY_DEFAULT`. Tant que le Worker n'est pas redéployé, le
    jeu affiche « classement indisponible » et PARTIE CLASSEE refuse de démarrer (le reste fonctionne).

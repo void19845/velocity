@@ -6,15 +6,21 @@ compatibility_date = "2025-04-01"
 name = "LOBBY"
 class_name = "Lobby"
 
-[[durable_objects.bindings]]
-name = "RATINGS"
-class_name = "Ratings"
+# classements (mode CLASSE, SPEEDRUN) : base D1, tables creees au premier usage (src/ratings.js, src/speedrun.js)
+[[d1_databases]]
+binding = "LEADERBOARD"
+database_name = "leaderboard"
+database_id = "59a414f0-e230-4484-b437-e29c41b85f6b"
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Lobby"]
 
-# mode CLASSE : classement (cotes, rapports de match) dans un Durable Object SQLite, gratuit sur le plan free
+# ancien classement dans un Durable Object SQLite, remplace par la base D1 ci-dessus
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["Ratings"]
+
+[[migrations]]
+tag = "v3"
+deleted_classes = ["Ratings"]

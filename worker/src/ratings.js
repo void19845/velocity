@@ -1,7 +1,11 @@
 // Classement du mode CLASSE : le serveur tient les cotes et calcule l'Elo.
-// Logique sans dependance, sur une base SQL au format de ctx.storage.sql (Durable Object SQLite) :
-//   sql.exec(requete, ...valeurs) -> curseur avec toArray()
+// Logique sans dependance, sur une base Cloudflare D1 (SQLite, binding LEADERBOARD, base « leaderboard ») :
+//   db.prepare(requete).bind(...valeurs).all() / first() / run(), db.batch([...]) (une transaction)
 // dev-server.js fournit le meme objet au-dessus de node:sqlite (base en memoire).
+//
+// D1 n'a pas de transaction interactive et plusieurs instances du Worker peuvent repondre en meme temps :
+// chaque ecriture est donc atomique en une requete (upsert, UPDATE relatif, DELETE ... RETURNING), et un match
+// n'est applique qu'une fois (matches.done : 0 en attente, 2 calcul en cours, 1 applique).
 //
 // La formule (Elo multijoueur par paires) est documentee a un seul endroit : docs/CODE.md, section
 // « Mode classe ». main.c (rank_delta, rank_tier) applique exactement les memes constantes pour ses tests
@@ -82,32 +86,36 @@ export function matchDeltas(body, rows) {
 }
 
 // --- base ----------------------------------------------------------------------------------------------
-export function schema(sql) {
-  sql.exec(`CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, keyhash TEXT NOT NULL, name TEXT NOT NULL,
-            mmr INTEGER NOT NULL, played INTEGER NOT NULL, wins INTEGER NOT NULL, updated INTEGER NOT NULL)`);
-  sql.exec('CREATE INDEX IF NOT EXISTS players_mmr ON players (played, mmr)');
-  sql.exec(`CREATE TABLE IF NOT EXISTS matches (mid TEXT PRIMARY KEY, created INTEGER NOT NULL, done INTEGER NOT NULL,
-            result TEXT)`);
-  sql.exec(`CREATE TABLE IF NOT EXISTS reports (mid TEXT NOT NULL, reporter TEXT NOT NULL, body TEXT NOT NULL,
-            at INTEGER NOT NULL, PRIMARY KEY (mid, reporter))`);
-  sql.exec('CREATE TABLE IF NOT EXISTS rate (id TEXT PRIMARY KEY, win INTEGER NOT NULL, n INTEGER NOT NULL)');
-}
+export const all = async (db, q, ...b) => (await db.prepare(q).bind(...b).all()).results;
+export const one = async (db, q, ...b) => (await db.prepare(q).bind(...b).first()) || null;
+export const run = (db, q, ...b) => db.prepare(q).bind(...b).run();
+export const stmt = (db, q, ...b) => db.prepare(q).bind(...b);   // pour db.batch
 
-export const rows = (sql, q, ...b) => sql.exec(q, ...b).toArray();
-export const one = (sql, q, ...b) => rows(sql, q, ...b)[0] || null;
+// tables creees au premier usage (CREATE ... IF NOT EXISTS) : aucune migration D1 a lancer a la main
+export function schema(db) {
+  return db.batch([
+    `CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, keyhash TEXT NOT NULL, name TEXT NOT NULL,
+     mmr INTEGER NOT NULL, played INTEGER NOT NULL, wins INTEGER NOT NULL, updated INTEGER NOT NULL)`,
+    'CREATE INDEX IF NOT EXISTS players_mmr ON players (played, mmr)',
+    `CREATE TABLE IF NOT EXISTS matches (mid TEXT PRIMARY KEY, created INTEGER NOT NULL, done INTEGER NOT NULL,
+     result TEXT)`,
+    `CREATE TABLE IF NOT EXISTS reports (mid TEXT NOT NULL, reporter TEXT NOT NULL, body TEXT NOT NULL,
+     at INTEGER NOT NULL, PRIMARY KEY (mid, reporter))`,
+    'CREATE TABLE IF NOT EXISTS rate (id TEXT PRIMARY KEY, win INTEGER NOT NULL, n INTEGER NOT NULL)',
+  ].map((q) => db.prepare(q)));
+}
 
 export async function sha256hex(text) {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
-function limited(sql, id, now, perMin) {
-  const win = Math.floor(now / 60000);
-  const r = one(sql, 'SELECT win, n FROM rate WHERE id = ?', id);
-  if (!r || r.win !== win) { sql.exec('INSERT OR REPLACE INTO rate (id, win, n) VALUES (?, ?, 1)', id, win); return false; }
-  if (r.n >= perMin) return true;
-  sql.exec('UPDATE rate SET n = n + 1 WHERE id = ?', id);
-  return false;
+// compteur de la minute en cours, incremente en une seule requete (deux requetes simultanees comptent pour deux)
+async function limited(db, id, now, perMin) {
+  const r = await one(db, `INSERT INTO rate (id, win, n) VALUES (?, ?, 1) ON CONFLICT (id) DO UPDATE
+                           SET n = CASE WHEN win = excluded.win THEN n + 1 ELSE 1 END, win = excluded.win RETURNING n`,
+    id, Math.floor(now / 60000));
+  return r.n > perMin;
 }
 
 function playerView(p) {
@@ -116,46 +124,46 @@ function playerView(p) {
 
 // identite : premiere requete = enregistrement de l'empreinte de la cle (confiance au premier usage)
 // rate : compteur de debit (par defaut l'identite ; le speedrun a le sien, speedrun.js)
-export async function auth(sql, req, now, create, rate = { key: req.id, perMin: RANK.RATE_PER_MIN }) {
+export async function auth(db, req, now, create, rate = { key: req.id, perMin: RANK.RATE_PER_MIN }) {
   if (!HEX32.test(req.id || '') || !HEX32.test(req.key || '')) return { err: 'identite invalide', status: 400 };
-  if (limited(sql, rate.key, now, rate.perMin)) return { err: 'trop de requetes', status: 429 };
+  if (await limited(db, rate.key, now, rate.perMin)) return { err: 'trop de requetes', status: 429 };
   const kh = await sha256hex(req.key);
-  let p = one(sql, 'SELECT * FROM players WHERE id = ?', req.id);
+  let p = await one(db, 'SELECT * FROM players WHERE id = ?', req.id);
   if (!p) {
     if (!create) return { err: 'inconnu', status: 404 };
     const name = NAME_RE.test(req.name || '') ? req.name : 'joueur';
     // OR IGNORE : deux premieres requetes simultanees ne creent qu'une ligne, la seconde est verifiee ci-dessous
-    sql.exec('INSERT OR IGNORE INTO players (id, keyhash, name, mmr, played, wins, updated) VALUES (?, ?, ?, ?, 0, 0, ?)',
+    await run(db, 'INSERT OR IGNORE INTO players (id, keyhash, name, mmr, played, wins, updated) VALUES (?, ?, ?, ?, 0, 0, ?)',
       req.id, kh, name, RANK.START, now);
-    p = one(sql, 'SELECT * FROM players WHERE id = ?', req.id);
+    p = await one(db, 'SELECT * FROM players WHERE id = ?', req.id);
   }
   if (p.keyhash !== kh) return { err: 'mauvaise cle', status: 403 };
   return { p };
 }
 
-function rankOf(sql, p) {
+async function rankOf(db, p) {
   if (p.played < RANK.PLACEMENT) return 0;
-  return 1 + one(sql, 'SELECT COUNT(*) AS n FROM players WHERE played >= ? AND mmr > ?', RANK.PLACEMENT, p.mmr).n;
+  return 1 + (await one(db, 'SELECT COUNT(*) AS n FROM players WHERE played >= ? AND mmr > ?', RANK.PLACEMENT, p.mmr)).n;
 }
 
 // POST /ranked/hello { id, key, name } -> cote, palier, rang
-export async function hello(sql, req, now) {
-  const a = await auth(sql, req, now, true);
+export async function hello(db, req, now) {
+  const a = await auth(db, req, now, true);
   if (a.err) return [a.status, { ok: false, err: a.err }];
   if (NAME_RE.test(req.name || '') && req.name !== a.p.name) {
-    sql.exec('UPDATE players SET name = ? WHERE id = ?', req.name, a.p.id);
+    await run(db, 'UPDATE players SET name = ? WHERE id = ?', req.name, a.p.id);
   }
-  return [200, { ok: true, ...playerView(a.p), rank: rankOf(sql, a.p) }];
+  return [200, { ok: true, ...playerView(a.p), rank: await rankOf(db, a.p) }];
 }
 
 // GET /ranked/top?id=... -> les meilleurs (placement termine) et le rang de celui qui demande
-export function top(sql, id) {
-  const list = rows(sql, 'SELECT name, mmr, played FROM players WHERE played >= ? ORDER BY mmr DESC, updated ASC LIMIT ?',
-    RANK.PLACEMENT, RANK.TOP).map((p) => ({ name: p.name, mmr: p.mmr, tier: tierName(p.mmr), played: p.played }));
+export async function top(db, id) {
+  const list = (await all(db, 'SELECT name, mmr, played FROM players WHERE played >= ? ORDER BY mmr DESC, updated ASC LIMIT ?',
+    RANK.PLACEMENT, RANK.TOP)).map((p) => ({ name: p.name, mmr: p.mmr, tier: tierName(p.mmr), played: p.played }));
   let me = null;
   if (HEX32.test(id || '')) {
-    const p = one(sql, 'SELECT * FROM players WHERE id = ?', id);
-    if (p) me = { rank: rankOf(sql, p), ...playerView(p) };
+    const p = await one(db, 'SELECT * FROM players WHERE id = ?', id);
+    if (p) me = { rank: await rankOf(db, p), ...playerView(p) };
   }
   return [200, { ok: true, top: list, me }];
 }
@@ -191,68 +199,84 @@ function accepted(body, reporters) {
   return body.left.includes(body.host) && agree.length >= 2;
 }
 
-function apply(sql, mid, body, now) {
+// Applique le match une seule fois : seule la requete qui fait passer done de 0 a 2 calcule (deux derniers
+// rapports arrives en meme temps sur deux instances ne doublent pas l'Elo). Renvoie null si une autre le fait.
+// Les cotes sont modifiees de facon relative (mmr + variation) : un autre match du meme joueur applique en
+// meme temps n'est pas ecrase.
+async function apply(db, mid, body, now) {
+  const claim = await run(db, 'UPDATE matches SET done = 2 WHERE mid = ? AND done = 0', mid);
+  if (!claim.meta.changes) {
+    const m = await one(db, 'SELECT done, result FROM matches WHERE mid = ?', mid);
+    return m && m.done === 1 ? JSON.parse(m.result) : null;
+  }
   const ids = [...body.players.map((p) => p.id), ...body.left];
   const byId = {};
-  for (const id of ids) byId[id] = one(sql, 'SELECT * FROM players WHERE id = ?', id);
+  for (const p of await all(db, `SELECT * FROM players WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)) byId[p.id] = p;
   const d = matchDeltas(body, byId);
+  const done = await db.batch(ids.map((id) => stmt(db,
+    `UPDATE players SET mmr = MIN(?, MAX(?, mmr + ?)), played = played + 1, wins = wins + ?, updated = ? WHERE id = ?
+     RETURNING mmr, played, wins`, RANK.MAX, RANK.MIN, d[id], body.winner === id ? 1 : 0, now, id)));
   const result = {};
-  for (const id of ids) {
-    const p = byId[id];
-    const mmr = clampMmr(p.mmr + d[id]), played = p.played + 1, wins = p.wins + (body.winner === id ? 1 : 0);
-    sql.exec('UPDATE players SET mmr = ?, played = ?, wins = ?, updated = ? WHERE id = ?', mmr, played, wins, now, id);
-    result[id] = { delta: mmr - p.mmr, mmr, played, wins, tier: rankLabel(mmr, played) };
-  }
-  sql.exec('UPDATE matches SET done = 1, result = ? WHERE mid = ?', JSON.stringify(result), mid);
+  ids.forEach((id, i) => {
+    const p = done[i].results[0];
+    result[id] = { delta: clampMmr(byId[id].mmr + d[id]) - byId[id].mmr, mmr: p.mmr, played: p.played, wins: p.wins,
+      tier: rankLabel(p.mmr, p.played) };
+  });
+  await run(db, 'UPDATE matches SET done = 1, result = ? WHERE mid = ?', JSON.stringify(result), mid);
   return result;
 }
 
 // POST /ranked/report { id, key, match, host, winner, players: [{ id, kills }], left: [id] }
-export async function report(sql, req, now) {
-  const a = await auth(sql, req, now, false);
+export async function report(db, req, now) {
+  const a = await auth(db, req, now, false);
   if (a.err) return [a.status, { ok: false, err: a.err }];
   if (!validReport(req)) return [400, { ok: false, err: 'rapport invalide' }];
-  sql.exec('DELETE FROM reports WHERE at < ?', now - RANK.KEEP_MS);
-  sql.exec('DELETE FROM matches WHERE created < ?', now - RANK.KEEP_MS);
-  let m = one(sql, 'SELECT * FROM matches WHERE mid = ?', req.match);
-  if (!m) {
-    sql.exec('INSERT INTO matches (mid, created, done, result) VALUES (?, ?, 0, NULL)', req.match, now);
-    m = one(sql, 'SELECT * FROM matches WHERE mid = ?', req.match);
-  }
+  const [, , , cur] = await db.batch([
+    stmt(db, 'DELETE FROM reports WHERE at < ?', now - RANK.KEEP_MS),
+    stmt(db, 'DELETE FROM matches WHERE created < ?', now - RANK.KEEP_MS),
+    stmt(db, 'INSERT OR IGNORE INTO matches (mid, created, done, result) VALUES (?, ?, 0, NULL)', req.match, now),
+    stmt(db, 'SELECT * FROM matches WHERE mid = ?', req.match),
+  ]);
+  const m = cur.results[0];
+  const pending = [200, { ok: true, state: 'pending' }];
   const answer = (result) => {
-    const me = result && result[req.id];
+    if (!result) return pending;   // calcul en cours dans une autre requete : le jeu redemande
+    const me = result[req.id];
     return [200, me ? { ok: true, state: 'applied', ...me } : { ok: true, state: 'ignored' }];
   };
-  if (m.done) return answer(JSON.parse(m.result));
+  if (m.done === 1) return answer(JSON.parse(m.result));
   if (now - m.created > RANK.EXPIRE_MS) return [200, { ok: true, state: 'expired' }];
+  if (m.done === 2) return pending;
   const ids = [...req.players.map((p) => p.id), ...req.left];
-  const known = one(sql, `SELECT COUNT(*) AS n FROM players WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids).n;
+  const known = (await one(db, `SELECT COUNT(*) AS n FROM players WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)).n;
   if (known !== ids.length) return [400, { ok: false, err: 'joueur inconnu' }];
-  const body = canonical(req);
-  sql.exec('INSERT OR REPLACE INTO reports (mid, reporter, body, at) VALUES (?, ?, ?, ?)', req.match, req.id, body, now);
+  const [, got] = await db.batch([
+    stmt(db, 'INSERT OR REPLACE INTO reports (mid, reporter, body, at) VALUES (?, ?, ?, ?)', req.match, req.id, canonical(req), now),
+    stmt(db, 'SELECT reporter, body FROM reports WHERE mid = ?', req.match),
+  ]);
   const groups = new Map();
-  for (const r of rows(sql, 'SELECT reporter, body FROM reports WHERE mid = ?', req.match)) {
+  for (const r of got.results) {
     if (!groups.has(r.body)) groups.set(r.body, []);
     groups.get(r.body).push(r.reporter);
   }
   for (const [b, reporters] of groups) {
-    if (accepted(JSON.parse(b), reporters)) return answer(apply(sql, req.match, JSON.parse(b), now));
+    if (accepted(JSON.parse(b), reporters)) return answer(await apply(db, req.match, JSON.parse(b), now));
   }
-  return [200, { ok: true, state: 'pending' }];
+  return pending;
 }
 
-// Point d'entree commun (Durable Object et dev-server) : renvoie [statut, objet JSON]
-export async function handleRanked(sql, method, path, query, json, now) {
-  if (method === 'GET' && path === '/ranked/top') return top(sql, query.get('id'));
+// Point d'entree commun (Worker et dev-server) : renvoie [statut, objet JSON]
+export async function handleRanked(db, method, path, query, json, now) {
+  if (method === 'GET' && path === '/ranked/top') return top(db, query.get('id'));
   if (method !== 'POST') return [405, { ok: false, err: 'methode' }];
   if (!json || typeof json !== 'object') return [400, { ok: false, err: 'json' }];
-  if (path === '/ranked/hello') return hello(sql, json, now);
-  if (path === '/ranked/report') return report(sql, json, now);
+  if (path === '/ranked/hello') return hello(db, json, now);
+  if (path === '/ranked/report') return report(db, json, now);
   return [404, { ok: false, err: 'inconnu' }];
 }
 
 // handler : handleRanked (/ranked/...) ou handleSpeedrun (/speedrun/..., speedrun.js), meme forme
-export async function rankedResponse(sql, request, handler = handleRanked) {
+export async function rankedResponse(db, request, handler = handleRanked) {
   const url = new URL(request.url);
   let json = null;
   if (request.method === 'POST') {
@@ -260,6 +284,6 @@ export async function rankedResponse(sql, request, handler = handleRanked) {
     if (text.length > 4096) return new Response('{"ok":false,"err":"trop long"}', { status: 413 });
     try { json = JSON.parse(text); } catch (e) { json = null; }
   }
-  const [status, body] = await handler(sql, request.method, url.pathname, url.searchParams, json, Date.now());
+  const [status, body] = await handler(db, request.method, url.pathname, url.searchParams, json, Date.now());
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
