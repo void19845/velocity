@@ -1,4 +1,4 @@
-/* VELOCITY - modes de jeu (frags, chrono, 3 zones, drapeau, bouclier), specialisations, economie et boutique
+/* VELOCITY - modes de jeu (frags, chrono, 3 zones, drapeau, bouclier), economie et boutique
    Morceau de main.c : inclus dans l'ordre, ne se compile pas seul (voir main.c). */
 
 /* ------------------------------------------------------------------ */
@@ -27,7 +27,6 @@ static V3 shield_pos(void) { const float *p = maps[curMap].shield; return v3(p[0
 static float zone_r(void) { return ZONE_R * map_obj_scale(curMap); }            /* rayons a l'echelle de la carte */
 static float shield_r(void) { return SHIELD_ZONE_R * map_obj_scale(curMap); }
 static V3 flag_pos(int t) { return obj.fl[t].state == FLAG_HOME ? flag_home(t) : fv(obj.fl[t].pos); }
-static int np_spec(int i) { return rules.specs && i >= 0 && i < MAXP ? NP[i].st.spare[0] % SPEC_COUNT : SPEC_AUCUNE; }
 static V3 np_feet(int i) { return i == myId ? P.pos : NP[i].disp; }
 static int near_point(int i, V3 c, float r) {             /* pieds a moins de r (a l'horizontale), hauteur proche */
     V3 p = np_feet(i);
@@ -53,16 +52,9 @@ static void mode_reset(void) {
     memset(zoneProg, 0, sizeof zoneProg); memset(flagRet, 0, sizeof flagRet); memset(modeScoreAcc, 0, sizeof modeScoreAcc);
 }
 
-/* l'hote : un pas de mode (zones, drapeaux, bouclier), soins du SOUTIEN */
+/* l'hote : un pas de mode (zones, drapeaux, bouclier) */
 static void mode_tick(float dt) {
     const MapDef *md = &maps[curMap];
-    for (int i = 0; i < MAXP; i++) {                      /* SOUTIEN : regeneration hors combat, soin des allies proches */
-        if (!NP[i].active || !NP[i].alive || np_spec(i) != SPEC_SOUTIEN) continue;
-        if (nowT - NP[i].lastHitT > SPEC_REGEN_DELAY && NP[i].hp < 100) NP[i].hp = fminf(100, NP[i].hp + SPEC_REGEN * dt);
-        for (int j = 0; j < MAXP; j++)
-            if (j != i && NP[j].active && NP[j].alive && same_team(i, j) && vlen(vsub(np_feet(i), np_feet(j))) < SPEC_HEAL_R)
-                NP[j].hp = fminf(100, NP[j].hp + SPEC_HEAL * dt);
-    }
     if (teamSize <= 0) return;
     if (rules.mode == MODE_ZONES && md->zones) {
         for (int z = 0; z < NZONES; z++) {

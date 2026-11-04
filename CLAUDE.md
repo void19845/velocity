@@ -35,7 +35,7 @@ Le propriétaire est francophone : réponses, commentaires et docs **en françai
   fantôme) : **§3.21** ; une carte `challenge = 1` n'est jamais en partie (`map_pvp`, `mode_ok`, rotation, classé, menus)
 - Objectifs des modes sur les cartes néon (zones, drapeaux, bouclier, départs par équipe, `objScale`) : **§3.22**
   (LA CITADELLE et L'OASIS, décor maillé, textures pierre / enduit ont été retirés : esthétique néon seulement)
-- Règles de partie, modes (CHRONO, 3 ZONES, DRAPEAU, BOUCLIER), boutique, spécialisations : **§3.23** ;
+- Règles de partie, modes (CHRONO, 3 ZONES, DRAPEAU, BOUCLIER), boutique : **§3.23** ;
   l'hôte arbitre les objectifs (`mode_tick`), les clients reçoivent `rules` et `obj` dans `PkSnap`
 - Réglages graphiques modifiables sans recompiler : **`graphismes/rendu.ini`** (+ textures `.bmp`, F5 en jeu) ;
   code : §3.13 de `docs/CODE.md`. Toute nouvelle valeur d'aspect doit y être exposée (`gfxKeys`).
@@ -109,7 +109,7 @@ Sur Mac : `./build_mac.sh`, puis `Velocity.app/Contents/MacOS/velocity --test te
   Chaque joueur simule son mouvement ; les touches sont validées chez le tireur puis arbitrées
   dans `host_handle()`. Nouvel événement = `EV_*` + `net_fx_*()` émetteur + cas dans
   `apply_event()` (+ `host_handle()` s'il faut arbitrer). **Incrémenter `NET_VER`** dès qu'un
-  paquet ou un événement change (actuellement **19**, `src/reseau/protocole.c`).
+  paquet ou un événement change (actuellement **20**, `src/reseau/protocole.c`).
   Chrono du match : temps réel, calé sur l'heure du worker (`time`), voir « Horloge de match commune » au §4 de
   `docs/CODE.md` (`src/reseau/horloge.c`).
 - **Équité en réseau** : pas d'aide à la visée passive. L'aimant de visée (`aim_assist`) n'existe que comme

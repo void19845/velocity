@@ -500,6 +500,18 @@ Branche `claude/equilibrage-tete-1385aa`. `NET_VER` **19**.
 - Code : `worker/src/ratings.js`, `speedrun.js`, `index.js` ; `dev-server.js` imite D1 (`memoryD1`). Tests :
   `node test.js` (nouveaux : rapports simultanés, deux matchs simultanés du même joueur, ticket rejoué en même temps).
 
+## 33. Spécialisations retirées
+
+- Les cinq spécialisations (ASSAUT, REMPART, ÉCLAIREUR, SOUTIEN, ARTIFICIER) n'existent plus : plus de rangée
+  SPECIALISATION dans LOADOUT, plus de bouton SPECIALISATIONS dans les règles de HEBERGER (BOUTIQUE prend toute la
+  ligne), plus de bonus de dégâts, de vitesse, de dash, de soins ni de jauges, et les bots n'en tirent plus au hasard.
+- `velocity.ini` : `regles=` a 5 champs (`mode,grappin,munitions,boutique,minutes`, comme `--regles`) ; un ancien
+  `regles=` à 6 champs se relit (le 5e est ignoré) et une ancienne ligne `spec=` est ignorée sans erreur.
+- Réseau : **`NET_VER` 20** (`PkSnap.rFlags` sans le bit 2, `NetPState.spare[0]` libre) : les parties en 19 et en 20
+  ne se voient pas.
+- Tests : les lignes « specialisations » et « SOUTIEN » sont retirées ; nouvelle ligne « reglages : ancien regles=
+  (6 champs) ».
+
 ## Vérifications faites
 
 - Compilation macOS sans avertissement ; tous les tests `--test` conformes, y compris ceux d'`origin/dev` (stéréo,

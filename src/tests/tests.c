@@ -2715,6 +2715,22 @@ static void run_tests(const char *path) {
         cfg_load();
         fprintf(f, "reglages : piece -> %d (attendu %d), sens %.4f, fov %.0f, axe Y inverse %d (attendu 0.0030, 115, 1)%s",
                 binds[A_SKILL][1], K_X2, sens, fovBase, invertY, "\n");
+        {                                                 /* ancien velocity.ini : regles= a 6 champs (specialisations) et spec= */
+            MatchRules sR = wantRules;
+            FILE *g = fopen(cfgPath, "w");
+            if (g) { fputs("regles=2,0,1,1,1,5\nspec=3\n", g); fclose(g); }
+            wantRules = (MatchRules){ MODE_FRAGS, 1, AMMO_NORMAL, 0, 10 };
+            cfg_load();
+            MatchRules o = wantRules;
+            wantRules = (MatchRules){ MODE_ZONES, 1, AMMO_DOUBLE, 0, 15 };
+            cfg_save();
+            wantRules = sR;
+            cfg_load();
+            fprintf(f, "reglages : ancien regles= (6 champs) -> mode %d, grappin %d, munitions %d, boutique %d, %d min ; nouveau -> "
+                       "mode %d, %d min (attendu 2, 0, 1, 1, 5 ; %d, 15)\n", o.mode, o.hook, o.ammo, o.shop, o.minutes,
+                    wantRules.mode, wantRules.minutes, MODE_ZONES);
+            wantRules = sR;
+        }
         remove(cfgPath);
         cfgPath[0] = 0;
         botMode = savedBot;
@@ -3446,7 +3462,7 @@ static void run_tests(const char *path) {
             for (int i = 0; i < 4; i++) { NP[i].active = NP[i].alive = 1; NP[i].hp = 100; NP[i].team = (unsigned char)(i & 1); NP[i].disp = v3(60, 0, 60.0f + i); }
             P.pos = v3(60, 0, 60);
             #define TICKS(sec) for (int _k = 0; _k < (int)((sec) * 120); _k++) { nowT += TICK; mode_tick(TICK); }
-            rules = (MatchRules){ MODE_ZONES, 1, AMMO_NORMAL, 0, 0, 10 }; mode_reset();
+            rules = (MatchRules){ MODE_ZONES, 1, AMMO_NORMAL, 0, 10 }; mode_reset();
             NP[1].disp = zone_pos(0);
             TICKS(ZONE_CAP_T + 0.2f);
             int ownA = obj.z[0].owner;
@@ -3483,20 +3499,7 @@ static void run_tests(const char *path) {
             NP[0].disp = shield_pos(); P.pos = shield_pos(); TICKS(5);   /* un BLEU dessus : plus de surcharge */
             fprintf(f, "mode BOUCLIER : un ROUGE seul 10 s -> %d %%, un BLEU arrive -> %d %% 5 s plus tard (attendu ~%d, meme valeur)\n",
                     sh1, obj.shield, 100 - (int)(SHIELD_DRAIN * 10));
-            rules.mode = MODE_FRAGS; rules.specs = 1;     /* specialisations : degats */
-            NP[1].st.spare[0] = SPEC_ASSAUT; NP[2].hp = 100; NP[2].alive = 1;
-            host_apply_damage(1, 2, 40, W_RAIL);
-            float hpA = NP[2].hp;
-            NP[1].st.spare[0] = 0; NP[2].st.spare[0] = SPEC_REMPART; NP[2].hp = 100;
-            host_apply_damage(1, 2, 40, W_RAIL);
-            fprintf(f, "specialisations : ASSAUT 40 -> %.0f degats, REMPART encaisse %.0f (attendu %.0f, %.0f)\n", 100 - hpA, 100 - NP[2].hp,
-                    40 * SPEC_ASSAUT_MUL, 40 * SPEC_REMPART_MUL);
-            NP[2].st.spare[0] = SPEC_SOUTIEN; NP[2].hp = 50; NP[2].lastHitT = nowT; NP[0].hp = 50; NP[0].disp = NP[2].disp = v3(0, 0, 0); P.pos = v3(0, 0, 0);
-            TICKS(2);
-            float hpS1 = NP[2].hp, hpAlly = NP[0].hp;
-            TICKS(3);
-            fprintf(f, "SOUTIEN : touche il y a 2 s -> %.0f PV (pas de regen), allie proche %.0f -> soigne ; 3 s plus tard %.0f (attendu 50, > 50, > 60)\n",
-                    hpS1, hpAlly, NP[2].hp);
+            rules.mode = MODE_FRAGS;
             rules.shop = 1; eco_reset();                  /* boutique */
             int c0 = credits, need = ecoNeedStarter;
             eco_pick_starter(WP_SHOTGUN);
@@ -4009,7 +4012,7 @@ static void run_tests(const char *path) {
         MatchRules savedRules = rules;
         int savedTeams = teamSize;
         memset(NP, 0, sizeof NP);
-        ranked = 1; teamSize = 0; rules = (MatchRules){ MODE_FRAGS, 1, AMMO_NORMAL, 0, 0, 10 };
+        ranked = 1; teamSize = 0; rules = (MatchRules){ MODE_FRAGS, 1, AMMO_NORMAL, 0, 10 };
         myId = 1; myMmr = 1000; rankPlayed = 20;
         for (int i = 0; i < 2; i++) { NP[i].active = 1; rkRid[i][0] = (unsigned char)(0x10 + i); rkMmr[i] = 1000; }
         NP[0].kills = 15; NP[1].kills = 9; matchWinner = 0;
@@ -4039,12 +4042,12 @@ static void run_tests(const char *path) {
         int sWant = wantTeams, sMenu = menuMap, sQuick = hostQuick, sFfa = hostFfa, sFrag = fragLimit, sTest = rkFragsTest;
         MatchRules sWantR = wantRules;
         int rm = race_map();
-        wantTeams = 2; wantRules = (MatchRules){ MODE_CHRONO, 0, AMMO_INFINI, 1, 1, 5 }; menuMap = rm;
+        wantTeams = 2; wantRules = (MatchRules){ MODE_CHRONO, 0, AMMO_INFINI, 1, 5 }; menuMap = rm;
         hostQuick = 1; hostFfa = 0; rkFragsTest = 0; ranked = 1;
         int hm = host_setup_rules();
-        fprintf(f, "classe regles : equipes %d, mode %s, grappin %d, munitions %s, boutique %d, specs %d, %d min, %d frags, "
-                   "carte de course evitee %d (attendu 0, FRAGS, 1, NORMALES, 0, 0, 10 min, %d frags, 1)\n",
-                teamSize, modeNames[rules.mode], rules.hook, ammoRuleNames[rules.ammo], rules.shop, rules.specs, rules.minutes,
+        fprintf(f, "classe regles : equipes %d, mode %s, grappin %d, munitions %s, boutique %d, %d min, %d frags, "
+                   "carte de course evitee %d (attendu 0, FRAGS, 1, NORMALES, 0, 10 min, %d frags, 1)\n",
+                teamSize, modeNames[rules.mode], rules.hook, ammoRuleNames[rules.ammo], rules.shop, rules.minutes,
                 fragLimit, hm != rm && rk_map_ok(hm), FRAG_LIMIT);
         ranked = 0; hostQuick = 0; menuMap = 0;
         host_setup_rules();                               /* sans classe : les choix de HEBERGER restent */
@@ -4064,7 +4067,7 @@ static void run_tests(const char *path) {
     {   /* fusion : 2e ecran opt-in ; protocole */
         fprintf(f, "second ecran : actif par defaut %d (attendu 0)\n", secondScreen);
         PkAnnounce pa;
-        fprintf(f, "protocole : NET_VER %d, PkAnnounce %d octets avec ranked a l'octet %d (attendu 19, %d, %d)\n", NET_VER,
+        fprintf(f, "protocole : NET_VER %d, PkAnnounce %d octets avec ranked a l'octet %d (attendu 20, %d, %d)\n", NET_VER,
                 (int)sizeof(PkAnnounce), (int)((unsigned char *)&pa.ranked - (unsigned char *)&pa), (int)sizeof(PkHead) + 16 + 8, (int)sizeof(PkHead) + 20);
         double sNow = nowT;                               /* chargement de carte : l'arrivant a NET_LOAD_GRACE de plus */
         nowT = 100;

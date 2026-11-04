@@ -89,7 +89,7 @@ static void apply_snap(const PkSnap *s) {
         int shopWas = rules.shop;
         rules.mode = s->rMode < MODE_COUNT ? s->rMode : MODE_FRAGS; rules.minutes = s->rMinutes;
         rules.ammo = s->rAmmo < AMMO_COUNT ? s->rAmmo : AMMO_NORMAL;
-        rules.hook = s->rFlags & 1; rules.shop = (s->rFlags >> 1) & 1; rules.specs = (s->rFlags >> 2) & 1;
+        rules.hook = s->rFlags & 1; rules.shop = (s->rFlags >> 1) & 1;
         if (rules.shop && !shopWas) eco_reset();          /* arrive en cours de partie : pieces de depart */
         obj = s->obj;
     }
@@ -234,7 +234,7 @@ static void net_update(float dt) {
             }
             s.teamSize = (unsigned char)teamSize;
             s.rMode = (unsigned char)rules.mode; s.rMinutes = (unsigned char)rules.minutes; s.rAmmo = (unsigned char)rules.ammo;
-            s.rFlags = (unsigned char)((rules.hook ? 1 : 0) | (rules.shop ? 2 : 0) | (rules.specs ? 4 : 0));
+            s.rFlags = (unsigned char)((rules.hook ? 1 : 0) | (rules.shop ? 2 : 0));
             s.obj = obj;
             host_send_all(&s, sizeof s);
             flush_events();
@@ -298,12 +298,12 @@ static void net_update(float dt) {
 
 /* regles de la partie hebergee : celles de HEBERGER (wantTeams, wantRules), ou les regles par defaut pour une partie
  * rapide, le duel du menu et une partie classee (chacun pour soi, FRAGS, grappin selon la carte, munitions normales,
- * sans boutique ni specialisations, duree par defaut). Fixe teamSize, rules et fragLimit ; renvoie la carte a charger
+ * sans boutique, duree par defaut). Fixe teamSize, rules et fragLimit ; renvoie la carte a charger
  * (classee : une carte qui a un deathmatch FRAGS, pas une carte de course) */
 static int host_setup_rules(void) {
     int dflt = hostQuick || hostFfa || ranked, m = ranked ? rk_map_pick(menuMap) : map_pvp(menuMap) ? menuMap : 0;   /* jamais une carte CHALLENGE */
     teamSize = dflt ? 0 : wantTeams;                      /* partie rapide, duel du menu, classee : chacun pour soi */
-    rules = dflt ? (MatchRules){ MODE_FRAGS, 1, AMMO_NORMAL, 0, 0, 10 } : wantRules;   /* regles de HEBERGER */
+    rules = dflt ? (MatchRules){ MODE_FRAGS, 1, AMMO_NORMAL, 0, 10 } : wantRules;   /* regles de HEBERGER */
     if (!mode_ok(rules.mode, m)) rules.mode = MODE_FRAGS;        /* objectifs absents de cette carte */
     if (mode_team(rules.mode) && teamSize <= 0) teamSize = 2;    /* modes d'equipe : 2 contre 2 au moins */
     hostFfa = 0;
@@ -332,8 +332,8 @@ static int net_host_start(void) {
     mode_reset(); eco_reset();
     NP[0].team = 0;
     host_respawn(0);
-    netlog("partie hebergee, ip %s, %d frags, equipes %d, mode %s, grappin %d, munitions %s, boutique %d, specs %d, %d min%s",
-           hostIpText, fragLimit, teamSize, modeNames[rules.mode], rules.hook, ammoRuleNames[rules.ammo], rules.shop, rules.specs, rules.minutes,
+    netlog("partie hebergee, ip %s, %d frags, equipes %d, mode %s, grappin %d, munitions %s, boutique %d, %d min%s",
+           hostIpText, fragLimit, teamSize, modeNames[rules.mode], rules.hook, ammoRuleNames[rules.ammo], rules.shop, rules.minutes,
            ranked ? ", CLASSEE" : "");
     return 1;
 }

@@ -85,27 +85,11 @@ static const char *modeHelp[MODE_COUNT] = {
 };
 enum { AMMO_NORMAL, AMMO_DOUBLE, AMMO_INFINI, AMMO_COUNT };
 static const char *ammoRuleNames[AMMO_COUNT] = { "NORMALES", "x2", "INFINIES" };
-typedef struct { int mode, hook, ammo, shop, specs, minutes; } MatchRules;
-static MatchRules rules = { MODE_FRAGS, 1, AMMO_NORMAL, 0, 0, 10 };     /* partie en cours */
-static MatchRules wantRules = { MODE_FRAGS, 1, AMMO_NORMAL, 0, 0, 10 }; /* choix du menu HEBERGER (velocity.ini) */
+typedef struct { int mode, hook, ammo, shop, minutes; } MatchRules;
+static MatchRules rules = { MODE_FRAGS, 1, AMMO_NORMAL, 0, 10 };     /* partie en cours */
+static MatchRules wantRules = { MODE_FRAGS, 1, AMMO_NORMAL, 0, 10 }; /* choix du menu HEBERGER (velocity.ini) */
 static int mode_team(int m) { return m >= MODE_ZONES; }   /* modes qui demandent des equipes */
 
-/* --- Specialisations (un bonus passif chacune ; l'hote applique degats et soins, le joueur sa vitesse et ses jauges) --- */
-enum { SPEC_AUCUNE, SPEC_ASSAUT, SPEC_REMPART, SPEC_ECLAIREUR, SPEC_SOUTIEN, SPEC_ARTIFICIER, SPEC_COUNT };
-static const char *specNames[SPEC_COUNT] = { "AUCUNE", "ASSAUT", "REMPART", "ECLAIREUR", "SOUTIEN", "ARTIFICIER" };
-static const char *specHelp[SPEC_COUNT] = {
-    "pas de specialisation",
-    "+15 % de degats infliges",
-    "-20 % de degats subis, un peu plus lent",
-    "+12 % de vitesse, un dash de plus, ennemis proches sur le radar",
-    "regenere hors combat et soigne les allies proches",
-    "munitions : jauges qui se remplissent 50 % plus vite",
-};
-static const float specCol[SPEC_COUNT][3] = {
-    { 0.6f, 0.6f, 0.65f }, { 1.0f, 0.45f, 0.3f }, { 0.4f, 0.7f, 1.0f }, { 0.4f, 1.0f, 0.5f }, { 1.0f, 0.9f, 0.4f }, { 1.0f, 0.6f, 0.15f },
-};
-static int wantSpec = SPEC_AUCUNE;                         /* choisie dans LOADOUT (velocity.ini : spec=) */
-static int my_spec(void) { return rules.specs || netMode == NET_OFF ? wantSpec : SPEC_AUCUNE; }
 static int hook_allowed(void) { return !dmMode || rules.hook; }   /* grappin : regles de la partie */
 static int mode_ok(int m, int map);                       /* src/reseau/modes.c : la carte a-t-elle les objectifs du mode ? */
 /* etat des objectifs (l'hote le tient, PkSnap le transporte) */

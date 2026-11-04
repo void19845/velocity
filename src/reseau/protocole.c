@@ -11,13 +11,14 @@
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   19      /* 15 : regles (mode, grappin, munitions, boutique, specs) et objectifs dans PkSnap, EV_OBJ, spec dans NetPState ;
+#define NET_VER   20      /* 15 : regles (mode, grappin, munitions, boutique, specs) et objectifs dans PkSnap, EV_OBJ, spec dans NetPState ;
                              16 = fusion du fork + mode classe (PkJoin, PkRoster, PkAnnounce.ranked, PkWelcome pad[1]) ;
                              17 = cartes CITADELLE et OASIS retirees, objectifs sur les cartes neon ;
                              18 = horloge de match commune (PkSnap.clk, clkSrv) ;
                              19 = tirs a la tete et chaine de tirs pleine (EV_HIT.pad[0] = HF_*, f[4..6] = point sur la tete ;
                                   EV_KILL.pad[0] ; NetPState.spare[1] = chaine de tirs) ; onde de l'Enclume du plan 1b
-                                  (EV_SLAM : hauteur du mur, cap et vitesse de l'ovale) */
+                                  (EV_SLAM : hauteur du mur, cap et vitesse de l'ovale) ;
+                             20 = specialisations retirees (PkSnap.rFlags sans le bit 2, NetPState.spare[0] libre) */
 static int net_silent(double last) { return nowT - last > NET_TIMEOUT; }   /* plus de nouvelles (grace : last dans le futur) */
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
@@ -51,7 +52,7 @@ typedef struct { PkHead h; NetPState st; } PkState;
 typedef struct { unsigned char active, alive; short hp, kills, deaths; NetPState st; unsigned char team; } SnapP;
 typedef struct { PkHead h; float matchT; unsigned char matchOver, winner; unsigned short pickMask; unsigned char fragLimit, teamSize;
                  SnapP p[MAXP];
-                 unsigned char rMode, rFlags, rMinutes, rAmmo;   /* regles : mode, grappin | boutique << 1 | specs << 2, duree, munitions */
+                 unsigned char rMode, rFlags, rMinutes, rAmmo;   /* regles : mode, grappin | boutique << 1, duree, munitions */
                  ObjState obj;
                  double clk; unsigned char clkSrv, pad2[3]; } PkSnap;   /* heure de l'hote a l'envoi, calee sur le serveur (horloge.c) */
 typedef struct {
@@ -188,7 +189,7 @@ static void pack_state(NetPState *s) {
                                (P.parryWin > 0 ? NF_PARRY : 0));
     s->weapon = (unsigned char)P.weapon;
     s->skin = (unsigned char)wantSkin;
-    s->spare[0] = (unsigned char)my_spec();               /* specialisation (l'hote l'applique aux degats et aux soins) */
+    s->spare[0] = 0;                                      /* libre (ancienne specialisation) */
     s->spare[1] = (unsigned char)(shotStreak < 255 ? shotStreak : 255);   /* chaine de tirs (l'hote verifie le one-shot) */
     float swingT = P.meleeKind == MK_ANVIL ? ANVIL_SWING_T : P.meleeKind == MK_LANCE ? 0.2f :   /* Lance : estoc */
                    P.meleeKind == MK_FLAIL ? FLAIL_ANIM : 0.25f;

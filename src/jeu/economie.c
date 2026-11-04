@@ -52,10 +52,8 @@ static int eco_loadout(int *l) {
     l[0] = ecoSlot[0]; l[1] = ecoSlot[1] >= 0 ? ecoSlot[1] : ecoSlot[0];
     return 1;
 }
-static float ammo_rule_mul(void) {                        /* jauges : regles de la partie et ARTIFICIER */
-    float k = dmMode && rules.ammo == AMMO_DOUBLE ? 2.0f : 1.0f;
-    if (my_spec() == SPEC_ARTIFICIER) k *= SPEC_AMMO_MUL;
-    return k;
+static float ammo_rule_mul(void) {                        /* jauges : regles de la partie */
+    return dmMode && rules.ammo == AMMO_DOUBLE ? 2.0f : 1.0f;
 }
 /* bot : achete au hasard ce qu'il peut, a la mort */
 static void eco_bot_shop(void) {

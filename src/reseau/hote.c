@@ -7,7 +7,6 @@ static void mode_tick(float dt);
 static void mode_reset(void);
 static int mode_time_winner(void);
 static float match_time_limit(void);
-static int np_spec(int i);
 static V3 np_feet(int i);
 static void host_end_match(int winner) {
     if (matchOver) return;
@@ -194,13 +193,9 @@ static void host_take_pickup(int i, int who) {
 
 /* degats arbitres : PV, plafond par touche, temps pour tuer, kill (EV_HIT, et les decisions du bouclier).
  * hf : drapeaux HF_* deja valides par host_handle. Les seules exceptions au plafond PVP_HIT_CAP : la tete (rail, Elan), et
- * le one-shot (rail a la tete, chaine pleine) qui retire au moins tous les PV restants, specialisations comprises */
+ * le one-shot (rail a la tete, chaine pleine) qui retire au moins tous les PV restants */
 static void host_apply_damage_fl(int from, int v, float dmgIn, int w, int hf) {
     float before = NP[v].hp;
-    if (from != v && from >= 0 && from < MAXP) {          /* specialisations : ASSAUT tape plus fort, REMPART encaisse */
-        if (np_spec(from) == SPEC_ASSAUT) dmgIn *= SPEC_ASSAUT_MUL;
-        if (np_spec(v) == SPEC_REMPART) dmgIn *= SPEC_REMPART_MUL;
-    }
     int self = w == W_SELF || w == W_VOID;
     int oneShot = !self && ((hf & HF_CHAIN) || ((hf & HF_HEAD) && head_oneshot(w)));
     float dmg = self || (hf & HF_HEAD) ? dmgIn : fminf(dmgIn, PVP_HIT_CAP);   /* plafond par touche, sauf a la tete */

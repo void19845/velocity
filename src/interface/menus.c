@@ -224,7 +224,7 @@ static void draw_loadout(float cx, float cy) {
     /* mise en page du haut vers le bas : 4 rangees (etiquette 22 px, boutons 44 px, 18 px d'air), centree, jamais
      * au-dessus du bord (fenetre reduite : 640 px de haut suffisent) */
     const float R = 84;
-    float top = fmaxf(10, cy - (370 + 4 * R) * 0.5f), y;
+    float top = fmaxf(10, cy - (370 + 3 * R) * 0.5f), y;
     text_c(2, cx, top + 50, "LOADOUT", 0.5f, 0.9f, 1.0f, 1);
     text_c(0, cx, top + 80, "1 arme de melee + 1 competence + 2 armes a distance ; la melee remplit les jauges de munitions",
            0.7f, 0.75f, 0.85f, 1);
@@ -240,11 +240,6 @@ static void draw_loadout(float cx, float cy) {
         if (sel_button(x0 + k * step, y, bw, 44, skillDef[k].name, k == wantSkill, 1,
                        v3(skillDef[k].r, skillDef[k].g, skillDef[k].b)))
             wantSkill = k;
-    y += R;
-    text(1, x0, y - 8, "SPECIALISATION", 0.5f, 0.9f, 1.0f, 1);
-    for (int k = 0; k < SPEC_COUNT; k++)                  /* specialisations : bonus passif (en multi si l'hote les active) */
-        if (sel_button(x0 + k * step, y, bw, 44, specNames[k], k == wantSpec, 1, v3(specCol[k][0], specCol[k][1], specCol[k][2])))
-            wantSpec = k;
     for (int s = 0; s < 2; s++) {
         y += R;
         text(1, x0, y - 8, s ? "ARME 2" : "ARME 1", 0.5f, 0.9f, 1.0f, 1);
@@ -280,9 +275,6 @@ static void draw_loadout(float cx, float cy) {
         text(0, x0, y, buf, sd->r, sd->g, sd->b, 1);
         y += 22;
     }
-    snprintf(buf, sizeof buf, "%s : %s%s", specNames[wantSpec], specHelp[wantSpec], dmMode && !rules.specs ? "  (desactivees par l'hote)" : "");
-    text(0, x0, y, buf, specCol[wantSpec][0], specCol[wantSpec][1], specCol[wantSpec][2], 1);
-    y += 22;
     if (appState == APP_GAME) text(0, x0, y, "pris en compte au prochain respawn", 0.6f, 0.6f, 0.7f, 1);
     if (button(cx - 105, y + 14, 210, 50, "VALIDER")) { loadoutOpen = 0; cfg_save(); }
     if (uiClick) uiClick = 0;
@@ -355,7 +347,7 @@ static void draw_skin_menu(float cx, float cy) {
     if (uiClick) uiClick = 0;
 }
 
-/* regles de la partie (HEBERGER) : mode, grappin, munitions, boutique, specialisations, duree */
+/* regles de la partie (HEBERGER) : mode, grappin, munitions, boutique, duree */
 static void draw_rules_panel(float x, float y, float w) {
     static const int mins[4] = { 3, 5, 10, 15 };
     char buf[96];
@@ -382,8 +374,7 @@ static void draw_rules_panel(float x, float y, float w) {
     snprintf(buf, sizeof buf, "MUNITIONS : %s", ammoRuleNames[wantRules.ammo]);
     if (sel_button(x + hw + 10, y, hw, 44, buf, wantRules.ammo != AMMO_NORMAL, 1, v3(1, 0.85f, 0.4f))) wantRules.ammo = (wantRules.ammo + 1) % AMMO_COUNT;
     y += 54;
-    if (sel_button(x, y, hw, 44, wantRules.shop ? "BOUTIQUE : OUI" : "BOUTIQUE : NON", wantRules.shop, 1, v3(1, 0.85f, 0.4f))) wantRules.shop ^= 1;
-    if (sel_button(x + hw + 10, y, hw, 44, wantRules.specs ? "SPECIALISATIONS : OUI" : "SPECIALISATIONS : NON", wantRules.specs, 1, v3(1, 0.85f, 0.4f))) wantRules.specs ^= 1;
+    if (sel_button(x, y, w, 44, wantRules.shop ? "BOUTIQUE : OUI" : "BOUTIQUE : NON", wantRules.shop, 1, v3(1, 0.85f, 0.4f))) wantRules.shop ^= 1;
     y += 54;
     text(0, x, y + 4, "DUREE", 0.7f, 0.75f, 0.85f, 1);
     y += 12;
@@ -395,9 +386,7 @@ static void draw_rules_panel(float x, float y, float w) {
     if (wantRules.shop) {
         text(0, x, y, "boutique : une arme de depart parmi 4, des pieces a chaque kill, mort et objectif,", 0.75f, 0.78f, 0.88f, 1);
         text(0, x, y + 20, "et on achete d'autres armes a chaque mort", 0.75f, 0.78f, 0.88f, 1);
-        y += 46;
     }
-    if (wantRules.specs) text(0, x, y, "specialisations : chacun choisit la sienne dans LOADOUT", 0.75f, 0.78f, 0.88f, 1);
     if (uiClick) cfg_save();
 }
 

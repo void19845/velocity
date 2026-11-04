@@ -314,9 +314,9 @@ static int velocity_main(const char *cmd) {
             else if (!strcmp(t, "--local")) botLocal = 1;
             else if (!strcmp(t, "--hidden")) botHidden = 1;
             else if (!strcmp(t, "--teams") && (t = strtok(NULL, " "))) wantTeams = atoi(t) < 0 ? 0 : atoi(t) > TEAM_MAX ? TEAM_MAX : atoi(t);
-            else if (!strcmp(t, "--regles") && (t = strtok(NULL, " "))) {   /* --regles mode,grappin,munitions,boutique,specs,minutes */
+            else if (!strcmp(t, "--regles") && (t = strtok(NULL, " "))) {   /* --regles mode,grappin,munitions,boutique,minutes */
                 MatchRules r = wantRules;
-                if (sscanf(t, "%d,%d,%d,%d,%d,%d", &r.mode, &r.hook, &r.ammo, &r.shop, &r.specs, &r.minutes) >= 1 && r.mode >= 0 && r.mode < MODE_COUNT &&
+                if (sscanf(t, "%d,%d,%d,%d,%d", &r.mode, &r.hook, &r.ammo, &r.shop, &r.minutes) >= 1 && r.mode >= 0 && r.mode < MODE_COUNT &&
                     r.ammo >= 0 && r.ammo < AMMO_COUNT && r.minutes > 0 && r.minutes <= 60) wantRules = r;   /* memes bornes que velocity.ini */
             }
             else if (!strcmp(t, "--updated")) updAfter = 1;
@@ -430,7 +430,6 @@ static int velocity_main(const char *cmd) {
     }
     if (!shotMode && !botHidden) audio_init();
     if (curMap != menuMap) load_map(menuMap);             /* --map N ou map= de velocity.ini */
-    if (botMode) wantSpec = 1 + (int)(frand() * (SPEC_COUNT - 1)) % (SPEC_COUNT - 1);   /* specialisation au hasard */
     if (botMode) {                                        /* Competences : sans --skill, le bot en tire une au hasard */
         if (!botSkillSet) wantSkill = (int)(frand() * SK_COUNT) % SK_COUNT;
         netlog("competence du bot : %s%s", skillDef[wantSkill].name, botSkillSet ? " (imposee)" : " (au hasard)");
@@ -622,7 +621,7 @@ static int velocity_main(const char *cmd) {
         int mode = strstr(shotPath, "drapeau") ? MODE_DRAPEAU : strstr(shotPath, "bouclier") ? MODE_BOUCLIER : MODE_ZONES;
         appState = APP_GAME; dmMode = 1; netMode = NET_HOST; myId = 0; teamSize = 2;
         NP[0].active = NP[0].alive = 1; NP[0].team = 0;
-        rules = (MatchRules){ mode, 1, AMMO_NORMAL, 0, 0, 10 }; mode_reset();
+        rules = (MatchRules){ mode, 1, AMMO_NORMAL, 0, 10 }; mode_reset();
         if (mode == MODE_ZONES) { obj.z[0].owner = 0; obj.z[2].owner = 1; obj.z[1].capTeam = 1; obj.z[1].prog = 120; obj.pts[0] = 31; obj.pts[1] = 27; }
         P.pos = md->menuCam; P.pitch = md->menuPitch; P.yaw = shotYaw;
         if (shotPosSet) { P.pos = shotPos; if (shotPitch > -999) P.pitch = shotPitch; }
@@ -636,7 +635,7 @@ static int velocity_main(const char *cmd) {
         load_map(0);                                      /* l'Arene en 3 ZONES */
         reset_game(); appState = APP_GAME; dmMode = 1; netMode = NET_HOST; myId = 0; teamSize = 2;
         NP[0].active = NP[0].alive = 1; NP[0].team = 0;
-        rules = (MatchRules){ MODE_ZONES, 0, AMMO_NORMAL, 1, 1, 10 }; mode_reset(); eco_reset();
+        rules = (MatchRules){ MODE_ZONES, 0, AMMO_NORMAL, 1, 10 }; mode_reset(); eco_reset();
         obj.z[0].owner = 0; obj.z[2].owner = 1; obj.z[1].capTeam = 1; obj.z[1].prog = 150; obj.pts[0] = 64; obj.pts[1] = 41; matchT = 140;
         P.pos = P.prevPos = v3(0, 0, -30); P.yaw = 0; P.pitch = 0.05f;
         if (strstr(shotPath, "boutique")) {

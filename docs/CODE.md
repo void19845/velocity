@@ -1067,12 +1067,13 @@ des équipes.
 - Captures : `--shot objectifs_zones.bmp --map N` (aussi `_drapeau`, `_bouclier` ; `--pos x,y,z[,inclinaison]`,
   `--yaw A`) dessine les objectifs du mode sur la carte.
 
-### 3.23 Règles de partie, modes, boutique, spécialisations
+### 3.23 Règles de partie, modes, boutique
 
 - **Règles** (`MatchRules rules` ; `wantRules` = choix du panneau RÈGLES de HEBERGER, `regles=` dans `velocity.ini`,
-  `--regles mode,grappin,munitions,boutique,specs,minutes` pour les bots) : mode, grappin oui/non (`hook_allowed()`),
-  munitions normales / ×2 / infinies (`ammo_rule_mul`, `game_tick`), boutique, spécialisations,
-  durée (3 à 15 min). L'hôte les copie au démarrage (`net_host_start` : mode indisponible sur la carte → FRAGS,
+  `--regles mode,grappin,munitions,boutique,minutes` pour les bots) : mode, grappin oui/non (`hook_allowed()`),
+  munitions normales / ×2 / infinies (`ammo_rule_mul`, `game_tick`), boutique,
+  durée (3 à 15 min). Un ancien `regles=` à 6 champs (le 5e était les spécialisations, retirées) se relit encore :
+  le 5e champ est ignoré, comme une ancienne ligne `spec=`. L'hôte les copie au démarrage (`net_host_start` : mode indisponible sur la carte → FRAGS,
   mode d'équipe sans équipes → 2 contre 2) et les envoie dans chaque `PkSnap` (`rMode`, `rFlags`, `rMinutes`, `rAmmo`).
 - **Modes** (`src/reseau/modes.c`, l'hôte fait autorité, état `ObjState obj` dans `PkSnap`, messages `EV_OBJ`) :
   FRAGS (comme avant) ; CHRONO (pas de limite de frags, le plus de kills au temps) ; **3 ZONES** (`MapDef.zones`, rayon
@@ -1095,13 +1096,12 @@ des équipes.
   souris libérée, immobile) ; à chaque mort, la boutique s'ouvre : acheter une arme
   (`eco_price`) l'équipe en 2e place, inverser les armes, MUNITIONS + (jauges pleines au respawn). Les armes
   achetées restent pour le match. Bots : `eco_bot_shop`.
-- **Spécialisations** (LOADOUT, `spec=`, envoyée dans `NetPState.spare[0]`) : ASSAUT (+15 % de dégâts, hôte),
-  REMPART (−20 % de dégâts subis, hôte ; un peu plus lent), ÉCLAIREUR (+12 % de vitesse, 3 charges de dash),
-  SOUTIEN (régénère hors combat, soigne les alliés proches, hôte), ARTIFICIER (jauges +50 %). Actives en solo, et en
-  multi si l'hôte les autorise.
-- `NET_VER` 15 (16 depuis le mode classé, 17 depuis le retrait de LA CITADELLE et L'OASIS, §4). Captures :
+- Les **spécialisations** (ASSAUT, REMPART, ÉCLAIREUR, SOUTIEN, ARTIFICIER) ont été retirées (`NET_VER` 20) :
+  `PkSnap.rFlags` n'a plus de bit 2, `NetPState.spare[0]` est libre.
+- `NET_VER` 15 (16 depuis le mode classé, 17 depuis le retrait de LA CITADELLE et L'OASIS, 20 depuis le retrait des
+  spécialisations, §4). Captures :
   `--shot boutique.bmp`, `--shot armedepart.bmp` (Arène en 3 ZONES), `objectifs_*` (§3.22). Tests : zones, drapeau,
-  bouclier (sur l'Arène), spécialisations, SOUTIEN, boutique, objectifs des cartes, cartes CHALLENGE, rotation.
+  bouclier (sur l'Arène), boutique, objectifs des cartes, cartes CHALLENGE, rotation.
 
 ---
 
@@ -1220,7 +1220,7 @@ noms affichés dans le fil des kills sont dans `weaponNames`, dans le même ordr
      l'événement relayé (journal : « tete refusee », « chaine pleine refusee ») ;
   4. sinon retire `min(dégâts, PVP_HIT_CAP)` PV (`W_SELF` n'est pas plafonné). **Seules exceptions au plafond**
      (`host_apply_damage_fl`) : une touche à la tête validée (rail, Élan) n'est pas plafonnée, et un **one-shot**
-     (rail à la tête, ou tir chaîne pleine validé) retire au moins tous les PV restants, spécialisations comprises ;
+     (rail à la tête, ou tir chaîne pleine validé) retire au moins tous les PV restants ;
   5. à 0 PV : `host_kill(tueur, victime, arme)` ; `EV_KILL.pad[0]` porte `HF_HEAD` / `HF_CHAIN` / `HF_ONESHOT`.
 - `EV_PARRY` → soigne l'auteur du parry de `PARRY_HEAL`.
 
@@ -1348,7 +1348,7 @@ identique)** :
    champ `PkAnnounce.ranked`). Rejoindre une partie classée sans serveur de classement est refusé.
 2. **Règles figées** : une partie classée est toujours en **chacun pour soi** (`teamSize` = 0, quel que soit
    `wantTeams`), avec les **règles par défaut** (`MatchRules` : FRAGS, grappin autorisé, munitions normales, sans
-   boutique ni spécialisations, 10 min ; `wantRules` est ignoré), limite `FRAG_LIMIT`, `MATCH_TIME`, et **sans
+   boutique, 10 min ; `wantRules` est ignoré), limite `FRAG_LIMIT`, `MATCH_TIME`, et **sans
    bots** (ni `vsBot`, ni `hostBots`) ; les spectateurs ne comptent pas. La carte doit avoir un vrai match à mort :
    `rk_map_pick` saute les cartes CHALLENGE (`rk_map_ok` = `map_pvp` : LA TOILE). Un match ne compte que si `rk_counts()` (classée,
    chacun pour soi, mode FRAGS). L'hôte refuse (`PkWelcome.refused = 2`) un joueur sans identité de classement.
@@ -1499,7 +1499,8 @@ deux ; 15 règles de partie et objectifs (`PkSnap` : `rMode`…, `obj` ; `EV_OBJ
 (plateau du Canyon, balcons du Puits) ; **18** horloge de match commune (`PkSnap.clk`, `clkSrv`) ; **19** tirs à la tête
 et chaîne pleine (`EV_HIT.pad[0]` = `HF_*`, `f[4..6]` = point sur la tête, `EV_KILL.pad[0]`, `NetPState.spare[1]` =
 chaîne de tirs) et onde de l'Enclume du plan 1b (`EV_SLAM` : centre, rayon, hauteur du mur, cap et vitesse de l'ovale,
-`actor` = |vy|). La valeur fait foi dans `src/reseau/protocole.c`.
+`actor` = |vy|) ; **20** spécialisations retirées (`PkSnap.rFlags` sans le bit 2, `NetPState.spare[0]` libre).
+La valeur fait foi dans `src/reseau/protocole.c`.
 
 ### Horloge de match commune (`src/reseau/horloge.c`)
 
@@ -1678,7 +1679,7 @@ plafonné à 0,1 s) ou pendant le `hitstop`, la simulation ralentit mais pas le 
 | `PVP_SCALE` | 0,7 | dégâts contre les joueurs = 70 % des dégâts contre les monstres |
 | `KILL_HEAL` | 30 PV | soin du tueur |
 | `NET_MAGIC` | `0x564C4F43` | signature des paquets (« VLOC ») |
-| `NET_VER` | 19 | version du protocole (historique : §4, « `NET_VER` ») ; 15 = règles et objectifs, 16 = mode classé, 17 = cartes néon seulement, 18 = horloge commune, 19 = tirs à la tête, chaîne pleine, onde de l'Enclume |
+| `NET_VER` | 20 | version du protocole (historique : §4, « `NET_VER` ») ; 15 = règles et objectifs, 16 = mode classé, 17 = cartes néon seulement, 18 = horloge commune, 19 = tirs à la tête, chaîne pleine, onde de l'Enclume, 20 = spécialisations retirées |
 | `RANK_*` | voir §4 | mode classé : `RANK_START` 1000, bornes 100 à 3000, `RANK_K` 32, `RANK_K_PLACE` 64 sur `RANK_PLACEMENT` 10 matchs, paliers, `RANK_END_WAIT`, `RANK_RETRY`, `RANK_TRIES` |
 | `MAXSPEC` | 4 | spectateurs en direct sur l'hôte |
 | `MAXFOUND` | 12 | parties mémorisées (LAN + en ligne ; 7 affichées) |
@@ -1791,7 +1792,7 @@ Le dossier peut contenir des espaces (tout le reste de la ligne). `velocity.ini`
 
 ```
 velocity.exe --bot host|join [--name N] [--time S] [--log fichier.txt] [--botshot fichier.bmp] [--teams N] [--map N]
-             [--regles m,g,mu,b,s,min] [--loadout a,b[,m[,c]]] [--level 0-2] [--ranked] [--frags N]
+             [--regles m,g,mu,b,min] [--loadout a,b[,m[,c]]] [--level 0-2] [--ranked] [--frags N]
 ```
 
 - `--bot host` → `botMode = 1` : héberge automatiquement (`ACT_HOST`). Tout autre mot → `botMode = 2` :

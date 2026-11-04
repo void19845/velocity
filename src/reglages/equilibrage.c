@@ -195,17 +195,6 @@ enum { SK_COIN, SK_MARK, SK_CHARGE, SK_RICOCHET, SK_ALLIN, SK_DECOY, SK_AIM, SK_
 #define SHIELD_ZONE_R    6.0f     /* BOUCLIER : rayon de la zone du generateur */
 #define SHIELD_DRAIN     1.6f     /* BOUCLIER : % par seconde avec un attaquant seul dessus (+35 % par attaquant en plus) */
 
-/* Specialisations */
-#define SPEC_ASSAUT_MUL  1.15f
-#define SPEC_REMPART_MUL 0.8f
-#define SPEC_REMPART_SPD 0.93f    /* REMPART : vitesse x0,93 */
-#define SPEC_ECLAIR_SPD  1.12f    /* ECLAIREUR : vitesse x1,12, 3 charges de dash */
-#define SPEC_REGEN_DELAY 3.0      /* SOUTIEN : secondes sans etre touche avant de regenerer */
-#define SPEC_REGEN       6.0f     /* SOUTIEN : PV par seconde */
-#define SPEC_HEAL_R      7.0f     /* SOUTIEN : rayon du soin des allies */
-#define SPEC_HEAL        4.0f     /* SOUTIEN : PV par seconde aux allies proches */
-#define SPEC_AMMO_MUL    1.5f     /* ARTIFICIER : jauges */
-
 /* Economie et boutique (src/jeu/economie.c) */
 #define ECO_START        400      /* pieces au debut du match */
 #define ECO_KILL         200

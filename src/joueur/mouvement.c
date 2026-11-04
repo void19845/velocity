@@ -279,10 +279,6 @@ static void grapple_tick(float dt, int press, int held) {
     }
 }
 
-static float spec_speed(void) {                          /* ECLAIREUR plus rapide, REMPART plus lent */
-    int s = my_spec();
-    return s == SPEC_ECLAIREUR ? SPEC_ECLAIR_SPD : s == SPEC_REMPART ? SPEC_REMPART_SPD : 1.0f;
-}
 static void player_tick(float dt, int jumpPress, int dashPress) {
     P.prevPos = P.pos;
     int alive = !P.dead;
@@ -310,10 +306,7 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     P.slideCd -= dt; P.wallJumpCd -= dt;
     P.kinDashT = fminf(P.kinDashT + dt, 10);              /* Elan : temps depuis le dernier dash */
     P.coyote = P.grounded ? 0 : P.coyote + dt;
-    {                                                     /* ECLAIREUR : une charge de dash de plus */
-        float dmax = my_spec() == SPEC_ECLAIREUR ? 3.0f : 2.0f;
-        if (P.dashCharge < dmax) P.dashCharge = fminf(dmax, P.dashCharge + dt / DASH_RECHARGE);
-    }
+    if (P.dashCharge < 2) P.dashCharge = fminf(2, P.dashCharge + dt / DASH_RECHARGE);
 
     /* accroupi / slide */
     int wantC = alive && act[A_CROUCH];
@@ -398,20 +391,20 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     /* acceleration */
     if (P.wallrun) {
         V3 wp = vnorm(vsub(wish, vmul(P.wallN, vdot(wish, P.wallN))));
-        accelerate(wp, RUN_SPEED * spec_speed() * 1.15f, 6, 1e9f, dt);
+        accelerate(wp, RUN_SPEED * 1.15f, 6, 1e9f, dt);
         float away = vdot(P.vel, P.wallN);
         if (away > 0) P.vel = vsub(P.vel, vmul(P.wallN, away));
         P.vel = vsub(P.vel, vmul(P.wallN, 0.5f));                   /* colle au mur */
     } else if (P.grounded && !P.sliding) {
-        accelerate(wish, (P.crouch ? CROUCH_SPEED : shPen ? SHIELD_GROUND_SPEED : RUN_SPEED) * spec_speed(), GROUND_ACCEL, 1e9f, dt);
+        accelerate(wish, (P.crouch ? CROUCH_SPEED : shPen ? SHIELD_GROUND_SPEED : RUN_SPEED), GROUND_ACCEL, 1e9f, dt);
         if (shPen) {                                      /* Egide : freinage progressif jusqu'a 7 m/s */
             float h = hlen(P.vel);
             if (h > SHIELD_GROUND_SPEED) { float k = fmaxf(SHIELD_GROUND_SPEED, h - SHIELD_BRAKE * dt) / h; P.vel.x *= k; P.vel.z *= k; }
         }
     } else if (P.sliding) {
-        accelerate(wish, RUN_SPEED * spec_speed(), 3, 0.5f, dt);
+        accelerate(wish, RUN_SPEED, 3, 0.5f, dt);
     } else {
-        accelerate(wish, RUN_SPEED * spec_speed(), AIR_ACCEL * (shPen ? SHIELD_AIR_MULT : 1), AIR_CAP, dt);
+        accelerate(wish, RUN_SPEED, AIR_ACCEL * (shPen ? SHIELD_AIR_MULT : 1), AIR_CAP, dt);
     }
 
     /* gravite */

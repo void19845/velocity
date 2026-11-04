@@ -51,8 +51,7 @@ static void cfg_save(void) {
     fprintf(f, "online=%d" "\n" "teams=%d" "\n" "update_check=%d" "\n", onlineOn, wantTeams, updCheck);
     fprintf(f, "loadout=%d,%d" "\n" "melee=%d" "\n" "skill=%d" "\n" "skin=%d" "\n", wantLoadout[0], wantLoadout[1], wantMelee, wantSkill, wantSkin);
     fprintf(f, "map=%d" "\n" "map_rotate=%d" "\n", menuMap, mapRotate);
-    fprintf(f, "regles=%d,%d,%d,%d,%d,%d" "\n" "spec=%d" "\n", wantRules.mode, wantRules.hook, wantRules.ammo, wantRules.shop,
-            wantRules.specs, wantRules.minutes, wantSpec);
+    fprintf(f, "regles=%d,%d,%d,%d,%d" "\n", wantRules.mode, wantRules.hook, wantRules.ammo, wantRules.shop, wantRules.minutes);
     if (lobbyIni[0] && strcmp(lobbyIni, LOBBY_DEFAULT)) fprintf(f, "lobby=%s" "\n", lobbyIni);   /* pas --lobby ; le defaut peut changer */
     if (hex_ok(rkId, 32) && hex_ok(rkKey, 32))           /* mode classe : identite, puis cache de la cote (le serveur fait foi) */
         fprintf(f, "ranked_id=%s" "\n" "ranked_key=%s" "\n", rkId, rkKey);
@@ -104,10 +103,11 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
         else if (!strcmp(line, "map_rotate")) mapRotate = atoi(v) != 0;
         else if (!strcmp(line, "regles")) {
             MatchRules r = wantRules;
-            if (sscanf(v, "%d,%d,%d,%d,%d,%d", &r.mode, &r.hook, &r.ammo, &r.shop, &r.specs, &r.minutes) == 6 &&
+            int x[6], n = sscanf(v, "%d,%d,%d,%d,%d,%d", &x[0], &x[1], &x[2], &x[3], &x[4], &x[5]);
+            if (n >= 5) { r.mode = x[0]; r.hook = x[1]; r.ammo = x[2]; r.shop = x[3]; r.minutes = x[n - 1]; }
+            if ((n == 5 || n == 6) &&                     /* 6 champs : ancien format, le 5e (specialisations) est ignore */
                 r.mode >= 0 && r.mode < MODE_COUNT && r.ammo >= 0 && r.ammo < AMMO_COUNT && r.minutes > 0 && r.minutes <= 60) wantRules = r;
         }
-        else if (!strcmp(line, "spec")) wantSpec = atoi(v) >= 0 && atoi(v) < SPEC_COUNT ? atoi(v) : 0;
         else if (!strcmp(line, "skill")) wantSkill = atoi(v) >= 0 && atoi(v) < SK_COUNT ? atoi(v) : SK_COIN;
         else if (!strncmp(line, "bind_", 5))
             for (int a = 0; a < A_COUNT; a++)
