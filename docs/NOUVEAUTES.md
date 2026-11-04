@@ -408,6 +408,30 @@ Le solo devient le mode **VAGUES** (bouton VAGUES du menu, à la place de « SOL
   `--shot vagues_pyramide.bmp` (`_charge`), `vagues_tesseract`, `vagues_boule`, `vagues_hexaedre`, `vagues_boutique`
   (`_small`), `vagues_selecteur`, `vagues_fin`, `vagues_infini`.
 
+## 30. Speedrun : classements en ligne, speedrun complet
+
+- **Écran CHALLENGE** (bouton du menu principal) : une ligne par catégorie (COURSE de chaque carte CHALLENGE,
+  SPEEDRUN COMPLET, VAGUE 100) avec ton record, et le **classement en ligne** de la catégorie choisie : record du
+  monde, top 10 (écart au premier), ton rang et ton meilleur temps. LANCER LA COURSE / LANCER LE SPEEDRUN.
+- **Fin de course** : ligne CLASSEMENT (« #3 sur 37 - record perso enregistre », « ton meilleur temps reste… »,
+  refus et raison, ou « hors ligne, temps garde sur cette machine »). Le fantôme du record reste local.
+- **Speedrun complet** : toutes les cartes CHALLENGE à la suite, chrono global (somme des courses, décomptes
+  exclus), temps à chaque arrivée comparé au record perso (vert / rouge), 2 s puis la carte suivante, bilan final ;
+  R repart de la première carte. Record perso dans `velocity_speedrun.txt`. Avec la seule LA TOILE aujourd'hui,
+  c'est une course seule, mais un classement à part, prêt pour les prochaines cartes.
+- **Vague 100 la plus rapide** : catégorie prête côté jeu et serveur ; le mode VAGUES n'a qu'à appeler
+  `speedrun_begin(SR_VAGUES100)` au départ et `speedrun_report(SR_VAGUES100, ms)` (ou `_splits` avec les vagues de
+  boss) à la fin de la vague 100.
+- **Serveur** (`worker/src/speedrun.js`, même Durable Object et même identité que le mode classé) : `/speedrun/start`
+  (ticket), `/speedrun/report`, `/speedrun/top`. Anti-triche minimal : ticket à usage unique, temps ≤ temps réel
+  écoulé depuis le ticket, plancher par catégorie (portes à 45 m/s), temps intermédiaires cohérents. **À déployer**
+  par le propriétaire (`npx wrangler deploy`) ; d'ici là l'écran affiche « classement indisponible » et les temps
+  restent locaux, sans erreur.
+- Code : `src/jeu/speedrun.c`, `src/reseau/speedrun_serveur.c`, `menus.c` (`draw_challenge_menu`), `course_hud.c` ;
+  détails au §4 « Speedrun » de `CODE.md`. Tests : lignes `speedrun …` (`--test`) et `speedrun :` (`node test.js`) ;
+  captures `challenge`, `course_fin`, `speedrun`, `speedrun_fin` ; de bout en bout contre un lobby local avec
+  `SPEEDRUN_LOBBY=127.0.0.1:8791` (voir `CODE.md`).
+
 ## Vérifications faites
 
 - Compilation macOS sans avertissement ; tous les tests `--test` conformes, y compris ceux d'`origin/dev` (stéréo,

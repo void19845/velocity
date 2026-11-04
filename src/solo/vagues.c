@@ -29,11 +29,14 @@ static int vagues_splits_ms(int out[4]) {                 /* temps cumules (ms) 
     for (int k = 0; k < 4; k++) out[k] = vgSplit[k] > 0 ? (int)(vgSplit[k] * 1000 + 0.5f) : -1;
     return vgT100 > 0 ? 4 : 0;
 }
-static void vg_speedrun_begin(void) {
-    /* branche speedrun : speedrun_begin(SR_VAGUES100) ici (depart d'une partie VAGUES, vague 1) */
+static void vg_speedrun_begin(void) {                     /* depart d'une partie VAGUES (vague 1) : ticket du serveur */
+    speedrun_begin(SR_VAGUES100);
 }
-static void vg_speedrun_end(void) {
-    /* branche speedrun : int sp[4]; if (vagues_splits_ms(sp) == 4) speedrun_report_splits(SR_VAGUES100, sp[3], sp, 4); */
+static void vg_speedrun_end(void) {                       /* vague 100 terminee : classement "vague 100 la plus rapide" */
+    int sp[4], n = vagues_splits_ms(sp);
+    for (int k = 0; k < n; k++) if (sp[k] <= 0 || (k && sp[k] <= sp[k - 1])) n = 0;   /* le serveur veut 0 ou 4 temps croissants */
+    if (n == 4) speedrun_report_splits(SR_VAGUES100, sp[3], sp, 4);
+    else speedrun_report(SR_VAGUES100, (int)(vgT100 * 1000 + 0.5f));
 }
 
 static int vg_menu_open(void) { return vagOn && vgMenu != VGM_NONE; }

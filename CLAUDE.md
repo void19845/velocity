@@ -24,6 +24,10 @@ Le propriétaire est francophone : réponses, commentaires et docs **en françai
 - **Mode VAGUES** (le solo : 100 vagues, boss aux vagues 25/50/75/100, sélecteur de carte toutes les 10, boutique de
   comportements, INFINI) : **§3.5 de `docs/CODE.md`**, code dans `src/solo/`. Aucune inflation : les dégâts des ennemis
   ne montent jamais, aucun achat n'augmente une stat. Temps de la vague 100 pour le speedrun : `vagues_temps_100()`.
+- **Speedrun** (écran CHALLENGE, classements de temps par carte CHALLENGE, speedrun complet, vague 100) : **§4 « Speedrun »
+  de `docs/CODE.md`**. Serveur : `worker/src/speedrun.js` (même DO `Ratings`, même identité) ; jeu : `src/jeu/speedrun.c`,
+  `src/reseau/speedrun_serveur.c` ; point d'entrée `speedrun_begin(cat)` / `speedrun_report(cat, ms)`. Les planchers de
+  temps existent en double (`sr_floor_ms` et `SR.CATS`) : nouvelle carte CHALLENGE = nouvelle catégorie dans le worker.
 - Mode équipes 1v1 à 4v4 (implémenté) : **§3.11 de `docs/CODE.md`** ; éclairage, ombres, bloom : **§3.12**
 - Cartes (`MapDef`, 5 cartes néon de ARENE à LE DOJO + LA TOILE en CHALLENGE, kill zone) : **§3.18** ; compétences (PIECE, MARQUE, CHARGE…) :
   `src/combat/competences.c` et `docs/COMPETENCES_MARKSMAN.md`
@@ -68,13 +72,13 @@ Sur Mac : `./build_mac.sh`, puis `Velocity.app/Contents/MacOS/velocity --test te
 2. **Captures** : `velocity.exe --shot X.bmp`. Le nom choisit la scène (sous-chaîne, liste complète dans
    `src/plateforme/demarrage.c`, chercher `strstr(shotPath`, et §6 de `docs/CODE.md`) :
    - menus : `menu` (avec l'encadré TOP 3 factice), `settings`, `graphismes` (PARAMETRES > GRAPHISMES), `loadout`,
-     `heberger`, `update`, `skinmenu` ; mise en page en 1024 × 640 : `settings_small`, `graphismes_small` ;
+     `heberger`, `update`, `skinmenu`, `challenge` (classement speedrun) ; mise en page en 1024 × 640 : `settings_small`, `graphismes_small` ;
    - LAN : `dm`, `dm_equipes` (`_fin`, `_bas`), `dm_mort`, `dm_<arme>` (`enclume`, `lance`, `fleau`, `poings`, `egide`,
      `eventail`, `tesla`), `skills`, `ranked` (fin de match classée), `boutique`, `armedepart` ;
    - VAGUES : `vagues_pyramide` (`_charge`), `vagues_tesseract`, `vagues_boule`, `vagues_hexaedre`, `vagues_boutique`,
      `vagues_selecteur`, `vagues_fin`, `vagues_infini` ;
    - solo (scène par défaut) : `rail`, `impact`, `fx`, `changearme`, `vie`, `style`, et une arme (`elan`, `scie`…) ;
-   - carte : `arene` (`arene_nuit`…), `course` (`_depart`, `_fin`, `_aimant`), `carte` / `carte3d` (second écran),
+   - carte : `arene` (`arene_nuit`…), `course` (`_depart`, `_fin`, `_aimant`), `speedrun` (`_fin`), `carte` / `carte3d` (second écran),
      `skins` ; autres cartes avec `--map N` (`spawn`, `chute`, `solo`, `--pos x,y,z`, `--yaw A`) ; objectifs d'un mode
      sur une carte : `objectifs_zones`, `objectifs_drapeau`, `objectifs_bouclier` (avec `--map N`, `--pos`, `--yaw`) ;
    - à combiner : `sansbloom`, `sansombre`, `small` (fenêtre 1024 × 640) ; `bench_dm` mesure le temps de rendu.

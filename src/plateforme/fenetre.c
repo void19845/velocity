@@ -57,6 +57,7 @@ static int in_key_down(int sc, int repeat) {
             else if (loadoutOpen) { loadoutOpen = 0; cfg_save(); }
             else if (hostOpen) { hostOpen = 0; cfg_save(); }
             else if (skinOpen) { skinOpen = 0; cfg_save(); }
+            else if (challengeOpen) challengeOpen = 0;
             else if (appState == APP_JOIN) pendingAction = ACT_BACK;
             else if (vg_menu_open() && vgMenu == VGM_SHOP) {  /* VAGUES : ECHAP ferme la boutique */
                 if (vgShopBack == VGM_SELECT) vgMenu = VGM_SELECT; else vg_menu_close();

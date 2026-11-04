@@ -248,3 +248,13 @@ static int hit_player_ex(int i, float dmg, V3 knock, int w, V3 dir, int blast, u
 static int shield_faces(int i, V3 dir, int blast);        /* le joueur i bloquerait-il ce coup ? (sans effet) */
 static void shield_rip(int i);                            /* mon grappin arrache le bouclier de i */
 /* --- fin Egide --- */
+/* --- Speedrun : classements des meilleurs temps (src/jeu/speedrun.c ; serveur : src/reseau/speedrun_serveur.c) ---
+ * Categories : SR_COMPLET (toutes les cartes CHALLENGE a la suite), SR_VAGUES100 (mode VAGUES, vague 100 terminee),
+ * SR_MAP0 + m (course de la carte CHALLENGE m). Un run = speedrun_begin au depart (ticket horodate par le serveur),
+ * puis speedrun_report a l'arrivee (temps de jeu en ms ; splitMs : temps intermediaires cumules, le dernier = ms).
+ * Rien n'est envoye en --bot / --shot, hors ligne ou sans ticket. */
+enum { SR_COMPLET, SR_VAGUES100, SR_MAP0 };
+static void speedrun_begin(int cat);
+static void speedrun_report(int cat, int ms);
+static void speedrun_report_splits(int cat, int ms, const int *splitMs, int n);
+/* --- fin Speedrun --- */

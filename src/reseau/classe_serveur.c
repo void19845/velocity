@@ -9,9 +9,11 @@
 /*   POST /ranked/hello  {id, key, name}       -> cote, palier, rang   */
 /*   POST /ranked/report {id, key, match, ...} -> pending / applied    */
 /*   GET  /ranked/top?id=...                   -> top et mon rang      */
+/* La meme file sert aux classements speedrun (speedrun_serveur.c).   */
 /* ------------------------------------------------------------------ */
-typedef struct { int kind, post; char path[96]; char body[sizeof rkRepBody]; } RkReq;
-static RkReq rkQ[6], rkCur;
+#define RK_QMAX 10
+typedef struct { int kind, post, arg; char path[128]; char body[sizeof rkRepBody]; } RkReq;   /* arg : speedrun (categorie...) */
+static RkReq rkQ[RK_QMAX], rkCur;
 static int rkQN, rkRespOk;
 static HANDLE rkTh;
 static char rkResp[4096];
@@ -24,15 +26,22 @@ static DWORD WINAPI rk_thread(LPVOID arg) {
     return 0;
 }
 
-static void rk_push(int kind, const char *path, const char *body) {
-    if (kind != RQ_REPORT)                                /* hello et top : une seule demande en attente suffit */
-        for (int i = 0; i < rkQN; i++) if (rkQ[i].kind == kind) return;
-    if (rkQN >= 6) return;
+static void rk_push_arg(int kind, const char *path, const char *body, int arg) {
+    if (kind != RQ_REPORT && kind != RQ_SR_REPORT)        /* hello, top, ticket : une seule demande en attente suffit */
+        for (int i = 0; i < rkQN; i++)
+            if (rkQ[i].kind == kind && !strcmp(rkQ[i].path, path) && (rkQ[i].arg & 0xff) == (arg & 0xff)) {
+                rkQ[i].arg = arg;                         /* la plus recente remplace celle qui attend (ticket : R) */
+                snprintf(rkQ[i].body, sizeof rkQ[i].body, "%s", body ? body : "");
+                return;
+            }
+    if (rkQN >= RK_QMAX) return;
     RkReq *q = &rkQ[rkQN++];
-    q->kind = kind; q->post = body != NULL;
+    q->kind = kind; q->post = body != NULL; q->arg = arg;
     snprintf(q->path, sizeof q->path, "%s", path);
     snprintf(q->body, sizeof q->body, "%s", body ? body : "");
 }
+static void rk_push(int kind, const char *path, const char *body) { rk_push_arg(kind, path, body, 0); }
+static void sr_on_response(int kind, int arg, int ok);   /* speedrun : reponses (speedrun_serveur.c) */
 
 /* lecture minimale du JSON du serveur (cles uniques, chaines sans echappement) */
 static const char *json_at(const char *s, const char *key) {
@@ -168,6 +177,7 @@ static void rk_net_poll(void) {
         rkTh = NULL;
         if (rkCur.kind == RQ_HELLO) rk_on_hello(rkRespOk);
         else if (rkCur.kind == RQ_REPORT) rk_on_report(rkRespOk);
+        else if (rkCur.kind >= RQ_SR_START) sr_on_response(rkCur.kind, rkCur.arg, rkRespOk);
         else if (rkRespOk && json_ok(rkResp)) { rk_parse_top(rkResp); rkTopState = 1; }
         else rkTopState = 2;
     }
@@ -185,6 +195,7 @@ static void rk_net_poll(void) {
             rkResp[0] = 0;
             if (rkCur.kind == RQ_HELLO) rk_on_hello(0);
             else if (rkCur.kind == RQ_REPORT) rk_on_report(0);
+            else if (rkCur.kind >= RQ_SR_START) sr_on_response(rkCur.kind, rkCur.arg, 0);
             else rkTopState = 2;
         }
     }

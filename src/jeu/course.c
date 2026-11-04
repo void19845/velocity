@@ -7,13 +7,19 @@
 /* derniere est l'arrivee. Une chute ramene a la derniere porte passee */
 /* (le chrono continue). R recommence. Le meilleur temps, ses temps    */
 /* intermediaires et son fantome (position 30 fois par seconde) sont   */
-/* gardes dans velocity_course.txt, a cote de velocity.ini.            */
+/* gardes a cote de velocity.ini (un fichier par carte, race_file).    */
+/* Chaque arrivee est envoyee au classement de la carte (speedrun).    */
+/* Speedrun complet (toutes les cartes CHALLENGE) : src/jeu/speedrun.c */
 /* Affichage : src/interface/course_hud.c.                             */
 /* ------------------------------------------------------------------ */
 #define RACE_GATES  24
 #define RACE_GMAX   (30 * 300)                            /* fantome : 5 min a 30 Hz */
 #define RACE_GHZ    30.0f
-static int raceGate, raceDone, raceFalls, raceNewBest, raceLoaded;
+static int raceGate, raceDone, raceFalls, raceNewBest, raceLoaded = -1;   /* raceLoaded : carte du record en memoire */
+static int raceMap = -1;                                  /* carte CHALLENGE de la course (-1 : la premiere) */
+static int srFull;                                        /* speedrun complet en cours (src/jeu/speedrun.c) */
+static void sr_full_start(void);
+static void sr_full_map_done(int ms);
 static float raceT, raceCount, raceDeltaT, raceDelta, raceGateFlash, raceGhostAcc;
 static float raceSplit[RACE_GATES], raceBest, raceBestSplit[RACE_GATES];
 static float ghostCur[RACE_GMAX][4], ghostBest[RACE_GMAX][4];   /* x y z yaw */
@@ -31,10 +37,10 @@ static void race_face(V3 from, int gate) {                /* regarder vers la po
     V3 d = vsub(race_gate(gate), from);
     P.yaw = atan2f(d.x, -d.z); P.pitch = 0;
 }
-static void race_start(void) {
-    int m = race_map();
+static void race_start_map(int m) {                     /* depart de la course de la carte m (une carte a portes) */
+    if (m < 0 || m >= NMAPS || !maps[m].ngates) m = race_map();
     if (curMap != m) load_map(m);
-    if (!raceLoaded) { race_load(); raceLoaded = 1; }
+    if (raceLoaded != m) { raceBest = 0; ghostBestN = 0; race_load(); raceLoaded = m; }
     reset_game();
     memset(E, 0, sizeof E);
     styleTopRank = 0;
@@ -42,6 +48,12 @@ static void race_start(void) {
     raceT = 0; raceCount = RACE_COUNTDOWN; raceDeltaT = 0; raceGateFlash = 0; raceGhostAcc = 0; ghostCurN = 0;
     P.pos = P.prevPos = maps[curMap].start;
     P.yaw = maps[curMap].startYaw; P.pitch = 0;
+    speedrun_begin(SR_MAP0 + curMap);                     /* classement de la carte : ticket du serveur */
+}
+/* R, RECOMMENCER : la meme course, ou tout le speedrun complet depuis la premiere carte */
+static void race_start(void) {
+    if (srFull) sr_full_start();
+    else race_start_map(raceMap);
 }
 /* chute sous killY : retour a la derniere porte passee (ou au depart), immobile, face a la suivante */
 static void race_respawn(void) {
@@ -88,8 +100,12 @@ static void race_tick(float dt) {
         raceGate++;
         style_add(STYLE_BONUS, "PORTE");
         if (raceGate >= md->ngates) {                     /* arrivee */
+            int ms = (int)lroundf(raceT * 1000), sp[RACE_GATES];
+            for (int i = 0; i < md->ngates; i++) sp[i] = (int)lroundf(raceSplit[i] * 1000);
             raceDone = 1;
             play(S_WAVE, 0.9f, 1.0f);
+            if (!vagOn) speedrun_report_splits(SR_MAP0 + curMap, ms, sp, md->ngates);   /* classement de la carte */
+            if (srFull) sr_full_map_done(ms);
             if (!vagOn && (raceBest <= 0 || raceT < raceBest)) {   /* le challenge des VAGUES ne touche pas au record */
                 raceNewBest = raceBest > 0 ? 2 : 1;       /* 1 : premier temps ; 2 : record battu */
                 raceBest = raceT;

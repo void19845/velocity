@@ -1,6 +1,7 @@
 // Lobby en local pour les tests : meme logique que le Durable Object, WebSocket ecrit a la main
 // (RFC 6455, trames texte uniquement) pour ne dependre d'aucun paquet npm.
-// Sert aussi le classement (/ranked/...) avec la meme logique que le DO Ratings, sur une base SQLite
+// Sert aussi le classement (/ranked/...) et les classements speedrun (/speedrun/...) avec la meme logique
+// que le DO Ratings, sur une base SQLite
 // en memoire (node:sqlite, integre a Node 22.5+ ; vide a chaque lancement).
 //   node dev-server.js [port]      (8787 par defaut)
 
@@ -9,6 +10,7 @@ import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { handle, closed, newMeta } from './src/lobby.js';
 import { schema, rankedResponse } from './src/ratings.js';
+import { srSchema, handleSpeedrun } from './src/speedrun.js';
 
 // meme interface que ctx.storage.sql d'un Durable Object : exec(requete, ...valeurs).toArray()
 export async function memorySql() {
@@ -35,12 +37,15 @@ export async function startDevServer(port = 8787) {
   const conns = [];
   const sql = await memorySql();
   schema(sql);
+  srSchema(sql);
   const server = http.createServer(async (req, res) => {
-    if (!req.url.startsWith('/ranked/')) { res.end('VELOCITY lobby (dev)'); return; }
+    const sr = req.url.startsWith('/speedrun/');
+    if (!req.url.startsWith('/ranked/') && !sr) { res.end('VELOCITY lobby (dev)'); return; }
     const chunks = [];
     for await (const ch of req) chunks.push(ch);
     const body = req.method === 'POST' ? Buffer.concat(chunks) : undefined;
-    const r = await rankedResponse(sql, new Request(`http://127.0.0.1${req.url}`, { method: req.method, body }));
+    const r = await rankedResponse(sql, new Request(`http://127.0.0.1${req.url}`, { method: req.method, body }),
+      sr ? handleSpeedrun : undefined);
     res.writeHead(r.status, { 'Content-Type': 'application/json' });
     res.end(await r.text());
   });
@@ -92,5 +97,5 @@ export async function startDevServer(port = 8787) {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = parseInt(process.argv[2], 10) || 8787;
   await startDevServer(port);
-  console.log(`lobby de test sur ws://127.0.0.1:${port}/ (classement : http://127.0.0.1:${port}/ranked/...)`);
+  console.log(`lobby de test sur ws://127.0.0.1:${port}/ (classement : http://127.0.0.1:${port}/ranked/..., speedrun : /speedrun/...)`);
 }

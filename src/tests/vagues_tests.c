@@ -220,7 +220,12 @@ static void vagues_tests(FILE *f) {
         vgSplit[0] = 300; vgSplit[1] = 650; vgSplit[2] = 1000;
         wave = 100; vgState = VG_FIGHT; vgQn = vgQi = 0; memset(E, 0, sizeof E);
         vgRunT = 1234.5f;
+        srTicket[SR_VAGUES100] = SRT_WAIT;                /* ticket du depart attendu : le rapport part a son arrivee */
         wave_tick(TICK);
+        const SrRun *sr = &srRun[SR_VAGUES100];
+        fprintf(f, "vague 100 -> speedrun : rapport en attente du ticket %d, %d ms en %d splits (attendu 1, 1234500 ms en 4 splits)\n",
+                sr->state == SRR_WAIT, sr->ms, sr->n);
+        srTicket[SR_VAGUES100] = SRT_NONE; srRun[SR_VAGUES100].state = SRR_NONE;
         int sp[4], n = vagues_splits_ms(sp);
         int win = vgState == VG_WIN && vgMenu == VGM_WIN;
         vg_clock(1); float frozenT = vagues_temps_100();

@@ -174,6 +174,9 @@ static void vg_draw_win(float cx, float cy) {
     vg_time_text(s1, sizeof s1, sp[0] / 1000.0f); vg_time_text(s2, sizeof s2, sp[1] / 1000.0f); vg_time_text(s3, sizeof s3, sp[2] / 1000.0f);
     snprintf(buf, sizeof buf, "vague 25 : %s    vague 50 : %s    vague 75 : %s", s1, s2, s3);
     text_c(0, cx, cy - 66, buf, 0.65f, 0.7f, 0.8f, 1);
+    float col[3];
+    sr_result_line(SR_VAGUES100, buf, sizeof buf, col);   /* classement en ligne "vague 100 la plus rapide" */
+    if (buf[0]) text_c(0, cx, cy - 43, buf, col[0], col[1], col[2], 1);
     text_c(0, cx, cy - 20, "INFINI : les vagues arrivent au bout du chrono, les boss attendent, et ils ont une attaque secrete",
            0.8f, 0.82f, 0.9f, 1);
     if (button(cx - 210, cy + 10, 420, 56, "LANCER L'INFINI")) vg_go_infinite();

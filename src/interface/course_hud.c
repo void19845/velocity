@@ -1,15 +1,22 @@
 /* VELOCITY - mode COURSE : affichage (chrono, portes en 3D, fantome) et sauvegarde du record
    Morceau de main.c : inclus dans l'ordre, ne se compile pas seul (voir main.c). */
 
-/* --- record : velocity_course.txt a cote de velocity.ini (jamais en --bot / --shot / --test) --- */
-static int race_file(char *out, int n) {
+/* --- record : a cote de velocity.ini (jamais en --bot / --shot / --test) : velocity_course.txt pour la premiere carte
+ * CHALLENGE (LA TOILE, nom historique), velocity_course_<carte>.txt pour les suivantes --- */
+static int cfg_side_file(char *out, int n, const char *name) {   /* fichier du joueur a cote de velocity.ini */
     if (!cfgPath[0]) return 0;
     snprintf(out, n, "%s", cfgPath);
     char *s = strrchr(out, '/'), *b = strrchr(out, '\\');
     if (b > s) s = b;
     if (!s) return 0;
-    snprintf(s + 1, n - (int)(s + 1 - out), "velocity_course.txt");
+    snprintf(s + 1, n - (int)(s + 1 - out), "%s", name);
     return 1;
+}
+static int race_file(char *out, int n) {
+    char name[64], slug[32];
+    if (curMap == race_map()) snprintf(name, sizeof name, "velocity_course.txt");
+    else { map_slug(curMap, slug, sizeof slug); snprintf(name, sizeof name, "velocity_course_%s.txt", slug); }
+    return cfg_side_file(out, n, name);
 }
 static void race_save(void) {
     char path[MAX_PATH + 32];
@@ -33,7 +40,7 @@ static void race_load(void) {
     if (fgets(line, sizeof line, f)) sscanf(line, "carte=%31[^\n]", name);
     if (fgets(line, sizeof line, f)) sscanf(line, "record=%f", &best);
     if (fgets(line, sizeof line, f)) sscanf(line, "portes=%d", &ng);
-    const MapDef *md = &maps[race_map()];
+    const MapDef *md = &maps[curMap];
     if (strcmp(name, md->name) || ng != md->ngates || ng > RACE_GATES || best <= 0) { fclose(f); return; }   /* autre carte, autre trace */
     for (int i = 0; i < ng && fgets(line, sizeof line, f); i++) raceBestSplit[i] = (float)atof(line);
     if (fgets(line, sizeof line, f)) sscanf(line, "fantome=%d", &gn);
@@ -43,6 +50,35 @@ static void race_load(void) {
         if (sscanf(line, "%f %f %f %f", &ghostBest[k][0], &ghostBest[k][1], &ghostBest[k][2], &ghostBest[k][3]) == 4) k++;
     fclose(f);
     raceBest = best; ghostBestN = k;
+}
+
+/* --- record perso du speedrun complet : velocity_speedrun.txt (les cartes dans l'ordre, temps cumules) --- */
+static void sr_pb_save(void) {
+    char path[MAX_PATH + 32];
+    if (botMode || shotMode || !cfg_side_file(path, sizeof path, "velocity_speedrun.txt")) return;
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "cartes=%d\n", srPbN);
+    for (int k = 0; k < srPbN; k++) fprintf(f, "%s=%d\n", maps[srMaps[k]].name, srPb[k]);
+    fclose(f);
+}
+static void sr_pb_load(void) {
+    char path[MAX_PATH + 32], line[96], name[32];
+    int n = 0, v[NMAPS];
+    srPbLoaded = 1;
+    if (botMode || shotMode || !cfg_side_file(path, sizeof path, "velocity_speedrun.txt")) return;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    if (fgets(line, sizeof line, f)) sscanf(line, "cartes=%d", &n);
+    int ok = n == srMapN;                                 /* autres cartes CHALLENGE : ancien record ignore */
+    for (int k = 0; k < n && ok; k++) {
+        ok = fgets(line, sizeof line, f) && sscanf(line, "%31[^=]=%d", name, &v[k]) == 2 && !strcmp(name, maps[srMaps[k]].name) &&
+             v[k] > (k ? v[k - 1] : 0);
+    }
+    fclose(f);
+    if (!ok) return;
+    memcpy(srPb, v, sizeof v[0] * (size_t)n);
+    srPbN = n;
 }
 
 static void race_time_str(char *b, int n, float t) {      /* 1:02.37 */
@@ -131,6 +167,90 @@ static void draw_race_world(void) {
     glEnable(GL_FOG);
 }
 
+/* --- speedrun : resultat du classement (serveur) a l'arrivee, panneau et bilan du speedrun complet --- */
+static void sr_result_line(int cat, char *buf, int n, float *col) {   /* "CLASSEMENT : #3 sur 41 - nouveau record perso" */
+    const SrRun *r = &srRun[cat];
+    const SrTop *t = &srTop[cat];
+    char tb[24];
+    col[0] = 0.7f; col[1] = 0.75f; col[2] = 0.85f;
+    switch (r->state) {
+    case SRR_WAIT: case SRR_SENT: snprintf(buf, n, "CLASSEMENT : envoi du temps ..."); break;
+    case SRR_RECORD:
+        col[0] = 0.4f; col[1] = 1; col[2] = 0.6f;
+        if (r->rank == 1) snprintf(buf, n, "CLASSEMENT : #1  -  RECORD DU MONDE !");
+        else if (t->state == 2 && t->runners > 0) snprintf(buf, n, "CLASSEMENT : #%d sur %d  -  record perso enregistre", r->rank, t->runners);
+        else snprintf(buf, n, "CLASSEMENT : #%d  -  record perso enregistre", r->rank);
+        break;
+    case SRR_KEPT:
+        sr_time_str(tb, sizeof tb, r->best);
+        snprintf(buf, n, "CLASSEMENT : #%d  -  ton meilleur temps reste %s", r->rank, tb);
+        break;
+    case SRR_REFUSED: col[0] = 1; col[1] = 0.5f; col[2] = 0.4f; snprintf(buf, n, "CLASSEMENT : temps refuse (%s)", r->err); break;
+    case SRR_OFFLINE: snprintf(buf, n, "CLASSEMENT : %s, temps garde sur cette machine", r->err[0] ? r->err : "hors ligne"); break;
+    default: buf[0] = 0;
+    }
+}
+/* speedrun complet en cours : chrono global, temps a l'arrivee de chaque carte et ecart au record perso */
+static void draw_sr_full_panel(void) {
+    char buf[96], tb[24];
+    float x = 16, y = 14, w = 400, h = 92 + 26.0f * srMapN;
+    hud_panel(x, y, w, h);
+    text(0, x + 14, y + 24, "SPEEDRUN COMPLET", 1.0f, 0.85f, 0.35f, 1);
+    sr_time_str(tb, sizeof tb, sr_full_ms());
+    text(2, x + 14, y + 66, tb, 1, 1, 1, 1);
+    if (srCmpN == srMapN) {
+        sr_time_str(tb, sizeof tb, srCmp[srMapN - 1]);
+        snprintf(buf, sizeof buf, "record %s", tb);
+        text(0, x + w - 14 - fontW[0] * (float)strlen(buf), y + 24, buf, 1, 0.8f, 0.3f, 0.85f);
+    }
+    for (int k = 0; k < srMapN; k++) {
+        float yy = y + 92 + 26.0f * k;
+        int done = k < srIdx || (k == srIdx && raceDone), cur = k == srIdx && !done;
+        snprintf(buf, sizeof buf, "%d. %s", k + 1, maps[srMaps[k]].name);
+        float a = done || cur ? 1.0f : 0.5f;
+        text(0, x + 14, yy, buf, cur ? 0.5f : 0.85f, cur ? 0.9f : 0.85f, 1, a);
+        int pb = srCmpN == srMapN;
+        if (!done) {                                      /* pas encore arrive : le temps du record a cette arrivee */
+            if (!pb) continue;
+            sr_time_str(tb, sizeof tb, srCmp[k]);
+            text(0, x + w - 14 - fontW[0] * (float)strlen(tb), yy, tb, 0.6f, 0.62f, 0.7f, 0.8f);
+            continue;
+        }
+        sr_time_str(tb, sizeof tb, srSplit[k]);
+        int d = sr_full_delta(k);
+        if (pb) snprintf(buf, sizeof buf, "%s  %+.2f", tb, d / 1000.0f); else snprintf(buf, sizeof buf, "%s", tb);
+        float g = !pb ? 0.9f : d <= 0 ? 1.0f : 0.45f, rr = !pb ? 0.9f : d <= 0 ? 0.4f : 1.0f;
+        text(0, x + w - 14 - fontW[0] * (float)strlen(buf), yy, buf, rr, g, !pb ? 0.95f : 0.45f, 1);
+    }
+}
+static void draw_sr_full_end(float cx, float cy) {        /* bilan : temps total, chaque carte, classement */
+    char buf[128], tb[24];
+    float col[3], h = 250 + 24.0f * srMapN, y0 = cy - h * 0.5f;
+    rect(cx - 300, y0, 600, h, 0.02f, 0.03f, 0.07f, 0.88f);
+    rect(cx - 300, y0, 600, 3, 1, 0.8f, 0.3f, 1);
+    text_c(1, cx, y0 + 40, "SPEEDRUN COMPLET", 1, 0.85f, 0.3f, 1);
+    sr_time_str(tb, sizeof tb, srSplit[srMapN - 1]);
+    text_c(2, cx, y0 + 96, tb, 1, 1, 1, 1);
+    if (srNewBest == 2) text_c(1, cx, y0 + 134, "NOUVEAU RECORD PERSO !", 0.4f, 1, 0.5f, 0.6f + 0.4f * sinf((float)nowT * 8));
+    else if (srNewBest == 1) text_c(1, cx, y0 + 134, "PREMIER SPEEDRUN COMPLET", 0.5f, 0.85f, 1, 1);
+    else {
+        snprintf(buf, sizeof buf, "%+.2f sur ton record", sr_full_delta(srMapN - 1) / 1000.0f);
+        text_c(1, cx, y0 + 134, buf, 1, 0.5f, 0.4f, 1);
+    }
+    for (int k = 0; k < srMapN; k++) {                    /* temps de chaque carte (pas les cumules) */
+        int seg = srSplit[k] - (k ? srSplit[k - 1] : 0);
+        sr_time_str(tb, sizeof tb, seg);
+        if (srCmpN == srMapN) {                           /* et l'ecart au record sur cette carte seule */
+            int d = seg - (srCmp[k] - (k ? srCmp[k - 1] : 0));
+            snprintf(buf, sizeof buf, "%-14s %s   %+.2f", maps[srMaps[k]].name, tb, d / 1000.0f);
+        } else snprintf(buf, sizeof buf, "%-14s %s", maps[srMaps[k]].name, tb);
+        text_c(0, cx, y0 + 168 + 24.0f * k, buf, 0.8f, 0.85f, 0.95f, 1);
+    }
+    sr_result_line(SR_COMPLET, buf, sizeof buf, col);
+    text_c(0, cx, y0 + h - 56, buf, col[0], col[1], col[2], 1);
+    text_c(0, cx, y0 + h - 26, "[R] recommencer le speedrun        [ECHAP] menu", 0.9f, 0.9f, 1, 1);
+}
+
 /* --- HUD : chrono, portes, ecart au record, decompte, fleche vers la porte, arrivee --- */
 static void draw_race_hud(void) {
     if (!raceOn) return;
@@ -198,8 +318,11 @@ static void draw_race_hud(void) {
             glEnd();
         }
     }
+    if (srFull) draw_sr_full_panel();
+    if (srFull && srDone) { draw_sr_full_end(cx, cy); return; }
     if (raceDone) {                                       /* arrivee */
-        rect(cx - 260, cy - 130, 520, 220, 0.02f, 0.03f, 0.07f, 0.85f);
+        float col[3];
+        rect(cx - 260, cy - 130, 520, 246, 0.02f, 0.03f, 0.07f, 0.85f);
         rect(cx - 260, cy - 130, 520, 3, 1, 0.8f, 0.3f, 1);
         text_c(2, cx, cy - 70, "ARRIVEE", 1, 0.85f, 0.3f, 1);
         race_time_str(tb, sizeof tb, raceT);
@@ -212,6 +335,11 @@ static void draw_race_hud(void) {
         }
         snprintf(buf, sizeof buf, "chutes %d   -   style max %s", raceFalls, styleName[styleTopRank]);
         text_c(0, cx, cy + 62, buf, 0.7f, 0.75f, 0.85f, 1);
-        text_c(0, cx, cy + 82, "[R] recommencer        [ECHAP] menu", 0.9f, 0.9f, 1, 1);
+        sr_result_line(SR_MAP0 + curMap, buf, sizeof buf, col);   /* classement en ligne de la carte */
+        text_c(0, cx, cy + 84, buf, col[0], col[1], col[2], 1);
+        if (srFull && srIdx + 1 < srMapN) {
+            snprintf(buf, sizeof buf, "carte suivante : %s dans %.0f s        [R] tout recommencer", maps[srMaps[srIdx + 1]].name, ceilf(srNextT));
+            text_c(0, cx, cy + 108, buf, 0.9f, 0.9f, 1, 1);
+        } else text_c(0, cx, cy + 108, "[R] recommencer        [ECHAP] menu", 0.9f, 0.9f, 1, 1);
     }
 }
