@@ -47,7 +47,7 @@ static void vg_tesseract(float R, float t, V3 col, int lit) {
         float x1 = x * cosf(a) - ww * sinf(a), w1 = x * sinf(a) + ww * cosf(a);
         float y1 = y * cosf(b) - w1 * sinf(b), w2 = y * sinf(b) + w1 * cosf(b);
         float z1 = z * cosf(c) - w2 * sinf(c), w3 = z * sinf(c) + w2 * cosf(c);
-        float k = R * 0.62f / (2.4f - w3);
+        float k = R * 1.0f / (2.4f - w3);                 /* cube exterieur ~0,7 R, interieur ~0,3 R */
         p[i] = v3(x1 * k, y1 * k, z1 * k); w[i] = w3;
     }
     if (lit) glDisable(GL_LIGHTING);

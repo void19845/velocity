@@ -21,6 +21,9 @@ Le propriétaire est francophone : réponses, commentaires et docs **en françai
   `worker/src/ratings.js`) ; côté jeu, `src/reseau/classe.c` (Elo, paliers, identité), `src/reseau/classe_match.c` (rapports de fin de match),
   `src/reseau/classe_serveur.c` (requêtes au serveur) et `src/plateforme/http.c` (HTTP : WinHTTP / curl). Une partie classée est toujours en chacun pour soi, aux
   règles par défaut, sans bots, hors cartes CHALLENGE (LA TOILE).
+- **Mode VAGUES** (le solo : 100 vagues, boss aux vagues 25/50/75/100, sélecteur de carte toutes les 10, boutique de
+  comportements, INFINI) : **§3.5 de `docs/CODE.md`**, code dans `src/solo/`. Aucune inflation : les dégâts des ennemis
+  ne montent jamais, aucun achat n'augmente une stat. Temps de la vague 100 pour le speedrun : `vagues_temps_100()`.
 - Mode équipes 1v1 à 4v4 (implémenté) : **§3.11 de `docs/CODE.md`** ; éclairage, ombres, bloom : **§3.12**
 - Cartes (`MapDef`, 5 cartes néon de ARENE à LE DOJO + LA TOILE en CHALLENGE, kill zone) : **§3.18** ; compétences (PIECE, MARQUE, CHARGE…) :
   `src/combat/competences.c` et `docs/COMPETENCES_MARKSMAN.md`
@@ -68,6 +71,8 @@ Sur Mac : `./build_mac.sh`, puis `Velocity.app/Contents/MacOS/velocity --test te
      `heberger`, `update`, `skinmenu` ; mise en page en 1024 × 640 : `settings_small`, `graphismes_small` ;
    - LAN : `dm`, `dm_equipes` (`_fin`, `_bas`), `dm_mort`, `dm_<arme>` (`enclume`, `lance`, `fleau`, `poings`, `egide`,
      `eventail`, `tesla`), `skills`, `ranked` (fin de match classée), `boutique`, `armedepart` ;
+   - VAGUES : `vagues_pyramide` (`_charge`), `vagues_tesseract`, `vagues_boule`, `vagues_hexaedre`, `vagues_boutique`,
+     `vagues_selecteur`, `vagues_fin`, `vagues_infini` ;
    - solo (scène par défaut) : `rail`, `impact`, `fx`, `changearme`, `vie`, `style`, et une arme (`elan`, `scie`…) ;
    - carte : `arene` (`arene_nuit`…), `course` (`_depart`, `_fin`, `_aimant`), `carte` / `carte3d` (second écran),
      `skins` ; autres cartes avec `--map N` (`spawn`, `chute`, `solo`, `--pos x,y,z`, `--yaw A`) ; objectifs d'un mode

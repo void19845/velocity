@@ -3779,5 +3779,6 @@ static void run_tests(const char *path) {
 
     botLog = NULL;
     netMode = NET_OFF; dmMode = 0;
+    vagues_tests(f);                                      /* mode VAGUES : src/tests/vagues_tests.c */
     fclose(f);
 }

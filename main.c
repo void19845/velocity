@@ -124,6 +124,7 @@
 #include "src/plateforme/fenetre.c"              /* fenetre, entrees clavier/souris (Windows et macOS) */
 #include "src/plateforme/second_ecran.c"         /* second ecran : fenetre sur l'autre moniteur (Windows et macOS) */
 
+#include "src/tests/vagues_tests.c"              /* tests du mode VAGUES (appeles par run_tests) */
 #include "src/tests/tests.c"                     /* captures --shot et tests automatiques --test */
 
 #include "src/plateforme/demarrage.c"            /* point d'entree (WinMain / velocity_main) et boucle principale */

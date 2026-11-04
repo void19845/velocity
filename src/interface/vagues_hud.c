@@ -138,7 +138,7 @@ static void vg_draw_select(float cx, float cy) {
         else {
             snprintf(r1, sizeof r1, vgChoiceChal == CH_COURSE ? "COURSE : %s" : "DEFENSE : %s", maps[vgChoiceMap[2]].name);
             l1 = r1;
-            l2 = vgChoiceChal == CH_COURSE ? "les portes en moins de 75 s" : "tiens la zone 40 s (avant 100 s)";
+            l2 = vgChoiceChal == CH_COURSE ? "les portes en moins de 75 s" : "tiens la zone 40 s en 100 s";
             snprintf(r2, sizeof r2, "+%d credits si reussi", vgChoiceReward);
             l3 = r2;
         }

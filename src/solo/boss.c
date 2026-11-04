@@ -207,7 +207,8 @@ static void boss_ram_tick(int i, float dt) {
         if (e->stT > 1.0f) e->aim = vnorm(vlerp(e->aim, dir, fminf(1, dt * 1.5f)));   /* le debut de la charge suit un peu */
         e->vel = vmul(e->aim, 42);
         if (frand() < 0.8f) add_part(e->pos, vmul(rand_dir(), 2), enemy_color(e->type), 0.4f, 0.3f, 0);
-        if (boss_ram_contact(i) || e->stT <= 0) { if (e->alive) { e->st = BS_RECOVER; e->stT = 0.7f; e->combo++; } }
+        if (boss_ram_contact(i) || e->stT <= 0)           /* (paree : boss_stunned l'a deja mis en BS_STUN) */
+            if (e->alive && e->st == BS_RAM) { e->st = BS_RECOVER; e->stT = 0.7f; e->combo++; }
     }
 }
 static void boss_move_to(Enemy *e, V3 target, float speed, float dt) {
@@ -595,6 +596,7 @@ static float boss_filter(int i, float dmg) {
 static const char *bossTitle[4] = { "LA PYRAMIDE", "LE TESSERACT", "LA SPHERE", "L'HEXAEDRE" };
 static int boss_spawn(int type) {
     const MapDef *md = &maps[curMap];
+    vgBossScale = clampf((md->enemyMaxY + 1.5f) / 12.0f, 0.55f, 1);   /* salle basse (LE DOJO) : boss plus petit */
     float R = enemy_radius(type);
     V3 at;
     if (type == EN_TESS || type == EN_HEXA) {             /* au centre, assez haut pour ne toucher aucun decor */

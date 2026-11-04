@@ -115,7 +115,7 @@ velocity/
 │   ├── joueur/       mouvement.c (player_tick, grappin)
 │   ├── combat/       degats.c, loadout.c, melee.c, pieces_rail.c, roquettes.c, projectiles.c, competences.c
 │   ├── armes/        une arme = un fichier : enclume, lance, fleau, poings, egide, elan, eventail, tesla, scie, ventouse
-│   ├── solo/         ennemis_vagues.c
+│   ├── solo/         mode VAGUES : ennemis_vagues.c (ennemis), boss.c, ameliorations.c (boutique), vagues.c
 │   ├── reseau/       etat_partage.c, protocole.c (paquets, EV_*), hote.c, modes.c, client.c, en_ligne.c (lobby, STUN),
 │   │                 classe.c (mode classe : Elo, paliers, identite), classe_match.c (suivi du match, rapport),
 │   │                 classe_serveur.c (requetes au serveur de classement)
@@ -157,7 +157,13 @@ velocity/
 | `combat/pieces_rail.c` | pièces, ricochets, rail | `throw_coin`, `coin_tick`, `ricochet`, `hitscan_shot`, `fire_rail` |
 | `combat/roquettes.c`, `combat/projectiles.c` | projectiles | `spawn_proj`, `fire_rocket`, `proj_tick` |
 | `armes/*.c` | une arme par fichier (logique ; fiche de conception dans `docs/armes/`) | `slam_*`, `lance_*`, `flail_*`, `fist_*`, `shield_*`, `kin_*`, `sg_*`, `tesla_*`, `saw_*`, `mine_*` |
-| `solo/ennemis_vagues.c` | mode solo | `spawn_enemy`, `enemy_tick`, `wave_tick`, `reset_game` |
+| `solo/ennemis_vagues.c` | mode VAGUES : ennemis (§3.5) | `spawn_enemy_at`, `spawn_enemy_type`, `enemy_tick`, `reset_game` |
+| `solo/boss.c` | mode VAGUES : les quatre boss | `boss_spawn`, `boss_tick`, `boss_filter`, `boss_fx_tick`, `GW`, `LZ` |
+| `solo/ameliorations.c` | mode VAGUES : boutique de comportements | `fxDef`, `upPath`, `vgLvl`, `up_buy`, `vg_on_hit`, `vg_on_kill`, `vg_fx_tick` |
+| `solo/vagues.c` | mode VAGUES : progression | `wave_tick`, `vg_start`, `vg_wave_start`, `vg_choose`, `vagues_temps_100` |
+| `rendu/vagues_rendu.c` | mode VAGUES : rendu | `vg_draw_enemy`, `vg_draw_world_fx` |
+| `interface/vagues_hud.c` | mode VAGUES : HUD et écrans | `vg_draw_info`, `vg_draw_hud`, `vg_draw_shop`, `vg_draw_select` |
+| `tests/vagues_tests.c` | mode VAGUES : tests et captures | `vagues_tests`, `vagues_shot` |
 | `reseau/horloge.c` | horloge de match commune | `match_clock_start` / `match_clock_tick` (hôte, temps réel), `clk_srv_sample` (heure du worker), `clk_match_from_snap` (client) |
 | `reseau/protocole.c` | paquets et événements | `NET_VER`, `PK_*`, `EV_*`, `net_emit`, `net_hit`, `net_fx_*`, `apply_event` |
 | `reseau/hote.c` | autorité de l'hôte | `host_handle`, `host_kill`, `host_tick`, `pick_spawn`, `map_rotate_next`, `host_start_match` |
@@ -417,19 +423,112 @@ Touche `A_SKILL` (ancien `A_COIN`), charges `P.skillCh` (max et recharge par `sk
 | Slide boost | `P.slideCd` | `SLIDE_CD` |
 | Munitions rail | `P.railAmmo` | cellules (`PICKUP_AMMO`), remises à `RAIL_AMMO_START` au respawn |
 
-### 3.5 Ennemis et vagues (solo uniquement)
+### 3.5 Mode VAGUES (solo : `src/solo/`)
 
-- Non simulés en LAN : `game_tick` n'appelle `enemy_tick` et `wave_tick` que si `!dmMode`.
-- `EN_DRONE` (100 PV, rouge) : tourne autour du joueur à ~13 m et tire des orbes `PR_ORB` (16 m/s)
-  s'il le voit à moins de 70 m ; la cadence augmente avec la vague.
-- `EN_RUSHER` (50 PV, orange) : kamikaze, fonce sur le joueur (10,5 m/s + 0,3 par vague, max +3),
-  18 dégâts au contact puis meurt. Apparaît à partir de la vague 2 (probabilité
-  `min(0,55 ; 0,25 + 0,04 × vague)`).
-- `spawn_enemy` : apparition en hauteur (9 à 18 m), entre `ms(28)` et `ms(48)` du centre, à plus de
-  22 m du joueur.
-- `wave_tick` : `2 + 2 × vague` ennemis (max 40), un toutes les 0,35 s ; 3 s de pause quand la vague
-  est vidée, puis message « VAGUE n » et son `S_WAVE`.
-- Mort en solo : `R` ou clic (après 1 s) relance (`reset_game`). Le record est `bestScore`.
+Le bouton **VAGUES** du menu (`ACT_SOLO` → `vg_start`) lance 100 vagues, puis l'INFINI. `vagOn` = partie VAGUES en
+cours (remis à 0 par toute autre action du menu). Non simulé en LAN (`game_tick` n'appelle `enemy_tick` /
+`wave_tick` que si `!dmMode` ; `wave_tick` tourne aussi pendant le challenge COURSE).
+
+**Règle du propriétaire : aucune inflation.** Les dégâts des ennemis sont ceux de leur type et ne montent jamais
+(`VG_ORB_DMG` 12, `VG_RUSH_DMG` 18, `VG_SWARM_DMG` 6, `VG_BIG_ORB_DMG` 30, `VG_RAM_DMG` 22, `VG_ROLL_DMG` 20,
+`VG_WAVE_DMG` 18, `VG_LASER_DMG` 14 ; la cadence des drones est fixe en VAGUES) ; seuls leurs PV montent, à partir de
+la vague 66, jusqu'à ×1,5 (`vg_hp_mul`, `VG_HP_FROM`, `VG_HP_MAX`, plafond aussi en INFINI). Aucun achat de la
+boutique n'augmente une stat : chaque étape ajoute un comportement. Réglages : section « Mode VAGUES » de
+`src/reglages/equilibrage.c`.
+
+| Fichier | Rôle |
+|---|---|
+| `solo/ennemis_vagues.c` | types d'ennemis et leur IA (`enemy_tick`), apparition (`spawn_enemy_at`, `spawn_enemy_type`, `spawn_enemy` de l'ancien solo), `reset_game` (appelle `vg_reset` en VAGUES) |
+| `solo/boss.c` | les quatre boss (`boss_spawn`, `boss_tick`, `boss_filter`), ondes au sol `GW`, rayons `LZ`, impacts `MT`, balayage `SWP`, hypercube `HYP` (`boss_fx_tick`) |
+| `solo/ameliorations.c` | boutique : effets `fxDef`, chemins `upPath`, `vgLvl`, `up_buy`, crochets `vg_on_hit` / `vg_on_kill` / `vg_on_parry` / `vg_on_fire` / `vg_dmg_filter` / `vg_lure`, objets des effets (éclats `VS`, mines `VM`, spectres `VP`, vortex `VV`) |
+| `solo/vagues.c` | progression : `wave_tick`, `vg_wave_start`, composition (`vg_count`, `vg_pick_type`), crédits, sélecteur, challenges, INFINI, temps (`vgRunT`, `vagues_temps_100`) |
+| `rendu/vagues_rendu.c` | `vg_draw_enemy` (appelé par `draw_enemy`), `vg_draw_world_fx` (passe additive de `render`) |
+| `interface/vagues_hud.c` | `vg_draw_info`, barre du boss, boutique, sélecteur, écran de la vague 100, écran de mort |
+| `tests/vagues_tests.c` | `vagues_tests` (appelé à la fin de `run_tests`) et les captures `vagues_shot` |
+
+**Ennemis** (`EN_*` ; rayon, couleur, nom : `enemyRad`, `enemyCol`, `enemyName` dans `degats.c` ; PV : `enemyHp`) :
+
+| Type | PV | Comportement |
+|---|---|---|
+| `EN_DRONE` | 100 | tourne autour du joueur à ~13 m, orbe 16 m/s ; élite : esquive de côté quand on le vise |
+| `EN_RUSHER` | 50 | kamikaze à 12 m/s, explose au contact ; élite : zigzag |
+| `EN_SNIPER` SENTINELLE | 80 | se poste à ~30 m, vise 1,4 s (rayon vert visible), se fige 0,35 s avant le tir (orbe 34 m/s, parable) ; élite : suit jusqu'à 0,12 s |
+| `EN_SWARM` ESSAIM | 25 | par 5, tourne autour à 7 m, plonge, touche (6 PV) et repart |
+| `EN_BASTION` | 300 | marche au sol, bouclier de face (×0,15 sur les touches de face, `vg_dmg_filter`), salve de 3 orbes lentes ; tombé dans le vide = revient à son départ ; élite : tourne deux fois plus vite |
+
+Les élites (`Enemy.elite`, couronne dorée) changent de comportement, jamais de dégâts ; leur part monte de 0 à 60 %
+entre les vagues 66 et 100 (`vg_elite_p`). Champs ajoutés à `Enemy` : `maxHp`, `st` / `stT` (état de l'IA), `phase`,
+`elite`, `summoned` (1 = invoqué par un boss, 2 = fantôme du PRISME), `frozenT`, `burnT`, `frac` / `fracT`, `yaw`,
+`aim`, `home`, `lastDmg`, `combo`.
+
+**Courbe de puissance** (`vg_count`, `vg_pick_type`) : vagues 1-33 faciles (3 → 14 ennemis, les types arrivent un à
+un : kamikaze 2, sentinelle 8, essaim 14, bastion 22) ; 34-66 sommet du joueur (15 → 26 ennemis, surtout faibles) ;
+67-100 les ennemis rattrapent (22 → 30, plus de sentinelles et de bastions, élites, PV jusqu'à ×1,5). Au plus
+`VG_ALIVE_MAX` (16) vivants à la fois, un toutes les `VG_SPAWN_T`. Pause de `VG_PAUSE_T` (3 s) entre deux vagues :
+**TAB** (`A_SCORES`) ouvre la boutique.
+
+**Toutes les 10 vagues** (`vg_open_select`, écran `VGM_SELECT`) : trois choix pour le bloc suivant ; la carte est
+chargée au tick suivant le clic (`vgPend` → `vg_choose`) :
+1. **vagues simples** sur une carte fermée (ARENE, LA BOUCLE, LE DOJO à tour de rôle, pas la carte en cours) ;
+2. **vagues difficiles** sur une carte à vide (LE PUITS, LE CANYON) : crédits ×1,5 (`VG_HARD_CREDITS`) ;
+3. **challenge** : COURSE sur LA TOILE (les portes en moins de `VG_RACE_LIMIT` 75 s, sans toucher au record de la
+   course) un bloc sur deux, sinon DÉFENSE (tenir la zone B de la carte simple `VG_DEF_HOLD` 40 s avant `VG_DEF_LIMIT`
+   100 s, assaillants continus) ; réussi = `300 + 60 × bloc` crédits ; puis le bloc se joue sur la carte simple
+   proposée.
+
+**Boss** (`boss.c` ; barre de vie en haut de l'écran avec ses seuils de phase et un conseil `vgHint`) :
+
+| Vague | Boss | Axe | Mécanique |
+|---|---|---|---|
+| 25 | PYRAMIDE (2400 PV) | parry | file d'un point à l'autre (30 m/s), s'arrête, salves de 5 orbes ; toutes les 3 salves une grosse orbe chargée 2,5 s (parée, elle revient : `VG_BIG_ORB_RETURN` et étourdie). Armure ×0,35 sauf orbes parées et étourdie (×1,5). À 50 % : plus d'orbe chargée, trois charges de suite (ligne rouge 0,9 s, se fige 0,25 s avant, 42 m/s) ; parée (`P.parryWin`, de face, à portée d'épée) = étourdie `VG_STUN_T` et `VG_RAM_PARRY_DMG` |
+| 50 | TESSERACT (3600 PV) | contrôle de foule | cube 4D (16 sommets qui tournent dans XW, YW, ZW, projetés), totalement immobile au centre (point libre de tout décor) ; invoque 4 ennemis toutes les 6 s (4 s sous 50 %), **invulnérable tant qu'il en reste `VG_LINKS`** (liens visibles) ; barrages lents : anneau, spirale, éventail |
+| 75 | SPHÈRE (4200 PV) | mouvement aérien | roule vers le joueur, bondit et frappe le sol : onde de choc au sol (`GW`, 16 m/s) qu'il faut sauter ; sous 50 %, deux rebonds ; **touches portées depuis le sol ×0,15** ; tombée dans le vide = retombe du ciel |
+| 100 | HEXAÈDRE (8000 PV) | tout | PRÉCISION (> 75 % : trois rayons annoncés à esquiver, puis cœur ouvert 2,5 s ; armure ×0,3 sinon), PARRY (charges et grosse orbe), FOULE (invocations, bouclier, anneaux), TOUT (< 25 % : piques au sol avec ondes, rayons, charges, essaims ; ×0,2 depuis le sol) |
+
+Un boss ne recule pas (`damage_enemy`) et ne se fige pas ; ses invocations s'éteignent à sa mort (`vg_boss_down`).
+Dans une salle basse (LE DOJO), les boss rétrécissent (`vgBossScale`, appliqué par `enemy_radius` et le rendu).
+
+**Vague 100 terminée** : `vgT100` = temps de partie, écran `VGM_WIN` (temps, score, kills, temps aux vagues 25 / 50 /
+75, boutons LANCER L'INFINI, RECOMMENCER, MENU PRINCIPAL). **INFINI** (`vgInfinite`) : un boss toutes les 25 vagues
+(même ordre), `vgSecret` = 1 (attaques secrètes : PRISME, trois pyramides fantômes chargent de trois côtés, seul un
+parry les brise ; HYPERCUBE, une sphère de 26 orbes se referme sur le joueur ; MÉTÉORES, trois impacts annoncés sur
+ses pas ; DÉPLIAGE, quatre rayons au ras du sol tournent 7 s, à sauter). Les vagues sont minutées (`VG_INF_T` 30 s, ou
+`VG_INF_CLEAR_T` 2 s après avoir tout tué ; ce qui reste en file s'ajoute à la suivante), sauf les vagues de boss et
+de fin de bloc (`vg_checkpoint`), qui attendent que tout soit tué. 30 → 40 ennemis, PV toujours plafonnés à ×1,5.
+
+**Crédits** (`vgCredits`, `vg_credit_kill`) : drone 10, kamikaze 6, sentinelle 14, essaim 3, bastion 25, boss 400 /
+600 / 800 / 1200 ; élite ×1,5, carte difficile ×1,5, invocation ÷3 ; `20 + vague` par vague vidée.
+
+**Boutique** (`ameliorations.c`, écran `VGM_SHOP`) : les 4 chemins du loadout (2 armes, mêlée, compétence), 5 étapes
+chacun, achetées dans l'ordre (`VG_PRICE_1..5` : 120, 240, 400, 600, 850). 20 chemins (`NUP` = `WP_COUNT + MK_COUNT +
+SK_COUNT` ; indices `WP_*`, `UP_MELEE(mk)`, `UP_SKILL(sk)`), 31 effets (`fxDef` : nom, déclencheur, description). Un
+effet ne vaut que pour les touches de son chemin, et seulement si l'arme est équipée (`up_has`) :
+- **source** : `vgSrc` dit à quel chemin reviennent les touches en cours. Posé dans `game_tick` (arme en main autour de
+  `fire_weapon`, `WP_TESLA`, `WP_MINE`, mêlée autour de `player_tick` et des coups) et par projectile dans `proj_tick`
+  (roquette, scie, mine ; projectile paré = mêlée). Les compétences ont un **contexte** (`fx_paths`) : PIÈCE = touches
+  d'un ricochet (`vgCoinCtx`, `pieces_rail.c`), MARQUE = cible marquée, CHARGE = touche chargée, RICOCHET = 1,5 s
+  après le tir qui rebondit, ALL IN ONE = 1,5 s après la salve, AIMANT = sous l'aimant ; MIRAGE agit par le leurre
+  (APPAT : les ennemis le visent, `vg_lure` ; EXPLOSIF ; REFLET ; GOUFFRE) ;
+- **déclencheurs** : touche (`vg_on_hit`, depuis `damage_enemy`), kill (`vg_on_kill`, depuis `kill_enemy`), tir
+  (`vg_on_fire`), parry (`vg_on_parry`, depuis `parry_feedback`), dash, retombée de haut, compétence utilisée (charge
+  dépensée), passif (`vg_fx_tick`) ;
+- **réaction en chaîne** limitée à une génération (`vgDepth`) ; les dégâts d'un effet comptent pour son chemin
+  (`fx_damage`) ; la brûlure et les ennemis n'ont pas de chemin.
+
+**Temps** (`vgRunT`, `vg_clock` en tête de `game_tick`, hitstop compris) : temps de partie, pauses ÉCHAP exclues ; le
+temps passé dans la boutique et le sélecteur compte (`vg_menu_set`). Point d'entrée du mode speedrun :
+`vagues_temps_100()` (secondes, −1 avant la fin de la vague 100), `vagues_splits_ms(out[4])` (cumulés aux vagues 25 /
+50 / 75 / 100), `vg_speedrun_begin()` (départ, vague 1) et `vg_speedrun_end()` (vague 100), où brancher
+`speedrun_begin` / `speedrun_report_splits`.
+
+- Mort : écran « TOMBE A LA VAGUE n » ; **R** ou clic recommence à la vague 1 sur la carte de départ. Record : `bestScore`.
+- Écrans (souris libérée, jeu figé) : `vgMenu` (`VGM_SHOP`, `VGM_SELECT`, `VGM_WIN`) ; ÉCHAP ferme la boutique ; à la
+  fermeture, `vgWantResume` → `ACT_RESUME` recapture la souris.
+- Tests (`vagues_tests`) : courbe (nombre, PV, élites, boss), dégâts fixes, enchaînement des vagues, sélecteur et
+  crédits, boutique (ordre, prix, dégâts inchangés), effets (fourche, gel, fracture, onde de parry, propulsion),
+  bastion, chaque boss, vague 100 et splits, INFINI (chrono, boss qui attend, secret), temps, challenges.
+- Captures : `--shot vagues_pyramide.bmp` (`_charge`), `vagues_tesseract`, `vagues_boule`, `vagues_hexaedre`,
+  `vagues_boutique` (`_small`), `vagues_selecteur`, `vagues_fin`, `vagues_infini`, `vagues` (une vague ordinaire).
 
 ### 3.6 Effets visuels
 
@@ -1505,6 +1604,7 @@ Ouvre la fenêtre sans l'activer, prépare une scène, la dessine une fois (`ren
 | `graphismes` | menu principal + PARAMÈTRES > GRAPHISMES, aide du bouton QUALITE survolé (aucun autre nom de scène ne contient « graphismes ») |
 | `menu` | menu principal |
 | `dm` | scène de deathmatch factice : joueurs « Rival » (grappin, épée) et « Ninja », fil des kills, HUD LAN |
+| `vagues` | mode VAGUES (testé en premier) : `_pyramide` (`_charge`), `_tesseract`, `_boule`, `_hexaedre`, `_boutique`, `_selecteur`, `_fin`, `_infini`, sinon une vague ordinaire (§3.5) |
 | *(autre)* | combat solo scripté : vague 3, 8 ennemis, tirs rail et roquette, grappin sur la tour, HUD des deux axes |
 | `rail` (avec la scène par défaut) | la même, arme en main = railgun |
 | `impact` | kill au rail à pleine vitesse, capturé pendant l'impact frame |

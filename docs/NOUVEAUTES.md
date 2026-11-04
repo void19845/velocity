@@ -375,6 +375,39 @@ code.
 - **macOS** : plus d'App Nap (`beginActivityWithOptions`), le jeu ne ralentit pas fenêtre cachée.
 - Le menu ECHAP laissait déjà la partie tourner. Test : « hitstop ».
 
+## 29. Mode VAGUES : 100 vagues, boss, boutique de comportements, INFINI
+
+Le solo devient le mode **VAGUES** (bouton VAGUES du menu, à la place de « SOLO - VAGUES »). Détail : §3.5 de
+[`CODE.md`](CODE.md).
+
+- **100 vagues** avec une courbe de puissance voulue : 1-33 faciles (les ennemis arrivent un type à la fois), 34-66 le
+  sommet du joueur (beaucoup d'ennemis faibles que ses achats balaient), 67-100 les ennemis rattrapent (sentinelles,
+  bastions, élites qui changent de comportement, PV jusqu'à ×1,5).
+- **Aucune inflation** : les dégâts des ennemis ne montent jamais (ceux de leur type, `VG_*_DMG`), seuls leurs PV
+  montent, et peu ; aucun achat n'augmente une stat.
+- **Nouveaux ennemis** : SENTINELLE (vise 1,4 s avec un rayon visible, tir rapide parable), ESSAIM (par 5, plonge et
+  repart), BASTION (marche au sol, bouclier de face : à contourner ou à frapper d'en haut).
+- **Toutes les 10 vagues, un choix** : vagues simples (carte fermée), vagues difficiles (LE PUITS / LE CANYON, crédits
+  ×1,5) ou un challenge (COURSE sur LA TOILE en moins de 75 s, ou DÉFENSE : tenir une zone 40 s), qui rapporte des
+  crédits.
+- **Boss** avec barre de vie : PYRAMIDE (25, le parry : grosse orbe chargée à renvoyer, puis à 50 % des charges à
+  parer), TESSERACT (50, cube 4D animé, immobile, invulnérable tant que ses invocations vivent : contrôle de foule),
+  SPHÈRE (75, roule et frappe le sol : ondes à sauter, ne craint presque rien depuis le sol), HEXAÈDRE (100, quatre
+  phases : précision, parry, foule, tout à la fois).
+- **Vague 100 terminée** : temps et score, puis **INFINI** : les vagues arrivent au bout du chrono (30 s), les boss
+  attendent qu'on ait tout tué, et chacun a une attaque secrète (PRISME, HYPERCUBE, MÉTÉORES, DÉPLIAGE).
+- **Crédits** à chaque kill, dépensés dans la **boutique de modificateurs** (TAB entre deux vagues, ou depuis le
+  sélecteur) : chaque arme, mêlée et compétence a un chemin de 5 étapes **comportementales** (FOURCHE, GEL, FRACTURE,
+  VORTEX, MINE, ÉCLATS, CONTAGION, ONDE de parry, MIROIR, FRAPPE au dash, APPÂT du leurre…).
+- **Temps de la partie** exposé pour le mode speedrun : `vagues_temps_100()`, `vagues_splits_ms()` (vagues 25 / 50 /
+  75 / 100), et `vg_speedrun_begin` / `vg_speedrun_end` où brancher l'envoi du temps.
+- Code : `src/solo/` (`ennemis_vagues.c`, `boss.c`, `ameliorations.c`, `vagues.c`), `src/rendu/vagues_rendu.c`,
+  `src/interface/vagues_hud.c` ; réglages : section « Mode VAGUES » de `src/reglages/equilibrage.c`.
+- Vérifier : `--test` (lignes `vagues`, `boutique vagues`, `effets vagues`, `bastion`, `pyramide`, `tesseract`,
+  `sphere`, `hexaedre`, `boss vaincu`, `vague 100`, `INFINI`, `temps vagues`, `challenges`) ; captures
+  `--shot vagues_pyramide.bmp` (`_charge`), `vagues_tesseract`, `vagues_boule`, `vagues_hexaedre`, `vagues_boutique`
+  (`_small`), `vagues_selecteur`, `vagues_fin`, `vagues_infini`.
+
 ## Vérifications faites
 
 - Compilation macOS sans avertissement ; tous les tests `--test` conformes, y compris ceux d'`origin/dev` (stéréo,

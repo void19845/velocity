@@ -429,6 +429,7 @@ static int velocity_main(const char *cmd) {
     }
     reset_game();
 
+    if (shotMode && vagues_shot(shotPath)) return 0;      /* mode VAGUES : vagues_pyramide, _boutique, _selecteur... */
     if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu") || strstr(shotPath, "loadout") ||
                      strstr(shotPath, "heberger") || strstr(shotPath, "graphismes") ||
                      strstr(shotPath, "update"))) {   /* "skinmenu" contient "menu" */   /* captures des menus */
