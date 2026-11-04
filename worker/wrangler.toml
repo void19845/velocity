@@ -12,6 +12,12 @@ binding = "LEADERBOARD"
 database_name = "leaderboard"
 database_id = "59a414f0-e230-4484-b437-e29c41b85f6b"
 
+# connexion Discord (src/discord.js) : identifiant public de l'application Discord ; le secret se met a part :
+#   npx wrangler secret put DISCORD_CLIENT_SECRET
+# redirection a declarer dans l'application : https://<worker>/auth/discord/callback
+[vars]
+DISCORD_CLIENT_ID = ""
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Lobby"]

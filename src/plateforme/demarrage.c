@@ -417,8 +417,10 @@ static int velocity_main(const char *cmd) {
         if (!botMode && !shotMode && cfg_load()) toggle_fullscreen();
         if (!botMode && !shotMode && (gfxAmbiance || gfxQuality != 2)) { gfx_reload(); popT = 0; }   /* ambiance / qualite du joueur */
     }
+    if (botMode) masterVol = musicVol = 0;                /* --bot (tests) : son et musique coupes */
     if (rk_identity() && !botMode && !shotMode) cfg_save();   /* mode classe : identite creee au premier lancement */
     if (!shotMode && (!botMode || botRanked)) { rq_hello(); rq_top(); }   /* cote et TOP 3 en arriere-plan */
+    rkMenuAuto = !botMode && !shotMode;                   /* puis relus dans le menu (echec au lancement, rafraichissement) */
     if (!botMode && !shotMode) {                          /* mise a jour : restes de la precedente, puis verification discrete */
         upd_cleanup();
         if (updAfter) {

@@ -13,7 +13,8 @@
 /* Suivi du match et rapport : src/reseau/classe_match.c ; requetes    */
 /* au serveur : src/reseau/classe_serveur.c ; HTTP : plateforme/http.c */
 /* ------------------------------------------------------------------ */
-static char rkId[33], rkKey[33];                          /* identite sans compte (velocity.ini : ranked_id, ranked_key) */
+static char rkId[33], rkKey[33];                          /* identite de classement (velocity.ini : ranked_id, ranked_key) */
+static char rkDiscord[33];                                /* compte Discord lie a cette identite (velocity.ini : discord ; vide = aucun) */
 static int myMmr = RANK_START, rankPlayed, rankWins;      /* cache (velocity.ini : mmr, ranked_played, ranked_wins) */
 static int rkRank;                                        /* mon rang au classement (0 = en placement ou inconnu) */
 static int ranked;                                        /* la partie en cours est classee (hote : decide ; client : PkWelcome) */
@@ -95,6 +96,11 @@ static void bin_of(const char *hex, unsigned char *b, int n) {
     }
 }
 static int rid_set(const unsigned char *r) { for (int i = 0; i < 16; i++) if (r[i]) return 1; return 0; }
+static void dc_name_set(const char *s) {                  /* nom du compte Discord : [A-Za-z0-9_.-], 32 car. au plus */
+    int k = 0;
+    for (; *s && k < 32; s++) if (isalnum((unsigned char)*s) || *s == '_' || *s == '.' || *s == '-') rkDiscord[k++] = *s;
+    rkDiscord[k] = 0;
+}
 #ifdef _WIN32
 BOOLEAN WINAPI SystemFunction036(PVOID buf, ULONG len);  /* RtlGenRandom (advapi32) : aleatoire du systeme */
 #endif
@@ -122,7 +128,8 @@ static int rk_identity(void) {
     return 1;
 }
 enum { RQ_HELLO = 1, RQ_TOP, RQ_REPORT,                  /* requetes au serveur de classement */
-       RQ_SR_START, RQ_SR_REPORT, RQ_SR_TOP };            /* speedrun : ticket, temps, classement (speedrun_serveur.c) */
+       RQ_SR_START, RQ_SR_REPORT, RQ_SR_TOP,              /* speedrun : ticket, temps, classement (speedrun_serveur.c) */
+       RQ_DC_START, RQ_DC_POLL };                         /* connexion Discord : demande, reponse attendue (discord.c) */
 static int rkFragsTest;                                   /* --frags N : limite de frags d'un match classe de bots (tests) */
 static void rk_new_match(void) {                          /* hote : un nouveau match classe commence */
     rk_random(rkMid, 8);

@@ -42,6 +42,8 @@ static void rk_push_arg(int kind, const char *path, const char *body, int arg) {
 }
 static void rk_push(int kind, const char *path, const char *body) { rk_push_arg(kind, path, body, 0); }
 static void sr_on_response(int kind, int arg, int ok);   /* speedrun : reponses (speedrun_serveur.c) */
+static void dc_on_response(int kind, int ok);            /* connexion Discord : reponses (discord.c) */
+static void dc_tick(void);
 
 /* lecture minimale du JSON du serveur (cles uniques, chaines sans echappement) */
 static const char *json_at(const char *s, const char *key) {
@@ -100,16 +102,21 @@ static void rk_parse_top(const char *s) {
     if (json_obj(json_at(s, "me"), obj, sizeof obj)) { rkMeRank = json_int(obj, "rank", 0); rk_take_player(obj); }
 }
 
+static char rkNameSent[16];                              /* pseudo du dernier hello : un changement de pseudo le renvoie */
 static void rq_hello(void) {
     char body[200], nm[16];
     if (!onlineOn || !hex_ok(rkId, 32)) return;
     lb_safe_name(nm, sizeof nm);
+    snprintf(rkNameSent, sizeof rkNameSent, "%s", nm);
     snprintf(body, sizeof body, "{\"id\":\"%s\",\"key\":\"%s\",\"name\":\"%s\"}", rkId, rkKey, nm);
     rkHelloBusy = 1;
     rk_push(RQ_HELLO, "/ranked/hello", body);
 }
+static int rkMenuAuto;                                    /* menu : cote et TOP 3 relus tout seuls (jeu normal, pas bots ni tests) */
+static double rkTopAskT;                                  /* derniere demande du TOP */
 static void rq_top(void) {
     char path[96];
+    rkTopAskT = nowT;
     if (!onlineOn) { rkTopState = 2; return; }
     snprintf(path, sizeof path, "/ranked/top?id=%s", hex_ok(rkId, 32) ? rkId : "");
     rk_push(RQ_TOP, path, NULL);
@@ -177,6 +184,7 @@ static void rk_net_poll(void) {
         rkTh = NULL;
         if (rkCur.kind == RQ_HELLO) rk_on_hello(rkRespOk);
         else if (rkCur.kind == RQ_REPORT) rk_on_report(rkRespOk);
+        else if (rkCur.kind >= RQ_DC_START) dc_on_response(rkCur.kind, rkRespOk);
         else if (rkCur.kind >= RQ_SR_START) sr_on_response(rkCur.kind, rkCur.arg, rkRespOk);
         else if (rkRespOk && json_ok(rkResp)) { rk_parse_top(rkResp); rkTopState = 1; }
         else rkTopState = 2;
@@ -186,6 +194,17 @@ static void rk_net_poll(void) {
         rk_push(RQ_REPORT, "/ranked/report", rkRepBody);
     }
     if (rkHelloAt > 0 && nowT >= rkHelloAt) { rkHelloAt = 0; rq_hello(); rq_top(); }
+    if (rkMenuAuto && onlineOn && appState == APP_MENU && rkHelloAt <= 0 && !rkHelloBusy && !rkTh && !rkQN &&
+        nowT - rkTopAskT > (!rkOnline || rkTopState == 2 ? RANK_MENU_RETRY : RANK_MENU_REFRESH)) {
+        if (!rkOnline) rq_hello();                        /* echec au lancement : on retente, puis on rafraichit */
+        rq_top();
+    }
+    if (rkNameSent[0] && uiFocus != 1 && !rkHelloBusy) {  /* pseudo change (saisie terminee) : le serveur le note pour cette identite */
+        char nm[16];
+        lb_safe_name(nm, sizeof nm);
+        if (strcmp(nm, rkNameSent)) rq_hello();
+    }
+    dc_tick();
     if (!rkTh && rkQN > 0) {
         rkCur = rkQ[0];
         memmove(rkQ, rkQ + 1, sizeof rkQ[0] * (size_t)(rkQN - 1));
@@ -195,6 +214,7 @@ static void rk_net_poll(void) {
             rkResp[0] = 0;
             if (rkCur.kind == RQ_HELLO) rk_on_hello(0);
             else if (rkCur.kind == RQ_REPORT) rk_on_report(0);
+            else if (rkCur.kind >= RQ_DC_START) dc_on_response(rkCur.kind, 0);
             else if (rkCur.kind >= RQ_SR_START) sr_on_response(rkCur.kind, rkCur.arg, 0);
             else rkTopState = 2;
         }

@@ -4,22 +4,26 @@
 // - Classements : base D1 « leaderboard » (binding LEADERBOARD), interrogee directement par le Worker :
 //   mode CLASSE /ranked/hello, /ranked/report et /ranked/top (voir ratings.js), et SPEEDRUN
 //   /speedrun/start, /speedrun/report et /speedrun/top (voir speedrun.js, memes identites).
+// - Connexion Discord : /auth/discord/... (discord.js), un compte Discord = une identite de classement.
 
 import { handle, closed, newMeta } from './lobby.js';
 import { schema, rankedResponse } from './ratings.js';
 import { srSchema, handleSpeedrun } from './speedrun.js';
+import { dcSchema, handleDiscord } from './discord.js';
 
 // tables creees une fois par instance du Worker (CREATE ... IF NOT EXISTS) ; nouvel essai si D1 a echoue
 let ready = null;
 function ensureSchema(db) {
-  if (!ready) ready = schema(db).then(() => srSchema(db)).catch((e) => { ready = null; throw e; });
+  if (!ready) ready = schema(db).then(() => srSchema(db)).then(() => dcSchema(db)).catch((e) => { ready = null; throw e; });
   return ready;
 }
 
-async function leaderboard(request, db) {
+async function leaderboard(request, db, env) {
   try {
     await ensureSchema(db);
-    const sr = new URL(request.url).pathname.startsWith('/speedrun/');
+    const path = new URL(request.url).pathname;
+    if (path.startsWith('/auth/discord/')) return await handleDiscord(db, env, request);
+    const sr = path.startsWith('/speedrun/');
     return await rankedResponse(db, request, sr ? handleSpeedrun : undefined);
   } catch (e) {
     return new Response('{"ok":false,"err":"base indisponible"}', { status: 503, headers: { 'Content-Type': 'application/json' } });
@@ -77,8 +81,8 @@ export class Lobby {
 export default {
   fetch(request, env) {
     const path = new URL(request.url).pathname;
-    if (path.startsWith('/ranked/') || path.startsWith('/speedrun/')) {
-      return leaderboard(request, env.LEADERBOARD);
+    if (path.startsWith('/ranked/') || path.startsWith('/speedrun/') || path.startsWith('/auth/discord/')) {
+      return leaderboard(request, env.LEADERBOARD, env);
     }
     return env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(request);
   },
