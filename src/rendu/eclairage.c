@@ -17,6 +17,19 @@
 #define LMG_N       44
 #define LMG_MAXB    48
 static V3 sun_dir(void) { return vnorm(v3(gxSunDir[0], gxSunDir[1], gxSunDir[2])); }   /* vers le soleil (ombres, lumiere, ciel) */
+static void cfg_save(void);
+/* easter egg : un tir d'Elan qui part vers le soleil (rayon libre jusqu'au ciel) lui inflige ses degats ; 1000 cumules = skin POUSSIN */
+static void sun_hit_check(V3 o, V3 end, int hit, float dmg) {
+    if (hit || vlen(vsub(end, o)) < 290) return;          /* ennemi touche ou decor devant le ciel */
+    V3 d = view_dir(), s = sun_dir();
+    if (vdot(d, s) < cosf(gxSunSize[1] / 280.0f)) return;   /* hors du disque du soleil */
+    int had = sunDmg >= SUN_UNLOCK_DMG;
+    float before = sunDmg;
+    sunDmg += dmg;
+    add_part(vadd(o, vmul(s, 270)), vmul(rand_dir(), 20), v3(1, 0.9f, 0.4f), 0.6f, 0.5f, 0);
+    if (!had && sunDmg >= SUN_UNLOCK_DMG) { snprintf(popText, sizeof popText, "SKIN POUSSIN DEBLOQUE !"); popT = 2.5f; }
+    if (sunDmg >= SUN_UNLOCK_DMG ? !had : (int)(sunDmg / 50) != (int)(before / 50)) cfg_save();
+}
 typedef struct { GLuint tex; float su, sv; int on; } LMap;   /* su, sv : coordonnee de texture du bord oppose */
 static LMap lmaps[MAXB][6];
 static unsigned char lmgN[LMG_N][LMG_N], lmgB[LMG_N][LMG_N][LMG_MAXB];   /* indices de boites (MAXB <= 256) */

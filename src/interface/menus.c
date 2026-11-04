@@ -319,7 +319,9 @@ static void draw_skin_menu(float cx, float cy) {
     if (button(bx, y, 320, 52, "VALIDER")) { skinOpen = 0; cfg_save(); }
     float px = cx - 140, py = cy - 230, pw = 640, ph = 520;   /* apercu 3D */
     rect(px, py, pw, ph, 0.05f, 0.06f, 0.1f, 0.7f);
+    if (!skin_unlocked(wantSkin)) wantSkin = SKN_ROBOT;
     rect(px, py + ph - 3, pw, 3, 0.5f, 0.9f, 1.0f, 0.5f);
+        if (!skin_unlocked(k)) continue;                  /* easter egg : POUSSIN cache tant qu'il n'est pas debloque */
     {
         static const float freeCol[3] = { 1.0f, 0.85f, 0.3f };
         const float *c = skinPrevTeam < 2 ? teamCol[skinPrevTeam] : freeCol;

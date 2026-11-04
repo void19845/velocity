@@ -454,7 +454,7 @@ static int velocity_main(const char *cmd) {
         }
         if (strstr(shotPath, "loadout")) { loadoutOpen = 1; if (strstr(shotPath, "charge")) wantSkill = SK_CHARGE; }
         if (strstr(shotPath, "heberger")) { hostOpen = 1; wantTeams = 2; hostBots = 1; }
-        if (strstr(shotPath, "skinmenu")) { skinOpen = 1; wantSkin = SKN_POUSSIN; skinPrevTeam = 1; nowT = 0.4; }
+        if (strstr(shotPath, "skinmenu")) { sunDmg = SUN_UNLOCK_DMG; skinOpen = 1; wantSkin = SKN_POUSSIN; skinPrevTeam = 1; nowT = 0.4; }
         if (strstr(shotPath, "challenge")) {              /* ecran CHALLENGE : classement factice de la course */
             static const char *nm[8] = { "Vortex", "Kestrel", "Nyx", "Moi", "Orbit", "Pixel", "Zephyr", "Lumen" };
             static const int tm[8] = { 31870, 33420, 34050, 36210, 38990, 41300, 44720, 52080 };

@@ -49,6 +49,7 @@ static void cfg_save(void) {
     fprintf(f, "second_ecran=%d" "\n" "carte_vue=%d" "\n" "camera_mort=%d" "\n", secondScreen, mapView3d, killcamOn);
     fprintf(f, "quality=%d" "\n" "ambiance=%d" "\n", gfxQuality, gfxAmbiance);
     fprintf(f, "online=%d" "\n" "teams=%d" "\n" "update_check=%d" "\n", onlineOn, wantTeams, updCheck);
+    if (sunDmg > 0) fprintf(f, "soleil_degats=%.0f" "\n", sunDmg);   /* avant skin : le skin POUSSIN depend de ce cumul */
     fprintf(f, "loadout=%d,%d" "\n" "melee=%d" "\n" "skill=%d" "\n" "skin=%d" "\n", wantLoadout[0], wantLoadout[1], wantMelee, wantSkill, wantSkin);
     fprintf(f, "map=%d" "\n" "map_rotate=%d" "\n", menuMap, mapRotate);
     fprintf(f, "regles=%d,%d,%d,%d,%d" "\n", wantRules.mode, wantRules.hook, wantRules.ammo, wantRules.shop, wantRules.minutes);
@@ -98,7 +99,8 @@ static int cfg_load(void) {                               /* renvoie 1 si le ple
         else if (!strcmp(line, "fullscreen")) fs = atoi(v) != 0;
         else if (!strcmp(line, "loadout")) sscanf(v, "%d,%d", &wantLoadout[0], &wantLoadout[1]);
         else if (!strcmp(line, "melee")) wantMelee = atoi(v);
-        else if (!strcmp(line, "skin")) wantSkin = atoi(v) < 0 || atoi(v) >= SKN_COUNT ? 0 : atoi(v);
+        else if (!strcmp(line, "soleil_degats")) sunDmg = fmaxf(0, (float)atof(v));
+        else if (!strcmp(line, "skin")) wantSkin = atoi(v) < 0 || atoi(v) >= SKN_COUNT || !skin_unlocked(atoi(v)) ? 0 : atoi(v);
         else if (!strcmp(line, "map")) menuMap = map_pvp(atoi(v)) ? atoi(v) : 0;   /* jamais une carte CHALLENGE */
         else if (!strcmp(line, "map_rotate")) mapRotate = atoi(v) != 0;
         else if (!strcmp(line, "regles")) {

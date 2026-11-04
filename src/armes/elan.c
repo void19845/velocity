@@ -62,6 +62,7 @@ static void fire_kinetic(void) {
     for (int i = 0; i < (int)(6 + 18 * e); i++)           /* ton elan continue sans toi */
         add_part(m, vadd(vmul(h0, frange(0.5f, 0.9f)), vmul(rand_dir(), 2)), kin_col(e), 0.4f, 0.08f, 0);
     P.kinE = e; P.kinT = 0.3f;
+    sun_hit_check(eye_pos(), end, hit, dmg);              /* easter egg : tir dans le soleil */
     P.fireCd = KIN_CD / streak_rate();
     P.recoil = 0.6f + 0.8f * e; shake += 0.04f + 0.12f * e; P.fovKick -= 8 * e;
     muzzleT = 0.07f;

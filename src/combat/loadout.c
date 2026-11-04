@@ -10,6 +10,11 @@ static int wantLoadout[2] = { WP_RAIL, WP_ROCKET }, wantMelee = MK_SWORD;
 enum { SKN_ROBOT, SKN_POUSSIN, SKN_NINJA, SKN_CHAT, SKN_CHEVALIER, SKN_COUNT };
 static const char *skinNames[SKN_COUNT] = { "ROBOT", "POUSSIN", "NINJA", "CHAT", "CHEVALIER" };
 static int wantSkin = SKN_ROBOT;
+/* easter egg : le skin POUSSIN se debloque apres 1000 points de degats infliges au soleil avec l'Elan */
+#define SUN_UNLOCK_DMG 1000.0f
+static float sunDmg;                                      /* degats cumules au soleil (velocity.ini : soleil_degats) */
+static int skin_unlocked(int k) { return k != SKN_POUSSIN || sunDmg >= SUN_UNLOCK_DMG; }
+static void sun_hit_check(V3 o, V3 end, int hit, float dmg);   /* defini dans rendu/eclairage.c (a besoin de sun_dir) */
 static int loadoutOpen;                                   /* ecran LOADOUT ouvert */
 static int skinOpen, skinPrevTeam = 0;                    /* ecran SKIN ouvert ; couleur montree dans l'apercu */
 static int hostOpen, hostBots = -1;                       /* ecran HEBERGER ouvert ; bots pour completer (-1 : aucun, sinon niveau) */
