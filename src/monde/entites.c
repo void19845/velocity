@@ -71,8 +71,18 @@ typedef struct {
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
 
-enum { EN_DRONE, EN_RUSHER };
-typedef struct { V3 pos, vel; float hp, fireT, t, flash; int type, alive; } Enemy;
+/* ennemis : drone et kamikaze de toujours ; sentinelle, essaim et bastion du mode VAGUES ; les quatre boss */
+enum { EN_DRONE, EN_RUSHER, EN_SNIPER, EN_SWARM, EN_BASTION, EN_PYRA, EN_TESS, EN_BALL, EN_HEXA, EN_COUNT };
+#define EN_BOSS(t) ((t) >= EN_PYRA)
+typedef struct {
+    V3 pos, vel; float hp, fireT, t, flash; int type, alive;
+    /* --- mode VAGUES (src/solo/) : PV de depart, etat de l'IA et son minuteur, phase (boss), elite, invocation
+     * (1 = appelee par un boss), gel / brulure (comportements de la boutique), cumul de touches (FRACTURE),
+     * cap visee ou fige (charges, rayons), orientation (bastion), derniere touche (FOURCHE) --- */
+    float maxHp, stT, frozenT, burnT, fracT, yaw, lastDmg;
+    int st, phase, elite, summoned, frac, combo;
+    V3 aim, home;
+} Enemy;
 #define MAXE 64
 static Enemy E[MAXE];
 
@@ -105,6 +115,7 @@ typedef struct {
     V3 mineOfs, mineN;
     float mineT, mineArmT, mineBeepT;
     int mineShield;                                       /* Egide : mine collee sur la face d'un bouclier leve */
+    int big;                                              /* VAGUES : grosse orbe chargee d'un boss (1) */
 } Proj;
 #define MAXPR 128
 static Proj PR[MAXPR];
@@ -129,3 +140,12 @@ static int shotStreak;                                    /* touches successives
 static float hitstop, parryFlash, streakLostT;
 static char msg[64], popText[32];
 static int raceOn;                                        /* mode COURSE en cours (src/jeu/course.c) : grappin aimante */
+/* mode VAGUES (src/solo/vagues.c) : en cours ; chemin de la boutique a qui reviennent les touches en cours (UP_*, -1
+ * aucun) ; profondeur des effets en chaine ; projectile en cours de traitement (PR_*, -1 : aucun) */
+static int vagOn, vgSrc = -1, vgDepth, vgProjKind = -1;
+static int vgCoinCtx;                                     /* touches d'un ricochet de piece en cours (chemin PIECE) */
+static float vg_dmg_filter(int i, float dmg);             /* src/solo/ameliorations.c : armure des boss, bouclier du bastion */
+static void vg_on_hit(int i, float dmg, int charged, int marked);
+static void vg_on_kill(int i);
+static void vg_on_parry(V3 at);
+static void vg_boss_stun(int i, float dmg);              /* src/solo/boss.c : grosse orbe renvoyee sur un boss */

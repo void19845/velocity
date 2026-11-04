@@ -59,7 +59,9 @@
 
 #include "src/combat/projectiles.c"              /* deplacement et impact des projectiles */
 
-#include "src/solo/ennemis_vagues.c"             /* mode solo : ennemis et vagues */
+#include "src/solo/ennemis_vagues.c"             /* mode solo : ennemis (drone, kamikaze, sentinelle, essaim, bastion) */
+#include "src/solo/boss.c"                       /* mode VAGUES : pyramide, tesseract, sphere, hexaedre */
+#include "src/solo/ameliorations.c"              /* mode VAGUES : boutique de modificateurs (comportements, pas de stats) */
 
 #include "src/jeu/economie.c"                   /* boutique : pieces, arme de depart, achats a la mort */
 #include "src/reseau/classe.c"                   /* mode classe : etat, cote Elo, paliers, identite de classement */
@@ -77,6 +79,7 @@
 #include "src/combat/competences.c"              /* competences : MARQUE, CHARGE, RICOCHET, ALL IN ONE, MIRAGE, AIMANT (la piece en est une) */
 #include "src/jeu/course.c"                     /* mode COURSE : portes, chrono, fantome du record */
 #include "src/jeu/kill_zone.c"                  /* kill zone : chute dans le vide (killY de la carte), bots prudents au bord */
+#include "src/solo/vagues.c"                     /* mode VAGUES : 100 vagues, selecteur de carte, challenges, INFINI */
 
 #include "src/jeu/boucle.c"                      /* ramassage, game_tick (un pas de simulation), fx_tick */
 
@@ -95,6 +98,7 @@
 #include "src/rendu/modeles.c"                   /* billboards, camera, ennemis, marteau */
 #include "src/rendu/armes_rendu.c"               /* rendu specifique des armes (scie, tesla, lance, fleau...) */
 #include "src/rendu/viewmodel.c"                 /* arme en main (viewmodel) */
+#include "src/rendu/vagues_rendu.c"              /* mode VAGUES : ennemis, boss et effets */
 
 #include "src/interface/mise_a_jour.c"           /* mise a jour depuis GitHub : verifier, telecharger, installer */
 #include "src/plateforme/http.c"                 /* requete HTTP(S) simple : WinHTTP / curl (mode classe) */
@@ -107,7 +111,8 @@
 
 #include "src/interface/hud.c"
 #include "src/interface/modes_hud.c"               /* modes : objectifs (monde et HUD), boutique, arme de depart */
-#include "src/interface/course_hud.c"              /* mode COURSE : chrono, portes en 3D, fantome, record */                   /* HUD : viseur, vie, munitions, radar */
+#include "src/interface/course_hud.c"              /* mode COURSE : chrono, portes en 3D, fantome, record */
+#include "src/interface/vagues_hud.c"              /* mode VAGUES : HUD, barre du boss, boutique, selecteur */                   /* HUD : viseur, vie, munitions, radar */
 
 #include "src/rendu/ciel_ombres_bloom.c"         /* ciel, ombres dynamiques, bloom */
 
@@ -119,6 +124,7 @@
 #include "src/plateforme/fenetre.c"              /* fenetre, entrees clavier/souris (Windows et macOS) */
 #include "src/plateforme/second_ecran.c"         /* second ecran : fenetre sur l'autre moniteur (Windows et macOS) */
 
+#include "src/tests/vagues_tests.c"              /* tests du mode VAGUES (appeles par run_tests) */
 #include "src/tests/tests.c"                     /* captures --shot et tests automatiques --test */
 
 #include "src/plateforme/demarrage.c"            /* point d'entree (WinMain / velocity_main) et boucle principale */

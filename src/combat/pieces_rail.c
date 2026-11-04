@@ -165,7 +165,7 @@ static int ricochet(int ci, float dmg, int depth) {
     add_beam(o, at, v3(1, 0.85f, 0.3f), 0.7f);
     if (dmMode) net_fx_rail(o, at, 1);
     burst(at, v3(1, 0.9f, 0.5f), 25, 9, 0.4f, 0.14f);
-    if (te >= 0) damage_enemy(te, dmg, vmul(dir, 10));
+    if (te >= 0) { vgCoinCtx++; damage_enemy(te, dmg, vmul(dir, 10)); vgCoinCtx--; }   /* VAGUES : chemin PIECE */
     else if (!hit_player(tp, dmg * PVP_SCALE, vmul(dir, 6), W_COIN, dir)) return 0;   /* Egide : ricochet de face bloque */
     if (stolen) snprintf(popText, sizeof popText, "PIECE VOLEE !");
     else snprintf(popText, sizeof popText, depth ? "RICOCHET x%d" : "RICOCHET", depth + 1);

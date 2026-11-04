@@ -4,8 +4,22 @@
 /* ------------------------------------------------------------------ */
 /* Combat                                                              */
 /* ------------------------------------------------------------------ */
-static float enemy_radius(int type) { return type == EN_DRONE ? 0.9f : 0.75f; }
-static V3 enemy_color(int type) { return type == EN_DRONE ? v3(1.0f, 0.25f, 0.3f) : v3(1.0f, 0.6f, 0.15f); }
+/* rayon et couleur par type (EN_*) ; nom pour l'ecran de mort et la barre de boss */
+static const float enemyRad[EN_COUNT] = { 0.9f, 0.75f, 0.85f, 0.5f, 1.25f, 3.2f, 4.2f, 3.5f, 3.8f };
+static const float enemyCol[EN_COUNT][3] = {
+    { 1.0f, 0.25f, 0.3f }, { 1.0f, 0.6f, 0.15f }, { 0.35f, 1.0f, 0.55f }, { 1.0f, 0.95f, 0.3f }, { 0.55f, 0.6f, 1.0f },
+    { 1.0f, 0.62f, 0.18f }, { 0.55f, 0.45f, 1.0f }, { 1.0f, 0.3f, 0.45f }, { 0.9f, 0.95f, 1.0f },
+};
+static const char *enemyName[EN_COUNT] = { "DRONE", "RUSHER", "SENTINELLE", "ESSAIM", "BASTION",
+                                           "PYRAMIDE", "TESSERACT", "SPHERE", "HEXAEDRE" };
+static float vgBossScale = 1;                             /* boss plus petits dans une salle basse (LE DOJO) */
+static float enemy_radius(int type) {
+    return type >= 0 && type < EN_COUNT ? enemyRad[type] * (EN_BOSS(type) ? vgBossScale : 1) : 0.75f;
+}
+static V3 enemy_color(int type) {
+    const float *c = enemyCol[type >= 0 && type < EN_COUNT ? type : 1];
+    return v3(c[0], c[1], c[2]);
+}
 
 #define FALL_DEATH_Y -25.0f                               /* sous cette hauteur (hors de la carte), on meurt */
 static int fellOut;                                       /* deja mort de chute pendant cette vie (une seule touche) */
@@ -64,22 +78,27 @@ static void kill_enemy(int i, int byPlayer) {
     kills++;
     combo++; comboT = 3.0f;
     float mult = (1 + rel_speed(e->vel) / 15.0f) * (1 + 0.25f * (combo - 1));
-    int pts = (int)((e->type == EN_DRONE ? 100 : 60) * mult * style_mult());   /* le style multiplie les points */
+    static const int basePts[EN_COUNT] = { 100, 60, 120, 30, 200, 3000, 4000, 5000, 10000 };
+    int pts = (int)(basePts[e->type >= 0 && e->type < EN_COUNT ? e->type : 1] * mult * style_mult());   /* le style multiplie les points */
     style_kill(-1);
     score += pts;
-    P.hp = fminf(100, P.hp + (e->type == EN_DRONE ? 15 : 8));
+    P.hp = fminf(100, P.hp + (e->type == EN_DRONE || e->type == EN_SNIPER || e->type == EN_BASTION ? 15 : 8));
     snprintf(popText, sizeof popText, "+%d", pts);
     popT = 1.2f;
+    if (vagOn) vg_on_kill(i);                             /* VAGUES : credits, effets de la boutique */
 }
 
 static void damage_enemy(int i, float dmg, V3 knock) {
     Enemy *e = &E[i];
     if (!e->alive) return;
+    int charged = P.chargeT > 0, marked = markE[i] > 0;   /* VAGUES : contextes des chemins CHARGE et MARQUE */
     dmg = skill_out(-1, i, dmg);                          /* Competences : MARQUE, CHARGE */
-    e->hp -= dmg; e->flash = 0.12f;
+    if (vagOn) dmg = vg_dmg_filter(i, dmg);               /* VAGUES : armure des boss, bouclier du bastion */
+    e->hp -= dmg; e->flash = 0.12f; e->lastDmg = dmg;
     dmg_number(e->pos, dmg);
-    e->vel = vadd(e->vel, knock);
-    if (e->hp <= 0) kill_enemy(i, 1);
+    if (!EN_BOSS(e->type)) e->vel = vadd(e->vel, knock);  /* un boss ne recule pas */
+    if (vagOn && dmg > 0) vg_on_hit(i, dmg, charged, marked);
+    if (e->hp <= 0 && e->alive) kill_enemy(i, 1);
 }
 
 /* byPlayer : 0 = ennemi, 1 = joueur, 2 = joueur sans recul ni degat sur soi (projectile renvoye).
@@ -158,4 +177,5 @@ static void parry_feedback(V3 where) {
     for (int k = 0; k < 30; k++) add_part(where, vmul(rand_dir(), 9), v3(1, 1, 0.85f), 0.4f, 0.12f, 0);
     play(S_PARRY, 0.9f, 1.0f);
     style_parry();
+    if (vagOn) vg_on_parry(where);                        /* VAGUES : ONDE, MIROIR, STASE de la boutique */
 }

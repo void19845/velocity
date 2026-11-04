@@ -90,7 +90,7 @@ static void race_tick(float dt) {
         if (raceGate >= md->ngates) {                     /* arrivee */
             raceDone = 1;
             play(S_WAVE, 0.9f, 1.0f);
-            if (raceBest <= 0 || raceT < raceBest) {
+            if (!vagOn && (raceBest <= 0 || raceT < raceBest)) {   /* le challenge des VAGUES ne touche pas au record */
                 raceNewBest = raceBest > 0 ? 2 : 1;       /* 1 : premier temps ; 2 : record battu */
                 raceBest = raceT;
                 memcpy(raceBestSplit, raceSplit, sizeof raceSplit);

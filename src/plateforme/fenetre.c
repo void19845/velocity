@@ -58,13 +58,17 @@ static int in_key_down(int sc, int repeat) {
             else if (hostOpen) { hostOpen = 0; cfg_save(); }
             else if (skinOpen) { skinOpen = 0; cfg_save(); }
             else if (appState == APP_JOIN) pendingAction = ACT_BACK;
+            else if (vg_menu_open() && vgMenu == VGM_SHOP) {  /* VAGUES : ECHAP ferme la boutique */
+                if (vgShopBack == VGM_SELECT) vgMenu = VGM_SELECT; else vg_menu_close();
+                vgShopBack = VGM_NONE;
+            }
             else set_capture(0);
         }
         if (sc == SC_F11) toggle_fullscreen();
         if (sc == SC_F5 && !botMode) gfx_reload();       /* graphismes/rendu.ini relu a chaud */
         if (sc == SC_F2) sens = fmaxf(0.0003f, sens - 0.0002f);
         if (sc == SC_F3) sens = fminf(0.01f, sens + 0.0002f);
-        if (sc == SC_R && !captured && !uiFocus && appState == APP_GAME && !dmMode) reset_game();
+        if (sc == SC_R && !captured && !uiFocus && appState == APP_GAME && !dmMode && !vg_menu_open()) reset_game();
     }
     keys[sc] = 1;
     return 0;

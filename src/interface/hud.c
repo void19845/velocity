@@ -278,7 +278,7 @@ static void draw_killcam_hud(float cx, float cy) {
         glLineWidth(1);
     }
     if (dmMode) snprintf(buf, sizeof buf, "ELIMINE PAR %s", pname(kcKiller));
-    else snprintf(buf, sizeof buf, "TUE PAR UN %s", kcEnemy >= 0 && E[kcEnemy].type == EN_DRONE ? "DRONE" : "RUSHER");
+    else snprintf(buf, sizeof buf, "TUE PAR : %s", kcEnemy >= 0 ? enemyName[E[kcEnemy].type] : "?");
     float tw = fontW[2] * (float)strlen(buf);
     hud_panel(cx - tw * 0.5f - 24, 96, tw + 48, 112);
     text_c(2, cx, 150, buf, cr, cg, cb, 1);
@@ -323,6 +323,9 @@ static void draw_style_hud(void) {
 static void draw_race_hud(void);                          /* course_hud.c */
 static void draw_modes_hud(void);                         /* modes_hud.c */
 static void draw_shop(void);
+static void vg_draw_info(void);                           /* src/interface/vagues_hud.c */
+static void vg_draw_hud(float cx, float cy);
+static void vg_draw_death(float cx, float cy);
 static void draw_hud(void) {
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
     glOrtho(0, winW, winH, 0, -1, 1);
@@ -347,7 +350,7 @@ static void draw_hud(void) {
     if (dmMode) draw_name_tags();
     if (spectating) {
         draw_spec_hud(cx, cy);
-        if (!captured && !shotMode && !botMode && !ecoShopping) {
+        if (!captured && !shotMode && !botMode && !ecoShopping && !vg_menu_open()) {
             if (settingsOpen) draw_settings(cx, cy); else if (loadoutOpen) draw_loadout(cx, cy); else draw_pause(cx, cy);
         }
         glDisable(GL_BLEND);
@@ -817,7 +820,7 @@ static void draw_hud(void) {
     }
 
     /* infos de partie */
-    if (!raceOn) hud_panel(16, 14, fontW[0] * (dmMode ? 40.0f : 26.0f) + 28, dmMode && teamSize > 0 ? 64.0f : 100.0f);
+    if (!raceOn && !vagOn) hud_panel(16, 14, fontW[0] * (dmMode ? 40.0f : 26.0f) + 28, dmMode && teamSize > 0 ? 64.0f : 100.0f);
     if (dmMode) {
         int count = 0, rank = 1;
         for (int i = 0; i < MAXP; i++) {
@@ -856,6 +859,8 @@ static void draw_hud(void) {
             text(0, 30, 104, buf, 0.7f, 0.7f, 0.8f, 0.9f);
         }
         draw_killfeed();
+    } else if (vagOn) {
+        vg_draw_info();                                   /* VAGUES : vague, score, credits, temps */
     } else if (!raceOn) {                                 /* (course : son propre chrono, course_hud.c) */
         int remaining = enemies_alive() + toSpawn;
         snprintf(buf, sizeof buf, "VAGUE %d   ennemis %d", wave, remaining);
@@ -877,6 +882,7 @@ static void draw_hud(void) {
     draw_race_hud();                                      /* course : chrono, decompte, arrivee */
     draw_modes_hud();                                     /* modes : objectifs, temps, pieces */
     draw_shop();                                          /* boutique (mort) et arme de depart */
+    vg_draw_hud(cx, cy);                                  /* VAGUES : boss, entre-deux, boutique, selecteur, vague 100 */
     if (msgT > 0) text_c(2, cx, cy - 120, msg, 1, 1, 1, clampf(msgT, 0, 1));
 
     if (dmMode && matchOver) {
@@ -899,6 +905,8 @@ static void draw_hud(void) {
         if (killerOfMe >= 0) text_c(1, cx, ty + 50, buf, 0.9f, 0.9f, 0.9f, 1);
     } else if (dmMode && bound_held(A_SCORES)) {
         draw_scoreboard(cx, cy);
+    } else if (P.dead && vagOn) {
+        vg_draw_death(cx, cy);
     } else if (P.dead) {
         rect(0, 0, (float)winW, (float)winH, 0.15f, 0, 0, 0.45f);
         text_c(2, cx, cy - 40, "T'ES MORT", 1, 0.3f, 0.3f, 1);
@@ -909,7 +917,7 @@ static void draw_hud(void) {
         if (P.deathT > 1.0f) text_c(1, cx, cy + 100, "[R] ou clic pour recommencer", 0.9f, 0.9f, 0.9f, 1);
     }
 
-    if (!captured && !shotMode && !botMode && !ecoShopping) {
+    if (!captured && !shotMode && !botMode && !ecoShopping && !vg_menu_open()) {
         if (settingsOpen) draw_settings(cx, cy); else if (loadoutOpen) draw_loadout(cx, cy); else draw_pause(cx, cy);
     }
     glDisable(GL_BLEND);

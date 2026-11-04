@@ -515,6 +515,53 @@ static int wantSkill = SK_COIN;
 static int botSkillSet;                                   /* --skill / --loadout a,b,m,s : competence imposee au bot */
 static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, MINE_CD, 0.1f };  /* barre de recharge du HUD */
 
+/* --- Mode VAGUES (src/solo/, docs/CODE.md 3.5) ---------------------------------------------------------------------
+ * 100 vagues, une carte choisie toutes les 10, boss aux vagues 25 / 50 / 75 / 100, puis l'INFINI.
+ * Regle du proprietaire : AUCUNE inflation. Les degats des ennemis sont fixes (ceux de leur type) ; seuls leurs PV
+ * montent, et peu (VG_HP_MAX) ; les achats de la boutique changent un comportement, jamais une stat. */
+#define VG_WAVES          100     /* vague du dernier boss ; au-dela : l'INFINI */
+#define VG_BLOCK          10      /* selecteur de carte toutes les 10 vagues */
+#define VG_PAUSE_T        3.0f    /* pause entre deux vagues */
+#define VG_SPAWN_T        0.35f   /* un ennemi toutes les 0,35 s */
+#define VG_ALIVE_MAX      16      /* ennemis vivants a la fois (hors boss) : le reste attend */
+#define VG_HP_FROM        66      /* les PV des ennemis montent a partir de cette vague... */
+#define VG_HP_MAX         1.5f    /* ... jusqu'a x1,5 a la vague 100 (plafond, aussi en INFINI) */
+#define VG_ELITE_MAX      0.6f    /* part d'elites a la vague 100 (elles changent de comportement, pas de degats) */
+#define VG_INF_T          30.0f   /* INFINI : la vague suivante arrive au bout de 30 s (sauf boss et vagues de 10) */
+#define VG_INF_CLEAR_T    2.0f    /* INFINI : ... ou 2 s apres avoir tout tue */
+#define VG_RACE_LIMIT     75.0f   /* CHALLENGE course : temps limite (le pilote des tests met 41 s) */
+#define VG_DEF_HOLD       40.0f   /* CHALLENGE defense : secondes a tenir dans la zone... */
+#define VG_DEF_LIMIT      100.0f  /* ... avant ce temps */
+#define VG_DEF_ALIVE      12      /* CHALLENGE defense : assaillants vivants a la fois */
+#define VG_HARD_CREDITS   1.5f    /* carte difficile : credits x1,5 */
+/* degats des ennemis (fixes : aucune vague ne les augmente) */
+#define VG_ORB_DMG        12.0f   /* orbe (drone, sentinelle, bastion, barrages) : comme avant */
+#define VG_RUSH_DMG       18.0f   /* kamikaze au contact */
+#define VG_SWARM_DMG      6.0f    /* essaim au contact */
+#define VG_BIG_ORB_DMG    30.0f   /* grosse orbe chargee (pyramide, hexaedre), plus le souffle */
+#define VG_RAM_DMG        22.0f   /* charge de la pyramide / de l'hexaedre non paree */
+#define VG_ROLL_DMG       20.0f   /* la boule qui roule sur toi */
+#define VG_WAVE_DMG       18.0f   /* onde de choc au sol */
+#define VG_LASER_DMG      14.0f   /* rayon de l'hexaedre */
+/* boss */
+#define VG_BOSS_PYRA_HP   2400.0f
+#define VG_BOSS_TESS_HP   3600.0f
+#define VG_BOSS_BOULE_HP  4200.0f
+#define VG_BOSS_HEXA_HP   8000.0f
+#define VG_BIG_ORB_RETURN 450.0f  /* grosse orbe paree qui revient sur le boss */
+#define VG_RAM_PARRY_DMG  250.0f  /* charge paree : le boss encaisse et reste etourdi */
+#define VG_STUN_T         2.2f    /* boss etourdi apres un parry */
+#define VG_ARMOR          0.35f   /* pyramide (et hexaedre en phase PARRY) : armure hors etourdissement */
+#define VG_STUN_MULT      1.5f    /* ... et degats subis etourdi */
+#define VG_GROUND_MULT    0.15f   /* boule : coups portes depuis le sol */
+#define VG_LINKS          4       /* tesseract : bouclier tant qu'il reste au moins 4 invocations */
+/* credits (boutique de modificateurs) */
+#define VG_PRICE_1        120     /* prix des 5 etapes d'un chemin */
+#define VG_PRICE_2        240
+#define VG_PRICE_3        400
+#define VG_PRICE_4        600
+#define VG_PRICE_5        850
+
 /* Mode classe : formule et paliers documentes dans docs/CODE.md ("Mode classe") ; worker/src/ratings.js
  * (le serveur, qui fait autorite) utilise exactement les memes valeurs */
 #define RANK_START     1000   /* cote de depart */

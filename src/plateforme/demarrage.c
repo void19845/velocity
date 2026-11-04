@@ -25,7 +25,7 @@ static void music_follow_game(void) {
     } else if (appState == APP_GAME && raceOn) {         /* course : la musique monte avec les portes */
         lvl = raceCount > 0 ? 1 : 2 + raceGate * 6 / (maps[curMap].ngates > 0 ? maps[curMap].ngates : 1);
     } else if (appState == APP_GAME) {
-        lvl = wave - 1;
+        lvl = vagOn ? vg_music_level() : wave - 1;
     }
     if (appState == APP_GAME) lvl += styleRank >= ST_S ? 2 : styleRank >= ST_A ? 1 : 0;   /* le style pousse la musique */
     music_level(lvl);
@@ -37,16 +37,15 @@ static void do_action(void) {
     pendingAction = ACT_NONE;
     if (!myName[0]) snprintf(myName, sizeof myName, "joueur");
     if (a == ACT_SOLO || a == ACT_HOST || a == ACT_BROWSE || a == ACT_QUICK || a == ACT_VSBOT || a == ACT_RANKED) cfg_save();
-    if (a != ACT_NONE && a != ACT_RESUME && a != ACT_RESTART && a != ACT_FULLSCREEN) raceOn = 0;   /* toute autre action quitte la course */
+    if (a != ACT_NONE && a != ACT_RESUME && a != ACT_RESTART && a != ACT_FULLSCREEN) { raceOn = 0; vagOn = 0; vgMenu = VGM_NONE; }   /* toute autre action quitte la course et les VAGUES */
     switch (a) {
     case ACT_RACE:                                        /* course au grappin (LA TOILE) */
         net_shutdown();
         race_start(); appState = APP_GAME; set_capture(1);
         break;
-    case ACT_SOLO:
+    case ACT_SOLO:                                        /* mode VAGUES */
         net_shutdown();
-        if (curMap != (maps[menuMap].solo ? menuMap : 0)) load_map(maps[menuMap].solo ? menuMap : 0);
-        reset_game(); appState = APP_GAME; set_capture(1);
+        vg_start(); appState = APP_GAME; set_capture(1);
         break;
     case ACT_HOST:
         if (net_host_start()) { appState = APP_GAME; if (!botMode) set_capture(1); }
@@ -118,7 +117,7 @@ static void do_action(void) {
         set_capture(1);
         break;
     case ACT_RESTART:
-        if (raceOn) race_start(); else reset_game();
+        if (vagOn) vg_restart(); else if (raceOn) race_start(); else reset_game();
         set_capture(1);
         break;
     case ACT_LEAVE:
@@ -430,6 +429,7 @@ static int velocity_main(const char *cmd) {
     }
     reset_game();
 
+    if (shotMode && vagues_shot(shotPath)) return 0;      /* mode VAGUES : vagues_pyramide, _boutique, _selecteur... */
     if (shotMode && (strstr(shotPath, "settings") || strstr(shotPath, "menu") || strstr(shotPath, "loadout") ||
                      strstr(shotPath, "heberger") || strstr(shotPath, "graphismes") ||
                      strstr(shotPath, "update"))) {   /* "skinmenu" contient "menu" */   /* captures des menus */
