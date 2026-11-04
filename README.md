@@ -40,3 +40,7 @@ outils/                outil d'ecoute de la musique
 worker/                lobby en ligne et serveur de classement (Cloudflare)
 docs/                  documentation, plans, fiches des armes
 ```
+
+## Licence
+
+VELOCITY est distribue sous licence GNU GPL v3 (voir `LICENSE`).
