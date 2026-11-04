@@ -13,16 +13,18 @@ static void impact_frame(V3 at, float dur) {
     if (dur > impactT) { impactT = impactDur = dur; impactAt = at; }
 }
 
-typedef struct { V3 pos; float val, t; } DmgNum;           /* chiffres de degats flottants */
+enum { DN_NORMAL, DN_HEAD, DN_ONESHOT };                 /* genre du chiffre : corps, tete (dore), one-shot (rouge et or) */
+typedef struct { V3 pos; float val, t; int kind; } DmgNum;   /* chiffres de degats flottants */
 #define MAXDN 32
 static DmgNum DN[MAXDN];
 static int dnNext;
-static void dmg_number(V3 pos, float val) {
+static void dmg_number_k(V3 pos, float val, int kind) {
     DmgNum *d = &DN[dnNext];
     dnNext = (dnNext + 1) % MAXDN;
     d->pos = v3(pos.x + frange(-0.3f, 0.3f), pos.y + 0.6f, pos.z + frange(-0.3f, 0.3f));
-    d->val = val; d->t = 0.9f;
+    d->val = val; d->t = kind ? 1.2f : 0.9f; d->kind = kind;
 }
+static void dmg_number(V3 pos, float val) { dmg_number_k(pos, val, DN_NORMAL); }
 
 typedef struct { V3 pos, vel, col, axis; float ang, spin, life, size; } Shard;   /* eclats physiques */
 #define MAXSH 256

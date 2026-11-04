@@ -204,18 +204,29 @@ static int hitscan_seg(V3 eye, V3 d, float maxLen, int selfHit, float dmg, float
     for (int i = 0; i < MAXE; i++) {
         float t;
         if (E[i].alive && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type), tw, &t)) {
-            burst(vadd(eye, vmul(d, t)), v3(1, 1, 1), 15, 8, 0.3f, 0.12f);
-            damage_enemy(i, dmg, vmul(d, knockE));
+            V3 at = vadd(eye, vmul(d, t));
+            int head = head_mult(w) > 1 && head_hit_enemy(i, at);   /* point faible : le sommet du drone */
+            float de = dmg * (head ? head_mult(w) : 1);
+            int one = chainArmed && chain_direct_w(w) && !EN_BOSS(E[i].type);   /* VAGUES : jamais un boss d'un coup */
+            if (one) de = fmaxf(de, E[i].hp);             /* chaine pleine : la touche tue (armure des VAGUES ensuite) */
+            burst(at, v3(1, 1, 1), 15, 8, 0.3f, 0.12f);
+            if (head) { head_fx(at); shotHeads++; headShotsMine++; }
+            damage_enemy_k(i, de, vmul(d, knockE), one ? DN_ONESHOT : head ? DN_HEAD : DN_NORMAL);
             hit = 1;
         }
     }
     for (int i = 0; i < MAXP; i++) {                     /* LAN : le tir traverse aussi les joueurs (un net_hit chacun) */
-        V3 mn, mx; float t;
+        V3 mn, mx, ha; float t;
         if (!np_target(i)) continue;
         np_aabb(i, 0.05f, &mn, &mx);
         if (ray_box(eye, d, mn, mx, tw, &t, NULL)) {
-            burst(vadd(eye, vmul(d, t)), v3(1, 1, 1), 15, 8, 0.3f, 0.12f);
-            if (hit_player(i, dmg * PVP_SCALE, vmul(d, knockP), w, d)) hit = 1;   /* Egide : bloque = rate (chaine) */
+            int head = head_mult(w) > 1 && head_hit_player(i, eye, d, tw, &ha);   /* tete : x1,5 (rail, one-shot) ou x1,35 */
+            V3 at = head ? ha : vadd(eye, vmul(d, t));
+            burst(at, v3(1, 1, 1), 15, 8, 0.3f, 0.12f);
+            if (hit_player_fl(i, dmg * PVP_SCALE * (head ? head_mult(w) : 1), vmul(d, knockP), w, d, hit_flags(w, head), at)) {
+                hit = 1;                                  /* Egide : bloque = rate (chaine) */
+                if (head) { head_fx(at); shotHeads++; headShotsMine++; }
+            }
         }
     }
     if (coinHit >= 0) {
@@ -271,9 +282,11 @@ static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut
 static void fire_rail(void) {
     if (P.ammo[WP_RAIL] > 0) P.ammo[WP_RAIL]--;
     V3 end, n;
+    chain_begin();                                        /* chaine de tirs pleine : ce tir peut tuer */
     int hit = hitscan_shot(RAIL_DMG * streak_mult(), 8, 4, W_RAIL, &end, &n);
     shot_result(hit);
-    if (botMode) netlog("tir rail : %s", hit ? "touche" : "rate");
+    if (botMode) netlog("tir rail : %s%s", hit ? "touche" : "rate", shotHeads ? " (tete)" : "");
+    chain_end(hit);
     V3 m = muzzle();
     float k = clampf(shotStreak / (float)STREAK_MAX, 0, 1);  /* le rayon vire a l'or avec la chaine */
     add_beam(m, end, v3(0.3f + 0.7f * k, 0.85f - 0.05f * k, 1.0f - 0.7f * k), 0.6f);

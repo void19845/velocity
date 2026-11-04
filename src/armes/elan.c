@@ -49,12 +49,14 @@ static void fire_kinetic(void) {
     float v = kin_vdep(), e = v / KIN_SPEED_CAP, mult = streak_mult();
     float dmg = kin_dmg(v) * mult, kn = KIN_KNOCK + KIN_KNOCK_PER_MS * v;
     V3 h0 = v3(P.vel.x, 0, P.vel.z), end, n, m = muzzle();
+    chain_begin();                                        /* chaine de tirs pleine : ce tir peut tuer */
     int hit = hitscan_shot(dmg, kn, kn * 0.5f, W_KINETIC, &end, &n);
     kin_brake(v);                                         /* le cout, touche ou non */
     P.kinPreDash = fmaxf(0, P.kinPreDash - v);            /* la vitesse d'avant le dash est depensee */
     shot_result(hit);
-    if (botMode) netlog("tir elan : v=%.1f degats=%.0f %s%s", v, dmg, hit ? "touche" : "rate",
+    if (botMode) netlog("tir elan : v=%.1f degats=%.0f %s%s%s", v, dmg, hit ? "touche" : "rate", shotHeads ? " (tete)" : "",
                         P.kinDashT < KIN_DASH_FORGET ? (dashShot ? " (dash-tir)" : " (dash trop tot)") : "");
+    chain_end(hit);
     kin_beam_fx(m, end, n, e);
     if (dmMode) net_fx_kinetic(m, end, e);
     for (int i = 0; i < (int)(6 + 18 * e); i++)           /* ton elan continue sans toi */

@@ -18,6 +18,7 @@ static void host_end_match(int winner) {
     apply_event(&e);
 }
 
+static int hostKillFlags;                                 /* HF_* du coup qui tue (host_apply_damage_fl), joints a l'EV_KILL */
 static void host_kill(int killer, int victim, int kind) {
     mode_on_death(victim);                                /* drapeau : tombe la ou le porteur meurt */
     NP[victim].alive = 0; NP[victim].hp = 0; NP[victim].deaths++; NP[victim].respawnT = RESPAWN_TIME;
@@ -29,6 +30,7 @@ static void host_kill(int killer, int victim, int kind) {
     }
     NetEvent e = ev_new(EV_KILL);
     e.actor = (unsigned char)killer; e.target = (unsigned char)victim; e.sub = (unsigned char)kind;
+    e.pad[0] = (unsigned char)hostKillFlags;              /* tete, one-shot : killfeed, camera de mort */
     net_emit(&e);
     apply_event(&e);
     if (killer == victim || killer >= MAXP) return;
@@ -45,6 +47,36 @@ static int slamParried, slamRailCombos;                   /* Enclume : ondes par
 static int sawHostStat[6], sawHostBounceHits;             /* Scie : EV_SAW par sous-type, touches apres renvoi */
 static double slamLastHitT[MAXP];
 static int slamLastBy[MAXP];
+
+/* --- Tirs a la tete et chaine pleine : arbitrage -------------------------------------------
+ * Tete : le tireur joint le point d'impact (f[4..6]) ; l'hote verifie qu'il est sur la tete de la cible telle qu'il la
+ * voit (tolerance de latence). Chaine : l'hote tient pour chacun une chaine miroir, avancee par les touches qu'il arbitre
+ * (+2 a la tete validee) et ramenee a la valeur annoncee (NetPState.spare[1]) quand celle-ci baisse (tir rate, chaine
+ * consommee) : un plafond de la vraie chaine. Un tir "chaine pleine" n'est valide que si ce miroir est plein ET si l'etat
+ * du tireur la montrait pleine il y a moins de CHAIN_SEEN_T. Valide, le coup tue (one-shot) ; sinon touche normale. */
+static int hostChain[MAXP], hostChainSaid[MAXP];          /* miroir ; derniere valeur annoncee par le tireur */
+static double hostChainSeenT[MAXP];                       /* derniere fois vue pleine dans son etat */
+static int headHostHits[W_COUNT], headOneShots, chainOneShots, headRefused, chainRefused;   /* journal */
+static int head_host_ok(const NetEvent *ev) {
+    int v = ev->target;
+    if (head_mult(ev->sub) <= 1 || v >= MAXP) return 0;
+    V3 at = fv(ev->f + 4), h = np_head(v), vel = np_vel(v);
+    float dh = hlen(vsub(at, h)), tolH = HW + HEAD_HOST_TOL + hlen(vel) * HEAD_HOST_LAG;
+    float tolY = HEAD_R + HEAD_HOST_TOL * 0.25f + fabsf(vel.y) * HEAD_HOST_LAG;   /* en hauteur : bien plus strict */
+    return dh <= tolH && fabsf(at.y - h.y) <= tolY;
+}
+static int chain_host_claim(int from, int w) {            /* le tir porte une chaine pleine : valide ? (elle est consommee) */
+    if (from < 0 || from >= MAXP || !chain_direct_w(w)) return 0;
+    int ok = hostChain[from] >= STREAK_MAX && nowT - hostChainSeenT[from] < CHAIN_SEEN_T;
+    hostChain[from] = 0;
+    return ok;
+}
+static void chain_host_said(int i, int said) {            /* chaine annoncee par i (son etat, ou la mienne) */
+    if (said < hostChainSaid[i] && said < hostChain[i]) hostChain[i] = said;   /* elle a baisse : tir rate ou consommee */
+    hostChainSaid[i] = said;
+    if (said >= STREAK_MAX) hostChainSeenT[i] = nowT;
+}
+/* --- fin Tirs a la tete : arbitrage --- */
 
 /* tolerance de latence de l'hote pour un parry, selon l'arme qui frappe (et la melee de la victime) */
 static double parry_grace(int w, int victimMK) {
@@ -160,14 +192,24 @@ static void host_take_pickup(int i, int who) {
     apply_event(&e);
 }
 
-/* degats arbitres : PV, plafond par touche, temps pour tuer, kill (EV_HIT, et les decisions du bouclier) */
-static void host_apply_damage(int from, int v, float dmgIn, int w) {
+/* degats arbitres : PV, plafond par touche, temps pour tuer, kill (EV_HIT, et les decisions du bouclier).
+ * hf : drapeaux HF_* deja valides par host_handle. Les seules exceptions au plafond PVP_HIT_CAP : la tete (rail, Elan), et
+ * le one-shot (rail a la tete, chaine pleine) qui retire au moins tous les PV restants, specialisations comprises */
+static void host_apply_damage_fl(int from, int v, float dmgIn, int w, int hf) {
     float before = NP[v].hp;
     if (from != v && from >= 0 && from < MAXP) {          /* specialisations : ASSAUT tape plus fort, REMPART encaisse */
         if (np_spec(from) == SPEC_ASSAUT) dmgIn *= SPEC_ASSAUT_MUL;
         if (np_spec(v) == SPEC_REMPART) dmgIn *= SPEC_REMPART_MUL;
     }
-    float dmg = (w == W_SELF || w == W_VOID) ? dmgIn : fminf(dmgIn, PVP_HIT_CAP);   /* plafond par touche */
+    int self = w == W_SELF || w == W_VOID;
+    int oneShot = !self && ((hf & HF_CHAIN) || ((hf & HF_HEAD) && head_oneshot(w)));
+    float dmg = self || (hf & HF_HEAD) ? dmgIn : fminf(dmgIn, PVP_HIT_CAP);   /* plafond par touche, sauf a la tete */
+    if (oneShot) dmg = fmaxf(dmg, before);
+    if (hf & HF_HEAD) headHostHits[w]++;
+    if (chain_w(w) && from != v && from >= 0 && from < MAXP && !(hf & HF_CHAIN)) {   /* chaine miroir du tireur */
+        hostChain[from] += (hf & HF_HEAD) ? CHAIN_HEAD_STEP : 1;
+        if (hostChain[from] > STREAK_MAX) hostChain[from] = STREAK_MAX;
+    }
     if (w != W_SELF && w != W_VOID && from != v && from < MAXP) { NP[v].lastHitBy = from; NP[v].lastHitT = nowT; }   /* kill zone */
     if (before >= 99.9f) lifeFirstHitT[v] = nowT;
     if (w == W_SLAM) { slamLastHitT[v] = nowT; slamLastBy[v] = from; }   /* onde puis rail : le combo vise */
@@ -189,9 +231,13 @@ static void host_apply_damage(int from, int v, float dmgIn, int w) {
             if (before >= 99.9f) oneShots++;              /* tue d'un seul coup a pleine vie */
             else if (nowT - lifeFirstHitT[v] < 0.1) burstKills++;   /* une salve (ALL IN ONE) */
         }
+        if (oneShot) { if (hf & HF_CHAIN) chainOneShots++; else headOneShots++; }
+        hostKillFlags = (hf & (HF_HEAD | HF_CHAIN)) | (oneShot ? HF_ONESHOT : 0);
         host_kill(from, v, w);
+        hostKillFlags = 0;
     }
 }
+static void host_apply_damage(int from, int v, float dmgIn, int w) { host_apply_damage_fl(from, v, dmgIn, w, 0); }
 
 /* Tesla : la victime v qui pare renvoie la decharge du tireur s ; renvoie 1 si la touche est annulee */
 static int tesla_host_reflect(int v, int s) {
@@ -292,6 +338,7 @@ static int shield_host(const NetEvent *ev) {
         NetEvent h = ev_new(EV_HIT);
         h.from = (unsigned char)from; h.target = (unsigned char)v; h.sub = (unsigned char)w; h.netId = ev->netId;
         h.f[0] = dmg; vf(h.f + 1, kn);
+        h.pad[0] = (unsigned char)(ev->pad[0] & HF_CHAIN);/* chaine pleine : elle compte ; la tete, sans point d'impact, non */
         shieldDenied++;
         if (!host_handle(&h)) {
             NetEvent d = ev_new(EV_SHIELD);
@@ -313,7 +360,7 @@ static int shield_host(const NetEvent *ev) {
 
 /* arbitre un evenement ; renvoie 1 s'il est annule : il ne doit alors ni s'appliquer ni etre relaye
  * (sinon la victime d'un coup pare subirait quand meme le recul et le flash) */
-static int host_handle(const NetEvent *ev) {
+static int host_handle(NetEvent *ev) {
     if (ev->kind == EV_PICKUP) { host_take_pickup(ev->sub, ev->from); return 0; }
     if (ev->kind == EV_MINE) return mine_host(ev);        /* Ventouse */
     if (ev->kind == EV_SHIELD) return shield_host(ev);    /* Egide */
@@ -336,6 +383,16 @@ static int host_handle(const NetEvent *ev) {
         }
         if (v >= MAXP || !NP[v].active || !NP[v].alive || matchOver) return 1;
         if (ev->sub == W_TESLA && ev->from < MAXP && tesla_host_reflect(v, ev->from)) return 1;   /* Tesla : decharge renvoyee */
+        int hf = ev->pad[0] & (HF_HEAD | HF_CHAIN);       /* --- tete et chaine : l'hote valide, le relais porte sa decision --- */
+        if ((hf & HF_HEAD) && !head_host_ok(ev)) {
+            hf &= ~HF_HEAD; headRefused++;
+            netlog("tete refusee : %s -> %s (arme %d)", pname(ev->from), pname(v), ev->sub);
+        }
+        if ((hf & HF_CHAIN) && !chain_host_claim(ev->from, ev->sub)) {
+            hf &= ~HF_CHAIN; chainRefused++;
+            netlog("chaine pleine refusee : %s", pname(ev->from));
+        }
+        ev->pad[0] = (unsigned char)hf;                   /* --- fin tete et chaine --- */
         int shieldFace = 1;                               /* --- Egide : face exigee pour parer, renvoi du hitscan, conversion --- */
         if ((NP[v].st.pad & 0x0F) == MK_SHIELD && ev->sub != W_SELF && ev->sub != W_VOID && ev->from < MAXP) {
             V3 sd = vnorm(vsub(np_center(v), np_center(ev->from)));   /* ligne attaquant -> victime vue par l'hote */
@@ -356,7 +413,7 @@ static int host_handle(const NetEvent *ev) {
             return 1;
         }
         if (couched && lance_host_joust(ev)) return 1;   /* Lance : choc de joute */
-        host_apply_damage(ev->from, v, ev->f[0], ev->sub);
+        host_apply_damage_fl(ev->from, v, ev->f[0], ev->sub, hf);
     } else if (ev->kind == EV_SAW && ev->sub < 6) {
         sawHostStat[ev->sub]++;                           /* Scie : compteurs du journal, rien a arbitrer */
     } else if (ev->kind == EV_PARRY && ev->from < MAXP) {
@@ -407,6 +464,7 @@ static void host_respawn(int i) {
     V3 p = pick_spawn(i);
     NP[i].alive = 1; NP[i].hp = 100;
     NP[i].lastHitT = 0; NP[i].lastHitBy = -1;            /* kill zone : une nouvelle vie ne doit rien a personne */
+    hostChain[i] = hostChainSaid[i] = 0;                  /* chaine de tirs : vide a chaque vie, comme chez le joueur */
     NetEvent e = ev_new(EV_RESPAWN);
     e.target = (unsigned char)i; vf(e.f, p);
     net_emit(&e);
@@ -483,6 +541,7 @@ static void host_tick(float dt) {
         if (n->alive && !(n->st.pad & ST_SHIELD) && n->shieldBrokenT <= 0)
             n->shieldGauge = fminf(SHIELD_GAUGE_MAX, n->shieldGauge + SHIELD_REGEN * dt);
     }
+    chain_host_said(myId, shotStreak);                    /* chaine miroir de l'hote lui-meme */
     if (!matchOver) {
         match_clock_tick();                               /* temps reel, pas les ticks (horloge.c) */
         mode_tick(dt);                                    /* zones, drapeaux, bouclier, salles de depart, SOUTIEN */
@@ -559,7 +618,7 @@ static void host_on_join(const PkJoin *pj, const struct sockaddr_in *from) {
 
 /* evenement recu d'un client : l'hote l'arbitre, l'applique chez lui et le relaie a tout le monde,
  * sauf s'il l'a annule */
-static void host_event_in(const NetEvent *ev) {
+static void host_event_in(NetEvent *ev) {
     if (host_handle(ev)) return;
     apply_event(ev);
     net_queue(ev);
@@ -591,6 +650,7 @@ static void host_recv(PkHead *h, int n, struct sockaddr_in *from) {
             NP[id].st = ((PkState *)h)->st; NP[id].recvT = nowT;
             if (NP[id].st.flags & NF_PARRY) NP[id].lastParryT = nowT;
             if (NP[id].st.pad & ST_LANCE) NP[id].lastLanceT = nowT;   /* Lance couchee */
+            chain_host_said(id, NP[id].st.spare[1]);     /* chaine de tirs annoncee */
             if ((NP[id].st.pad & ST_SHIELD) && NP[id].shieldBrokenT <= 0 && NP[id].shieldRipT <= 0)
                 NP[id].lastShieldT = nowT;                /* Egide : un client ne prolonge pas un bouclier brise ou arrache */
         }

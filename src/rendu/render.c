@@ -334,6 +334,7 @@ static void render(float alpha, float frameDt) {
     draw_modes_world();                                   /* modes : zones, drapeaux, bouclier, salles de depart */
     vg_draw_world_fx();                                   /* VAGUES : rayons, ondes, liens, objets de la boutique */
     draw_slam_marker();
+    draw_slam_waves();                                    /* Enclume : murs d'onde qui s'etendent */
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
     glDisable(GL_FOG);

@@ -100,6 +100,8 @@ Sur Mac : `./build_mac.sh`, puis `Velocity.app/Contents/MacOS/velocity --test te
   ceux du match et du réseau dans `src/reseau/etat_partage.c` / `protocole.c`.
   Valeurs PvP actuelles : `PVP_SCALE` 0,7 (`etat_partage.c`), plafond `PVP_HIT_CAP` 60 PV par touche
   (`equilibrage.c`), `KILL_HEAL` 30 PV, `FRAG_LIMIT` 15 (7 en partie rapide), `MATCH_TIME` 600 s.
+  Exceptions au plafond, toujours validées par l'hôte (`host_apply_damage_fl`) : tir à la tête (rail, Élan) et
+  one-shot (rail à la tête, chaîne de tirs pleine) — §3.4 et §4 de `docs/CODE.md`.
 - **Entrées** : la logique de jeu ne lit **jamais** `keys[]` : elle lit les actions `act[A_*]`
   (tenu) et `actP[A_*]` (appui du tick), remplies par `input_poll()` via `binds`. Les bots écrivent
   dans `botHeld` / `botPress`. Nouvelle action = `A_*` + `actId` + `actLabel` + `bindDefault`.
@@ -107,7 +109,7 @@ Sur Mac : `./build_mac.sh`, puis `Velocity.app/Contents/MacOS/velocity --test te
   Chaque joueur simule son mouvement ; les touches sont validées chez le tireur puis arbitrées
   dans `host_handle()`. Nouvel événement = `EV_*` + `net_fx_*()` émetteur + cas dans
   `apply_event()` (+ `host_handle()` s'il faut arbitrer). **Incrémenter `NET_VER`** dès qu'un
-  paquet ou un événement change (actuellement **18**, `src/reseau/protocole.c`).
+  paquet ou un événement change (actuellement **19**, `src/reseau/protocole.c`).
   Chrono du match : temps réel, calé sur l'heure du worker (`time`), voir « Horloge de match commune » au §4 de
   `docs/CODE.md` (`src/reseau/horloge.c`).
 - **Équité en réseau** : pas d'aide à la visée passive. L'aimant de visée (`aim_assist`) n'existe que comme

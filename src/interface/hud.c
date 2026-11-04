@@ -283,8 +283,10 @@ static void draw_killcam_hud(float cx, float cy) {
     hud_panel(cx - tw * 0.5f - 24, 96, tw + 48, 112);
     text_c(2, cx, 150, buf, cr, cg, cb, 1);
     if (dmMode) {
-        snprintf(buf, sizeof buf, "[%s]   il lui reste %d PV", weaponNames[kcWeapon % W_COUNT], (int)ceilf(NP[kcKiller].hp));
-        text_c(1, cx, 192, buf, 0.9f, 0.9f, 0.95f, 1);
+        snprintf(buf, sizeof buf, "[%s%s]   il lui reste %d PV", weaponNames[kcWeapon % W_COUNT],
+                 (kcOneShot & HF_ONESHOT) ? ((kcOneShot & HF_HEAD) ? " - ONE-SHOT A LA TETE" : " - ONE-SHOT") :
+                 (kcOneShot & HF_HEAD) ? " - TETE" : "", (int)ceilf(NP[kcKiller].hp));
+        text_c(1, cx, 192, buf, 0.9f, (kcOneShot & HF_ONESHOT) ? 0.75f : 0.9f, (kcOneShot & HF_ONESHOT) ? 0.35f : 0.95f, 1);
         snprintf(buf, sizeof buf, "respawn dans %.1f s", fmaxf(0, RESPAWN_TIME - P.deathT));
         text_c(0, cx, winH - 30.0f, buf, 0.8f, 0.8f, 0.85f, 1);
     }
@@ -412,7 +414,13 @@ static void draw_hud(void) {
         char nb[16];
         snprintf(nb, sizeof nb, "%.0f", d->val);
         float a = clampf(d->t * 2, 0, 1);
-        if (d->val >= 60) text_c(1, sx, sy, nb, 1, 0.45f, 0.2f, a);
+        if (d->kind == DN_ONESHOT) {                      /* one-shot : gros chiffre or et rouge, "ONE-SHOT" au-dessus */
+            text_c(2, sx, sy, nb, 1, 0.8f, 0.25f, a);
+            text_c(0, sx, sy - 34, "ONE-SHOT", 1, 0.3f, 0.25f, a);
+        } else if (d->kind == DN_HEAD) {                  /* tete : chiffre dore, "TETE" au-dessus */
+            text_c(1, sx, sy, nb, 1, 0.9f, 0.3f, a);
+            text_c(0, sx, sy - 26, "TETE", 1, 0.95f, 0.6f, a);
+        } else if (d->val >= 60) text_c(1, sx, sy, nb, 1, 0.45f, 0.2f, a);
         else if (d->val >= 35) text_c(0, sx, sy, nb, 1, 0.85f, 0.3f, a);
         else text_c(0, sx, sy, nb, 1, 1, 1, a);
     }
@@ -524,7 +532,7 @@ static void draw_hud(void) {
             mcd = ANVIL_CD;
             if (air && slam_predict(&at, &vy, &R, NULL)) {
                 float fall = (P.anvilState == ANVIL_DIVE ? P.anvilStartY : P.pos.y) - at.y;
-                snprintf(buf, sizeof buf, "PIQUE %d dmg R %.1fm", (int)(slam_dmg(vy, fall) * pvp), R);
+                snprintf(buf, sizeof buf, "PIQUE %d dmg R %.1fm mur %.1fm", (int)(slam_dmg(vy, fall) * pvp), R, slam_hw(fall));
             } else snprintf(buf, sizeof buf, "%d dmg %.1fm", (int)(anvil_dmg(sp3) * pvp), anvil_range(sp3));
         } else if (P.meleeKind == MK_LANCE) {                 /* Lance : v_c vers la cible visee, degats de la joute (plafond PvP) */
             int la;
@@ -606,12 +614,18 @@ static void draw_hud(void) {
             rect(sx + i * 23.0f, by - 36.0f, 19, 6, i < shotStreak ? 1.0f : 0.1f, i < shotStreak ? 0.8f : 0.1f,
                  i < shotStreak ? 0.3f : 0.15f, i < shotStreak ? 0.95f : 0.7f);
         if (streakLostT > 0) text(0, sx, by - 100.0f, "CHAINE PERDUE", 1, 0.3f, 0.3f, clampf(streakLostT, 0, 1));
+        if (shotStreak >= STREAK_MAX && !P.dead && (P.loadout[0] == WP_RAIL || P.loadout[1] == WP_RAIL || P.loadout[0] == WP_KINETIC ||
+            P.loadout[1] == WP_KINETIC)) {                /* chaine pleine : le prochain rail ou Elan qui touche tue */
+            float pulse = 0.75f + 0.25f * sinf((float)nowT * 12);
+            for (int i = 0; i < STREAK_MAX; i++) rect(sx + i * 23.0f, by - 37.0f, 19, 8, 1, 0.85f, 0.3f, 0.35f * pulse);
+            text(0, sx, by - 100.0f, "ONE-SHOT PRET", 1, 0.85f * pulse, 0.3f, 0.95f);
+        }
 
         if (P.anvilState == ANVIL_DIVE) text_c(0, cx, winH - 110.0f, "PIQUE !", 1, 0.6f, 0.25f, 0.95f);
         else if (P.anvilState == ANVIL_STUN) {                /* Enclume : onde ratee, barre d'immobilisation */
             text_c(0, cx, winH - 110.0f, "IMMOBILISE", 1, 0.35f, 0.3f, 0.95f);
             rect(cx - 60, winH - 102.0f, 120, 5, 0.1f, 0.1f, 0.15f, 0.7f);
-            rect(cx - 60, winH - 102.0f, 120 * clampf(P.anvilStunT / SLAM_STUN, 0, 1), 5, 1, 0.35f, 0.3f, 0.95f);
+            rect(cx - 60, winH - 102.0f, 120 * clampf(P.anvilStunT / fmaxf(slamStunFull, 0.01f), 0, 1), 5, 1, 0.35f, 0.3f, 0.95f);
         } else if (P.hook == HOOK_ATTACHED)
             text_c(0, cx, winH - 110.0f, (P.hookEnemy || P.hookPlayer) ? "GRAPPIN -> CIBLE" : "GRAPPIN", 1,
                    (P.hookEnemy || P.hookPlayer) ? 0.35f : 0.8f, 0.35f, 0.9f);
@@ -925,33 +939,61 @@ static void draw_hud(void) {
     glEnable(GL_DEPTH_TEST);
 }
 
-/* Enclume : cercle de l'onde prevue au sol (passe additive). Orange si une cible est dedans. */
+/* point de l'ovale de l'onde (centre c, cap dir) a l'angle ang, a la fraction k de sa taille */
+static V3 slam_ell_pt(V3 c, V3 dir, float R, float vh, float ang, float k) {
+    float ca = cosf(ang), sa = sinf(ang), ra = R * (ca >= 0 ? slam_fwd(vh) : slam_back(vh)) * k, rb = R * k;
+    return v3(c.x + dir.x * ca * ra - dir.z * sa * rb, c.y, c.z + dir.z * ca * ra + dir.x * sa * rb);
+}
+/* Enclume : ovale de l'onde prevue au sol (passe additive), avec la hauteur du mur. Orange si une cible est dedans. */
 static void draw_slam_marker(void) {
     if (appState != APP_GAME || spectating || P.dead || P.meleeKind != MK_ANVIL || P.grounded) return;
     int diving = P.anvilState == ANVIL_DIVE;
     if (!diving && (P.anvilState != ANVIL_IDLE || anvil_ground_dist(P.pos) < SLAM_MIN_H)) return;
     V3 at; float vy, R;
     if (!slam_predict(&at, &vy, &R, NULL)) return;
+    float H = (diving ? P.anvilStartY : P.pos.y) - at.y, hw = slam_hw(H), vh = hlen(P.vel);
+    V3 dir = vh > 1 ? v3(P.vel.x / vh, 0, P.vel.z / vh) : v3(sinf(P.yaw), 0, -cosf(P.yaw));
+    if (vh <= 1) vh = 0;
     int hot = 0;
     for (int i = 0; i < MAXE && !hot; i++) {
         if (!E[i].alive) continue;
         float er = enemy_radius(E[i].type), feet = E[i].pos.y - er - at.y;
-        hot = feet <= SLAM_REACH_UP && feet >= -SLAM_REACH_DOWN - 2 * er && hlen(vsub(E[i].pos, at)) < R + er;
+        hot = feet <= hw && feet >= -SLAM_REACH_DOWN - 2 * er && slam_ell(dir, R, vh, E[i].pos.x - at.x, E[i].pos.z - at.z, er) < 1;
     }
     for (int i = 0; i < MAXP && !hot; i++) {
         if (!np_target(i)) continue;
         float feet = NP[i].disp.y - at.y;
-        hot = feet <= SLAM_REACH_UP && feet >= -SLAM_REACH_DOWN && hlen(vsub(NP[i].disp, at)) < R + 0.5f;
+        hot = feet <= hw && feet >= -SLAM_REACH_DOWN && slam_ell(dir, R, vh, NP[i].disp.x - at.x, NP[i].disp.z - at.z, 0.5f) < 1;
     }
     float a = diving ? 0.9f : 0.35f, pulse = 0.75f + 0.25f * sinf(gameTime * 14);
     glLineWidth(diving ? 4.0f : 2.0f);
     if (hot) glColor4f(1, 0.5f, 0.15f, a * pulse); else glColor4f(0.55f, 0.75f, 1, a * pulse);
-    for (int ring = 0; ring < 2; ring++) {
-        float rr = ring ? R * 0.25f : R;
+    for (int ring = 0; ring < 3; ring++) {                /* bord au sol, bord a la hauteur du mur, petit ovale central */
+        float k = ring == 2 ? 0.25f : 1, y = at.y + (ring == 1 ? hw : 0.06f);
+        if (ring == 1) glColor4f(hot ? 1 : 0.55f, hot ? 0.5f : 0.75f, hot ? 0.15f : 1, a * pulse * 0.35f);
         glBegin(GL_LINE_LOOP);
-        for (int k = 0; k < 32; k++) {
-            float ang = k * (2 * PI / 32);
-            glVertex3f(at.x + cosf(ang) * rr, at.y + 0.06f, at.z + sinf(ang) * rr);
+        for (int n = 0; n < 40; n++) {
+            V3 p = slam_ell_pt(at, dir, R, vh, n * (2 * PI / 40), k);
+            glVertex3f(p.x, y, p.z);
+        }
+        glEnd();
+    }
+}
+
+/* Enclume : murs d'onde qui s'etendent (la mienne et celles des autres) : bande de quads de la hauteur du mur, opaque
+ * en bas, transparente en haut ; puis il retombe */
+static void draw_slam_waves(void) {
+    for (int i = 0; i < MAXSV; i++) {
+        SlamVis *s = &SV[i];
+        if (!s->alive) continue;
+        float k = s->t * SLAM_WAVE_SPEED / s->R, h = s->hw, al = 0.55f;
+        if (k > 1) { h *= clampf(1 - (k - 1) / 0.4f, 0, 1); al *= clampf(1 - (k - 1) / 0.4f, 0, 1); k = 1; }
+        if (h <= 0.01f) continue;
+        glBegin(GL_QUAD_STRIP);
+        for (int n = 0; n <= 48; n++) {
+            V3 p = slam_ell_pt(s->c, s->dir, s->R, s->vh, n * (2 * PI / 48), k);
+            glColor4f(1, 0.6f, 0.25f, al); glVertex3f(p.x, p.y + 0.05f, p.z);
+            glColor4f(1, 0.75f, 0.4f, 0); glVertex3f(p.x, p.y + h, p.z);
         }
         glEnd();
     }

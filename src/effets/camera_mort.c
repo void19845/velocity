@@ -7,6 +7,7 @@
 
 static int killcamOn = 1;                                 /* reglage (camera_mort= dans velocity.ini) */
 static int kcOn, kcKiller, kcWeapon, kcEnemy;             /* en cours ; tueur (LAN) ; arme W_* ; ennemi (solo) */
+static int kcOneShot;                                     /* drapeaux HF_* du kill (tete, one-shot) : texte de la camera de mort */
 static V3 kcFrom, kcLast;                                 /* oeil a la mort ; derniere position connue du tueur */
 static float kcYaw0, kcPitch0;
 

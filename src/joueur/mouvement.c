@@ -102,6 +102,7 @@ static float enemy_radius(int type);
 static void damage_enemy(int i, float dmg, V3 knock);
 static void slam_land(float vyImpact);                    /* Enclume : definies avec la melee */
 static void slam_contact(void);
+static void slam_wave_tick(float dt);
 static void shield_ram(void);                             /* Egide : belier (definie avec la melee) */
 
 /* Apres l'impact sur la cible accrochee : rebond vers le haut avec le grappin recharge,
@@ -457,6 +458,7 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
     int slammed = 0;
     if (diving && alive) slam_contact();
     if (P.grounded && !wasG && P.anvilState == ANVIL_DIVE && alive) { slam_land(-prevVy); slammed = 1; }
+    slam_wave_tick(dt);                                   /* Enclume : le front de mon onde avance */
 
     if (P.grounded && !wasG && !slammed) {
         P.airJumps = 1; P.wallTime = 0; P.wallrun = 0;

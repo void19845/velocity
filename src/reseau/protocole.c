@@ -11,10 +11,13 @@
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   18      /* 15 : regles (mode, grappin, munitions, boutique, specs) et objectifs dans PkSnap, EV_OBJ, spec dans NetPState ;
+#define NET_VER   19      /* 15 : regles (mode, grappin, munitions, boutique, specs) et objectifs dans PkSnap, EV_OBJ, spec dans NetPState ;
                              16 = fusion du fork + mode classe (PkJoin, PkRoster, PkAnnounce.ranked, PkWelcome pad[1]) ;
                              17 = cartes CITADELLE et OASIS retirees, objectifs sur les cartes neon ;
-                             18 = horloge de match commune (PkSnap.clk, clkSrv) */
+                             18 = horloge de match commune (PkSnap.clk, clkSrv) ;
+                             19 = tirs a la tete et chaine de tirs pleine (EV_HIT.pad[0] = HF_*, f[4..6] = point sur la tete ;
+                                  EV_KILL.pad[0] ; NetPState.spare[1] = chaine de tirs) ; onde de l'Enclume du plan 1b
+                                  (EV_SLAM : hauteur du mur, cap et vitesse de l'ovale) */
 static int net_silent(double last) { return nowT - last > NET_TIMEOUT; }   /* plus de nouvelles (grace : last dans le futur) */
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
@@ -186,6 +189,7 @@ static void pack_state(NetPState *s) {
     s->weapon = (unsigned char)P.weapon;
     s->skin = (unsigned char)wantSkin;
     s->spare[0] = (unsigned char)my_spec();               /* specialisation (l'hote l'applique aux degats et aux soins) */
+    s->spare[1] = (unsigned char)(shotStreak < 255 ? shotStreak : 255);   /* chaine de tirs (l'hote verifie le one-shot) */
     float swingT = P.meleeKind == MK_ANVIL ? ANVIL_SWING_T : P.meleeKind == MK_LANCE ? 0.2f :   /* Lance : estoc */
                    P.meleeKind == MK_FLAIL ? FLAIL_ANIM : 0.25f;
     s->melee = (unsigned char)(clampf(P.meleeT / swingT, 0, 1) * 255);
@@ -233,7 +237,7 @@ static void net_queue(const NetEvent *ev) {
 }
 
 static void apply_event(const NetEvent *ev);
-static int host_handle(const NetEvent *ev);
+static int host_handle(NetEvent *ev);
 static const float *pcolor(int i);
 
 /* cree un evenement local : l'hote l'arbitre tout de suite, puis il part sur le reseau
@@ -320,9 +324,12 @@ static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed) {   /* Ev
     e.actor = (unsigned char)(shotStreak < STREAK_MAX ? shotStreak : STREAK_MAX);   /* teinte des traceurs */
     net_emit(&e);
 }
-static void net_fx_slam(V3 pos, float radius, float vy, int hits) {   /* onde de l'Enclume : purement visuelle */
+/* onde de l'Enclume : purement visuelle (les touches partent du frappeur, quand le front passe chaque cible).
+ * f[0..2] centre, f[3] rayon, f[4] hauteur du mur, f[5] cap de l'ovale (atan2 x, z), f[6] vitesse horizontale, actor = |vy| */
+static void net_fx_slam(V3 pos, float R, float hw, V3 dir, float vh, float vy) {
     NetEvent e = ev_new(EV_SLAM);
-    vf(e.f, pos); e.f[3] = radius; e.f[4] = vy; e.sub = (unsigned char)(hits < 255 ? hits : 255);
+    vf(e.f, pos); e.f[3] = R; e.f[4] = hw; e.f[5] = atan2f(dir.x, dir.z); e.f[6] = vh;
+    e.actor = (unsigned char)clampf(vy, 0, 255);
     net_emit(&e);
 }
 /* --- Scie : evenements ---------------------------------------------- */
@@ -390,11 +397,11 @@ static int shield_faces(int i, V3 dir, int blast) {
 }
 /* appele par toute arme juste avant l'EV_HIT : renvoie 1 si le coup est revendique comme bloque (EV_SHIELD CLAIM) ;
  * l'hote tranche (bloque, refuse, parfait). Prediction locale : etincelles et son */
-static int shield_intercept(int i, V3 dir, float dmg, V3 knock, int w, int blast, unsigned int netId) {
+static int shield_intercept(int i, V3 dir, float dmg, V3 knock, int w, int blast, unsigned int netId, int flags) {
     if (w == W_SELF || i == myId || !shield_faces(i, dir, blast)) return 0;
     NetEvent e = ev_new(EV_SHIELD);
     e.sub = blast == SHB_BLAST ? SHE_CLAIM_BLAST : SHE_CLAIM; e.target = (unsigned char)i; e.actor = (unsigned char)w;
-    e.netId = netId;
+    e.netId = netId; e.pad[0] = (unsigned char)flags;     /* chaine pleine : si l'hote refuse le blocage, elle compte */
     e.f[0] = dmg; vf(&e.f[1], dir); vf(&e.f[4], knock);
     shield_spark_fx(vsub(np_center(i), vmul(dir, 0.5f)), dir);
     play(S_SHIELD_BLOCK, 0.6f * atten(np_center(i)), frange(0.95f, 1.05f));
@@ -402,19 +409,31 @@ static int shield_intercept(int i, V3 dir, float dmg, V3 knock, int w, int blast
     net_emit(&e);
     return 1;
 }
-static int hit_player_ex(int i, float dmg, V3 knock, int w, V3 dir, int blast, unsigned int netId, float f4, float f5, float f6) {
-    if (shield_intercept(i, dir, dmg, knock, w, blast, netId)) return 0;
+/* flags : HF_* (tirs a la tete, jauge de precision) dans pad[0] ; l'hote les valide ou les retire */
+static int hit_emit(int i, float dmg, V3 knock, int w, V3 dir, int blast, unsigned int netId, float f4, float f5, float f6, int flags) {
+    if (shield_intercept(i, dir, dmg, knock, w, blast, netId, flags)) return 0;
     if (i != myId) dmg = skill_out(i, -1, dmg);           /* Competences : MARQUE, CHARGE */
-    if (i != myId && i < MAXP) dmg_number(np_center(i), fminf(dmg, PVP_HIT_CAP));
+    if (i != myId && i < MAXP) {                          /* tete : sans plafond ; one-shot (rail a la tete, chaine pleine) */
+        int one = (flags & HF_CHAIN) || ((flags & HF_HEAD) && head_oneshot(w));
+        dmg_number_k(np_center(i), one || (flags & HF_HEAD) ? dmg : fminf(dmg, PVP_HIT_CAP),
+                     one ? DN_ONESHOT : (flags & HF_HEAD) ? DN_HEAD : DN_NORMAL);
+    }
     flail_combo_check(i, w);                              /* Fleau : combo fleau -> rail (visuel) */
     NetEvent e = ev_new(EV_HIT);
-    e.target = (unsigned char)i; e.sub = (unsigned char)w; e.netId = netId;
+    e.target = (unsigned char)i; e.sub = (unsigned char)w; e.netId = netId; e.pad[0] = (unsigned char)flags;
     e.f[0] = dmg; vf(&e.f[1], knock); e.f[4] = f4; e.f[5] = f5; e.f[6] = f6;
     net_emit(&e);
     return 1;
 }
+static int hit_player_ex(int i, float dmg, V3 knock, int w, V3 dir, int blast, unsigned int netId, float f4, float f5, float f6) {
+    return hit_emit(i, dmg, knock, w, dir, blast, netId, f4, f5, f6, 0);
+}
 static int hit_player(int i, float dmg, V3 knock, int w, V3 dir) {
     return hit_player_ex(i, dmg, knock, w, dir, SHB_DIRECT, 0, 0, 0, 0);
+}
+static int hit_player_fl(int i, float dmg, V3 knock, int w, V3 dir, int flags, V3 at) {
+    if (!(flags & HF_HEAD)) at = v3(0, 0, 0);             /* f[4..6] : le point sur la tete, que l'hote verifie */
+    return hit_emit(i, dmg, knock, w, dir, SHB_DIRECT, 0, at.x, at.y, at.z, flags);
 }
 /* mon grappin s'accroche au porteur : son bouclier est arrache 1 s (le grappineur fait autorite sur son accroche) */
 static void shield_rip(int i) {
@@ -429,6 +448,7 @@ static void shield_rip(int i) {
 }
 /* --- fin Egide : evenements --- */
 
+enum { KF_JOIN = 1, KF_LEAVE = 2, KF_HEAD = 4, KF_ONESHOT = 8 };   /* KillFeed.info : arrivee / depart, ou drapeaux d'un kill */
 static void kfeed_add(int killer, int victim, int kind, int info) {
     memmove(&kfeed[1], &kfeed[0], sizeof kfeed - sizeof kfeed[0]);
     kfeed[0].killer = killer; kfeed[0].victim = victim; kfeed[0].kind = kind; kfeed[0].info = info; kfeed[0].t = 6;
@@ -761,6 +781,10 @@ static void apply_event(const NetEvent *ev) {
             P.hurtFlash = 0.6f; shake += 0.25f;
             play(S_HURT, 0.8f, frange(0.9f, 1.1f));
             if (ev->from != myId && ev->from < MAXP) { hurtFrom = np_center(ev->from); hurtDirT = 1.2f; }
+            if ((ev->pad[0] & HF_HEAD) && ev->from != myId) {   /* touche a la tete (validee par l'hote) */
+                play(S_HEADSHOT, 0.5f, 0.85f); shake += 0.2f;
+                snprintf(popText, sizeof popText, "TETE !"); popT = 0.8f;
+            }
             if (ev->sub == W_TESLA && ev->from < MAXP) NP[ev->from].teslaHitMeT = nowT;   /* Tesla : verrou visuel */
             {                                             /* Scie : ma scie paree m'a touche, je la rattrape d'office */
                 Proj *s = saw_mine();
@@ -768,6 +792,7 @@ static void apply_event(const NetEvent *ev) {
             }
         } else if (t < MAXP && NP[t].active) {
             burst(np_center(t), v3(1, 0.35f, 0.3f), 14, 6, 0.3f, 0.1f);
+            if (ev->pad[0] & HF_HEAD) burst(np_head(t), v3(1, 0.85f, 0.3f), 16, 7, 0.35f, 0.08f);   /* tete : eclat dore */
             NP[t].flashT = 0.12f;
         }
         if (ev->sub == W_FLAIL && ev->from < MAXP && t < MAXP) {   /* --- Fleau : la chaine tendue, la victime est tiree --- */
@@ -835,11 +860,8 @@ static void apply_event(const NetEvent *ev) {
         break;
     }
     case EV_SLAM: {                                       /* onde de choc d'un autre joueur : effets seulement */
-        float R = ev->f[3], vy = ev->f[4];
-        for (int k = 0; k < 36; k++) {
-            float ang = k * (2 * PI / 36);
-            add_part(vadd(a, v3(0, 0.15f, 0)), v3(cosf(ang) * R * 2.2f, 0.6f, sinf(ang) * R * 2.2f), v3(1, 0.7f, 0.35f), 0.4f, 0.22f, 0);
-        }
+        float R = ev->f[3], vy = ev->actor;
+        slam_vis_add(a, v3(sinf(ev->f[5]), 0, cosf(ev->f[5])), R, ev->f[6], ev->f[4]);   /* mur qui s'etend */
         burst(a, v3(0.75f, 0.72f, 0.7f), 30, 6, 0.6f, 0.2f);
         shards(a, v3(0.55f, 0.52f, 0.5f), 6 + (int)(vy / 5), 9);
         play(S_ANVIL_SLAM, clampf(vy / 40, 0.5f, 1) * atten(a), 1.1f - vy * 0.005f);
@@ -847,9 +869,9 @@ static void apply_event(const NetEvent *ev) {
         break;
     }
     case EV_KILL: {
-        int k = ev->actor, v = ev->target;
+        int k = ev->actor, v = ev->target, kf = ev->pad[0];   /* kf : HF_HEAD, HF_CHAIN, HF_ONESHOT (decides par l'hote) */
         if (v >= MAXP) break;
-        kfeed_add(k, v, ev->sub, 0);
+        kfeed_add(k, v, ev->sub, ((kf & HF_HEAD) ? KF_HEAD : 0) | ((kf & HF_ONESHOT) ? KF_ONESHOT : 0));
         maps_heat_add(k, v);                              /* avant que la victime ne disparaisse */
         V3 at = v == myId ? pcenter() : np_center(v);
         const float *vc0 = pcolor(v);                     /* le corps eclate dans la couleur de son equipe */
@@ -875,10 +897,13 @@ static void apply_event(const NetEvent *ev) {
             combo++; comboT = 3; hitMarker = 0.25f;
             style_kill(ev->sub);
             eco_gain(ECO_KILL, "KILL");
-            snprintf(popText, sizeof popText, "ELIMINE %s", pname(v));
+            snprintf(popText, sizeof popText, "%s%s", (kf & HF_ONESHOT) ? "ONE-SHOT ! " : (kf & HF_HEAD) ? "TETE ! " : "ELIMINE ", pname(v));
             popT = 1.5f;
+            if (kf & (HF_HEAD | HF_ONESHOT)) { play(S_HEADSHOT, 0.8f, 0.75f); impact_frame(at, 0.1f); }
         }
-        netlog("kill : %s -> %s (arme %d)", pname(k), pname(v), ev->sub);
+        if (v == myId) kcOneShot = kf;                    /* camera de mort : "ONE-SHOT" / "TETE" */
+        netlog("kill : %s -> %s (arme %d)%s%s", pname(k), pname(v), ev->sub, (kf & HF_HEAD) ? " a la tete" : "",
+               (kf & HF_ONESHOT) ? ((kf & HF_CHAIN) ? ", one-shot (chaine pleine)" : ", one-shot") : "");
         break;
     }
     case EV_RESPAWN: {

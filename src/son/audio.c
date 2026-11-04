@@ -20,6 +20,7 @@ enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_FLAIL_SWING, S_FLAIL_HIT, S_FLAIL_COIN,          /* Fleau */
        S_FIST_HIT, S_FIST_UPPER, S_FIST_PJ,               /* Poings */
        S_SHIELD_UP, S_SHIELD_BLOCK, S_SHIELD_BREAK, S_SHIELD_BASH,   /* Egide */
+       S_HEADSHOT, S_CHAIN_FULL,                          /* tir a la tete, chaine de tirs pleine */
        S_COUNT };
 typedef struct { short *data; int len; } Sound;
 /* loop : voix en boucle (Tesla), jamais volee par play ; fade : baisse de volume par echantillon (arret sans clic) */
@@ -597,6 +598,22 @@ static void make_sounds(void) {
     }
     sounds[S_SHIELD_BASH] = mksound(b, n);
     /* --- fin Egide --- */
+    /* tir a la tete : tintement metallique aigu (2,6 et 3,9 kHz) sur un claquement, plus long que le hitmarker */
+    b = sbuf(0.3f, &n);
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        b[i] = (sinf(t * 2 * PI * 2600) + 0.55f * sinf(t * 2 * PI * 3900) + 0.25f * sinf(t * 2 * PI * 5200)) * 0.3f * expf(-t * 13) +
+               noise() * 0.35f * expf(-t * 120);
+    }
+    sounds[S_HEADSHOT] = mksound(b, n);
+    /* chaine de tirs pleine : deux notes montantes (quinte), son de verrou */
+    b = sbuf(0.35f, &n);
+    for (int i = 0; i < n; i++) {
+        t = (float)i / SR;
+        float f = t < 0.09f ? 1320.0f : 1980.0f, ta = t < 0.09f ? t : t - 0.09f;
+        b[i] = (sinf(t * 2 * PI * f) + 0.35f * sinf(t * 4 * PI * f)) * 0.22f * expf(-ta * 10) * fminf(1, ta * 400);
+    }
+    sounds[S_CHAIN_FULL] = mksound(b, n);
 }
 
 static void audio_init(void) {

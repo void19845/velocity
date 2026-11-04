@@ -126,6 +126,9 @@ static void vf(float *f, V3 v) { f[0] = v.x; f[1] = v.y; f[2] = v.z; }
 static float np_height(int i) { return (NP[i].st.flags & NF_CROUCH) ? H_CROUCH : H_STAND; }
 static V3 np_center(int i) { return v3(NP[i].disp.x, NP[i].disp.y + np_height(i) * 0.5f, NP[i].disp.z); }
 static V3 np_vel(int i) { return fv(NP[i].st.vel); }
+static V3 np_head(int i) {                                /* centre de la sphere de tete (tirs a la tete) */
+    return v3(NP[i].disp.x, NP[i].disp.y + np_height(i) - HEAD_DROP, NP[i].disp.z);
+}
 static void np_aabb(int i, float grow, V3 *mn, V3 *mx) {
     V3 d = NP[i].disp;
     *mn = v3(d.x - HW - grow, d.y - grow, d.z - HW - grow);
@@ -198,12 +201,16 @@ static const char *botLevelNames[3] = { "FACILE", "NORMAL", "DIFFICILE" };
 static const float botAimMul[3]  = { 6.5f, 1.3f, 0.45f };   /* imprecision de visee */
 static const float botReactT[3]  = { 1.1f, 0.32f, 0.14f };  /* delai avant de tirer apres avoir vu la cible */
 static const float botHitP[3]    = { 0.18f, 0.38f, 0.60f };  /* chance qu'un tir soit cadre (sinon il frole la cible) */
+static const float botHeadP[3]   = { 0.03f, 0.12f, 0.25f };  /* tir cadre : chance de viser la tete (comme un humain) */
 static int botAimTest;                                    /* run_tests : ancienne visee sinusoidale, deterministe */
 /* tirage d'un tir du bot : decalage lateral (m) au niveau de la cible. Cadre : moins de 0,2 m du centre ; rate : il
  * frole la cible (0,55 a 1,2 m sur le cote, un peu plus de loin) au lieu de partir n'importe ou. Renvoie 1 si cadre */
 static int bot_roll_aim(float dist, float *offX, float *offY) {
     float p = botHitP[botLevel] * clampf(1.15f - dist / 80, 0.5f, 1);
-    if (frand() < p) { *offX = frange(-0.2f, 0.2f); *offY = frange(-0.25f, 0.25f); return 1; }
+    if (frand() < p) {
+        if (frand() < botHeadP[botLevel]) { *offX = frange(-0.1f, 0.1f); *offY = HEAD_BOT_OFS + frange(-0.1f, 0.1f); return 1; }
+        *offX = frange(-0.2f, 0.2f); *offY = frange(-0.25f, 0.25f); return 1;
+    }
     float side = frand() < 0.5f ? -1.0f : 1.0f;
     *offX = side * (frange(0.55f, 1.2f) + dist * 0.008f);
     *offY = frange(-0.35f, 0.35f);
@@ -219,7 +226,7 @@ static void net_fx_rocket_end(unsigned int netId, V3 pos);
 static void net_fx_parry(unsigned int netId, V3 pos, V3 vel, float mult, int parries);
 static void net_fx_melee(V3 pos, V3 dir, float sp);
 static void net_fx_fist(V3 pos, V3 dir, float x, int sub);   /* Poings : EV_MELEE, sub = coup (1..3) | 0x10 punch-jump */
-static void net_fx_slam(V3 pos, float radius, float vy, int hits);
+static void net_fx_slam(V3 pos, float R, float hw, V3 dir, float vh, float vy);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
 static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed);
 /* Scie : definies apres les roquettes */
@@ -245,6 +252,9 @@ static void net_hit_id(int target, float dmg, V3 knock, int weapon, unsigned int
  * champs propres a l'arme (Scie : renvois ; Lance : vitesse, v_c, couchee ; Ventouse : netId de la mine) */
 static int hit_player(int i, float dmg, V3 knock, int w, V3 dir);
 static int hit_player_ex(int i, float dmg, V3 knock, int w, V3 dir, int blast, unsigned int netId, float f4, float f5, float f6);
+/* Tirs a la tete et chaine de tirs pleine : comme hit_player, avec les drapeaux HF_* (pad[0] de l'EV_HIT) ; tete : f[4..6] = point
+ * d'impact sur la tete, que l'hote verifie */
+static int hit_player_fl(int i, float dmg, V3 knock, int w, V3 dir, int flags, V3 at);
 static int shield_faces(int i, V3 dir, int blast);        /* le joueur i bloquerait-il ce coup ? (sans effet) */
 static void shield_rip(int i);                            /* mon grappin arrache le bouclier de i */
 /* --- fin Egide --- */

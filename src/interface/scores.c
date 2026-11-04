@@ -97,13 +97,15 @@ static void draw_killfeed(void) {
     for (int k = 0; k < 6; k++) {
         KillFeed *f = &kfeed[k];
         if (f->t <= 0) continue;
-        if (f->info) snprintf(buf, sizeof buf, "%s %s", pname(f->victim), f->info == 1 ? "a rejoint" : "a quitte");
+        int joinLeave = f->info & (KF_JOIN | KF_LEAVE);
+        if (joinLeave) snprintf(buf, sizeof buf, "%s %s", pname(f->victim), f->info == KF_JOIN ? "a rejoint" : "a quitte");
         else if (f->killer == f->victim && f->kind == W_VOID) snprintf(buf, sizeof buf, "%s est tombe dans le vide", pname(f->victim));
         else if (f->killer == f->victim) snprintf(buf, sizeof buf, "%s s'est fait sauter", pname(f->victim));
-        else snprintf(buf, sizeof buf, "%s  [%s]  %s", pname(f->killer), weaponNames[f->kind % W_COUNT], pname(f->victim));
+        else snprintf(buf, sizeof buf, "%s  [%s%s]  %s", pname(f->killer), weaponNames[f->kind % W_COUNT],
+                      (f->info & KF_ONESHOT) ? " ONE-SHOT" : (f->info & KF_HEAD) ? " TETE" : "", pname(f->victim));
         int mine = f->killer == myId || f->victim == myId;
         float r = 1, g = mine ? 0.85f : 1, b = mine ? 0.4f : 1;
-        if (teamSize > 0 && !f->info && f->killer >= 0 && f->killer < MAXP && !mine) {   /* equipes : couleur du tueur */
+        if (teamSize > 0 && !joinLeave && f->killer >= 0 && f->killer < MAXP && !mine) {   /* equipes : couleur du tueur */
             const float *c = teamCol[NP[f->killer].team & 1];
             r = 0.55f + 0.45f * c[0]; g = 0.55f + 0.45f * c[1]; b = 0.55f + 0.45f * c[2];
         }
