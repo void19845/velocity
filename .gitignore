@@ -26,3 +26,4 @@ Velocity-macOS.zip
 Velocity-Windows.zip
 build/
 velocity
+*.res

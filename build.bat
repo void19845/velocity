@@ -11,4 +11,8 @@ call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>nul
 rem VELOCITY_BUILD : numero de build donne par la CI de release (bouton MISE A JOUR) ; absent = build 0 (dev)
 set "VBUILD="
 if defined VELOCITY_BUILD set "VBUILD=/DVELOCITY_BUILD=%VELOCITY_BUILD%"
-cl /nologo /O2 /W3 /std:c11 %VBUILD% /Fe:velocity.exe main.c /link /SUBSYSTEM:WINDOWS
+rem velocity.res : manifeste + infos de version (un exe avec metadonnees est moins souvent un faux positif de Defender)
+set "RCB="
+if defined VELOCITY_BUILD set "RCB=/dVELOCITY_BUILD=%VELOCITY_BUILD%"
+rc /nologo %RCB% /fo velocity.res velocity.rc
+cl /nologo /O2 /W3 /std:c11 %VBUILD% /Fe:velocity.exe main.c /link /SUBSYSTEM:WINDOWS velocity.res

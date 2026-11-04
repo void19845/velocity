@@ -1,0 +1,28 @@
+#include <winver.h>
+#ifndef VELOCITY_BUILD
+#define VELOCITY_BUILD 0
+#endif
+1 24 "velocity.manifest"
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,VELOCITY_BUILD
+ PRODUCTVERSION 1,0,0,VELOCITY_BUILD
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Velocity"
+      VALUE "FileDescription", "VELOCITY - movement shooter 3D"
+      VALUE "InternalName", "velocity"
+      VALUE "OriginalFilename", "velocity.exe"
+      VALUE "ProductName", "VELOCITY"
+      VALUE "LegalCopyright", "Velocity"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END
