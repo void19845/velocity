@@ -332,6 +332,7 @@ static void render(float alpha, float frameDt) {
     draw_map_fx();                                        /* bandes d'acceleration, plan de mort */
     draw_race_world();                                    /* course : portes et fantome */
     draw_modes_world();                                   /* modes : zones, drapeaux, bouclier, salles de depart */
+    vg_draw_world_fx();                                   /* VAGUES : rayons, ondes, liens, objets de la boutique */
     draw_slam_marker();
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);

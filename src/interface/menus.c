@@ -534,7 +534,7 @@ static void draw_main_menu(float cx, float cy) {
     draw_map_row(bx, y, bw);                              /* carte : solo (cartes solo seulement), duel, heberger */
     y += 54;
     char soloLbl[48];
-    snprintf(soloLbl, sizeof soloLbl, maps[menuMap].solo ? "SOLO - VAGUES" : "SOLO (%s)", maps[0].name);
+    snprintf(soloLbl, sizeof soloLbl, maps[menuMap].solo ? "VAGUES" : "VAGUES (%s)", maps[0].name);
     if (button(bx, y, bw * 0.62f - 4, 52, soloLbl)) pendingAction = ACT_SOLO;
     if (button(bx + bw * 0.62f + 4, y, bw * 0.38f - 4, 52, "CHALLENGE")) pendingAction = ACT_RACE;   /* course au grappin (LA TOILE) */
     y += 52 + 24;                                         /* le libelle sous le bouton, sans toucher son liseret */

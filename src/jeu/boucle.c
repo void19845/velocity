@@ -81,13 +81,14 @@ static void saw_dry(int press) {
 }
 
 static void game_tick(float dt) {
+    vg_clock(dt);                                         /* VAGUES : temps de la partie (hitstop compris) */
     /* hitstop : le monde se fige un instant sur les gros coups (les entrees attendent) ; jamais en ligne, ou le
        reste de la partie continue : seuls l'impact frame et les effets restent */
     if (hitstop > 0) { hitstop -= dt; if (!dmMode) { P.prevPos = P.pos; return; } }
     if (spectating) { spec_tick(dt); return; }
 
     int rp = latch[SC_R];                                 /* R : recommencer (solo), non reaffectable */
-    if (raceOn && rp) { latch[SC_R] = 0; race_start(); return; }   /* course : R repart du depart */
+    if (raceOn && rp && !vagOn) { latch[SC_R] = 0; race_start(); return; }   /* course : R repart du depart */
     input_poll();
     int jp = actP[A_JUMP], dp = actP[A_DASH];
     int w1 = actP[A_WEAP1], w2 = actP[A_WEAP2];
@@ -122,6 +123,7 @@ static void game_tick(float dt) {
         weapon_select(nw);
     }
 
+    vgSrc = UP_MELEE(P.meleeKind);                        /* VAGUES : chemin de la boutique des touches qui suivent */
     player_tick(dt, jp, dp);
     race_tick(dt);                                        /* course : decompte, portes, chrono */
     style_tick(dt);
@@ -136,7 +138,9 @@ static void game_tick(float dt) {
     }
     void_check();                                         /* kill zone : sous killY = mort */
 
+    vgSrc = P.weapon;                                     /* ALL IN ONE tire l'arme en main */
     skill_tick(dt, coinPress, act[A_SKILL]);              /* Competences (la piece en est une) */
+    vgSrc = UP_MELEE(P.meleeKind);
     coin_tick(dt);
 
     P.meleeCd -= dt; P.meleeT -= dt;
@@ -180,19 +184,22 @@ static void game_tick(float dt) {
     P.recoil *= expf(-dt * 9);
     int shieldUp = P.shieldState == SHS_UP;              /* Egide : bouclier leve = pas de tir (pieces et detonation permises) */
     if (!P.dead && !shieldUp && P.weapon != WP_TESLA && !tesla_stunned() && (act[A_FIRE] || lmbp) && P.fireCd <= 0 && P.switchT <= 0) {
-        if (wp_has_ammo(P.weapon)) fire_weapon();
+        if (wp_has_ammo(P.weapon)) { vgSrc = P.weapon; fire_weapon(); vg_on_fire(P.weapon); }
         else if (P.weapon == WP_SAW) saw_dry(lmbp);
         else dry_fire();
     }
+    vgSrc = WP_TESLA;
     tesla_tick(dt, !P.dead && !shieldUp && P.weapon == WP_TESLA && (act[A_FIRE] || lmbp) && P.switchT <= 0);   /* Tesla : tir maintenu */
+    vgSrc = WP_MINE;
     if (!P.dead && (actP[A_DETONATE_ALL] || actP[A_DETONATE_ONE])) mine_remote(actP[A_DETONATE_ALL]);   /* Ventouse : quelle que soit l'arme */
+    vgSrc = -1;
     if (!P.dead && !wp_has_ammo(P.loadout[0]) && !wp_has_ammo(P.loadout[1])) dryT += dt;
     ammoGainT -= dt; dryHintT -= dt;
 
     if (!dmMode && !raceOn) enemy_tick(dt);
     proj_tick(dt);
     pickup_tick(dt);
-    if (!dmMode && !raceOn) wave_tick(dt);
+    if (!dmMode && (!raceOn || vagOn)) wave_tick(dt);     /* VAGUES : aussi pendant le challenge COURSE */
     if (matchOver) matchEndT -= dt;
     if (netMode == NET_HOST) host_tick(dt);
     fx_tick(dt);

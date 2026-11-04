@@ -17,8 +17,11 @@ static void set_frustum(float vfovDeg, float aspect, float zn, float zf) {
 }
 
 
+static void vg_draw_enemy(Enemy *e);                      /* src/rendu/vagues_rendu.c : types du mode VAGUES et boss */
 static void draw_enemy(Enemy *e) {
+    if (e->type >= EN_SNIPER) { vg_draw_enemy(e); return; }
     V3 col = e->flash > 0 ? v3(1, 1, 1) : enemy_color(e->type);
+    if (e->frozenT > 0) col = vlerp(col, v3(0.6f, 0.9f, 1), 0.7f);   /* GEL (boutique) */
     glPushMatrix();
     glTranslatef(e->pos.x, e->pos.y, e->pos.z);
     if (e->type == EN_DRONE) {

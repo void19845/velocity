@@ -6,6 +6,11 @@ static void proj_tick(float dt) {
         Proj *p = &PR[i];
         if (!p->alive) continue;
         if (p->kind != PR_SAW && p->pos.y < maps[curMap].killY - 2) { p->alive = 0; continue; }   /* tombe dans le vide */
+        if (vagOn) {                                      /* VAGUES : a quel chemin de la boutique reviennent ses touches */
+            vgProjKind = p->kind;
+            vgSrc = p->kind == PR_ROCKET ? WP_ROCKET : p->kind == PR_SAW ? WP_SAW : p->kind == PR_MINE ? WP_MINE :
+                    p->kind == PR_PARRIED ? (p->mineState ? WP_MINE : WP_COUNT + P.meleeKind) : -1;
+        }
         if (p->kind == PR_SAW) { saw_tick(p, dt); continue; }   /* Scie : sa propre machine a etats */
         if (p->kind == PR_MINE) { mine_tick(p, dt); continue; } /* Ventouse */
         p->life -= dt;
@@ -46,7 +51,11 @@ static void proj_tick(float dt) {
                 if (!mine) { explode_fx(c); continue; }
                 if (dmMode) net_fx_rocket_end(p->netId, c);
                 /* contre un joueur, l'impact direct passe par le souffle (une seule touche, plafonnee) */
-                if (p->kind == PR_PARRIED && p->orb) {
+                if (p->kind == PR_PARRIED && p->orb && p->big) {   /* VAGUES : grosse orbe renvoyee */
+                    if (hitEnemy >= 0 && EN_BOSS(E[hitEnemy].type)) vg_boss_stun(hitEnemy, VG_BIG_ORB_RETURN);
+                    else if (hitEnemy >= 0) damage_enemy(hitEnemy, VG_BIG_ORB_RETURN, vmul(dir, 10));
+                    explode(c, 5.0f, 120, 2);
+                } else if (p->kind == PR_PARRIED && p->orb) {
                     if (hitEnemy >= 0) damage_enemy(hitEnemy, PARRY_DMG, vmul(dir, 10));
                     explode(c, 3.0f, 80, 2);
                 } else if (p->kind == PR_PARRIED && p->mineState) {   /* --- Ventouse : mine renvoyee (souffle de mine) --- */
@@ -75,20 +84,29 @@ static void proj_tick(float dt) {
             V3 q = vadd(p->pos, step);
             if (!P.dead && q.x > mn.x - 0.25f && q.x < mx.x + 0.25f && q.y > mn.y - 0.25f && q.y < mx.y + 0.25f &&
                 q.z > mn.z - 0.25f && q.z < mx.z + 0.25f) {
+                float od = p->big ? VG_BIG_ORB_DMG : VG_ORB_DMG;   /* degats fixes, a toutes les vagues */
                 if (shield_local_faces(dir)) {            /* Egide : l'orbe s'ecrase sur le bouclier */
-                    shield_absorb_local(12, dir);
+                    shield_absorb_local(od, dir);
                     burst(q, v3(1, 0.3f, 0.9f), 20, 5, 0.4f, 0.12f);
                     p->alive = 0;
                     continue;
                 }
-                damage_player(12);
-                P.vel = vadd(P.vel, vmul(dir, 3));
-                burst(q, v3(1, 0.3f, 0.9f), 20, 5, 0.4f, 0.12f);
+                damage_player(od);
+                P.vel = vadd(P.vel, vmul(dir, p->big ? 12.0f : 3.0f));
+                burst(q, v3(1, 0.3f, 0.9f), p->big ? 60 : 20, p->big ? 12.0f : 5.0f, 0.4f, 0.12f);
+                if (p->big) fx_explosion(q, 4);
                 p->alive = 0;
                 continue;
             }
             if (t < len || p->life <= 0) {
-                burst(vadd(p->pos, vmul(dir, t)), v3(1, 0.3f, 0.9f), 14, 4, 0.4f, 0.1f);
+                V3 at = vadd(p->pos, vmul(dir, t));
+                burst(at, v3(1, 0.3f, 0.9f), p->big ? 60 : 14, p->big ? 10.0f : 4.0f, 0.4f, 0.1f);
+                if (p->big) {                             /* grosse orbe : souffle a l'impact (degats fixes) */
+                    fx_explosion(at, 4);
+                    play(S_EXPLO, 0.8f * atten(at), 0.8f);
+                    float d = vlen(vsub(pcenter(), at));
+                    if (d < 4.5f && !P.dead) { damage_player(VG_BIG_ORB_DMG * 0.5f); P.vel = vadd(P.vel, vmul(vnorm(vsub(pcenter(), at)), 10)); }
+                }
                 p->alive = 0;
                 continue;
             }
@@ -96,4 +114,5 @@ static void proj_tick(float dt) {
         }
         p->pos = vadd(p->pos, step);
     }
+    vgProjKind = -1; vgSrc = -1;
 }
