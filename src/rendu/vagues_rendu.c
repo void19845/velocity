@@ -204,11 +204,15 @@ static void vg_draw_world_fx(void) {
     for (int i = 0; i < MAXE; i++) {
         Enemy *e = &E[i];
         if (!e->alive) continue;
-        if (e->type == EN_SNIPER && e->st == 1) {         /* SENTINELLE : rayon de visee qui s'intensifie */
+        if (e->type == EN_SNIPER && e->st == 1) {         /* SENTINELLE : rayon de visee qui s'intensifie ; laser (phase 1) : rouge, plus epais, blanc une fois fige */
             float k = clampf(1 - e->stT / 1.4f, 0, 1), len = ray_world(e->pos, e->aim, 120, 0);
-            glLineWidth(1 + 3 * k);
+            int las = e->phase == 1;
+            glLineWidth(1 + (las ? 5 : 3) * k);
             glBegin(GL_LINES);
-            glColor4f(0.4f, 1, 0.5f, 0.25f + 0.6f * k); vg_line(e->pos, vadd(e->pos, vmul(e->aim, len)));
+            if (las && e->stT <= 0.35f) glColor4f(1, 0.92f, 0.92f, 0.95f);
+            else if (las) glColor4f(1, 0.35f, 0.4f, 0.25f + 0.6f * k);
+            else glColor4f(0.4f, 1, 0.5f, 0.25f + 0.6f * k);
+            vg_line(e->pos, vadd(e->pos, vmul(e->aim, len)));
             glEnd();
         }
         if ((e->type == EN_PYRA || e->type == EN_HEXA) && e->st == BS_AIM) {   /* charge annoncee : ligne rouge */

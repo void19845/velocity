@@ -1,11 +1,72 @@
 /* VELOCITY - deplacement et impact des projectiles
    Morceau de main.c : inclus dans l'ordre, ne se compile pas seul (voir main.c). */
 
+/* ROQUETTE x PIECE (comme Ultrakill) : une roquette qui touche une piece est redirigee vers l'ennemi (ou le joueur) le plus proche,
+ * comme le ricochet du rail (coin_seek : leurre adverse d'abord, 90 m), et le suit jusqu'a l'explosion ; x1,5 par piece (x1 si elle
+ * est a un adversaire), COIN_ROCKET_CHAIN pieces au plus par roquette. Sans cible, la roquette garde son cap. */
+static int rocketCoin;                                    /* journal : roquettes redirigees par une piece */
+static void rocket_coin(Proj *p, int ci) {
+    Coin *c = &CO[ci];
+    V3 o = c->pos;
+    int stolen = c->owner != myId;
+    c->alive = 0;
+    if (dmMode) net_fx_coin(1, c->netId, o, v3(0, 0, 0));
+    for (int k = 0; k < 20; k++) add_part(o, vmul(rand_dir(), 6), v3(1, 0.85f, 0.3f), 0.35f, 0.1f, 0);
+    play(S_PARRY, 0.55f, 1.5f + 0.15f * p->coinHits);
+    hitstop = fmaxf(hitstop, 0.03f);
+    if (stolen && !same_team(c->owner, myId) && COIN_VS_RIC && p->ricLeft > 0 && !P.dead) {   /* PIECE => RICOCHET : la roquette en rebond (fenetre RICOCHET) revient sur son tireur */
+        p->coinHits++; coinBacks++;
+        p->seekKind = 4; p->ricLeft = 0;
+        p->pos = o; p->vel = vmul(vnorm(vsub(pcenter(), o)), COIN_ROCKET_SPEED);
+        p->life = fmaxf(p->life, 4.0f);
+        add_beam(o, pcenter(), v3(1, 0.85f, 0.3f), 0.5f);
+        if (dmMode && p->netId) net_fx_parry(p->netId, p->pos, p->vel, p->mult, 0);
+        snprintf(popText, sizeof popText, "PIECE ADVERSE : RENVOYE !"); popT = 1.0f;
+        if (botMode) netlog("piece contre ricochet : la roquette revient sur son tireur");
+        return;
+    }
+    p->coinHits++; rocketCoin++;
+    p->mult *= stolen ? 1.0f : COIN_MULT;
+    int te, tp, dc;
+    if (coin_seek(o, &te, &tp, &dc)) {
+        V3 at = te >= 0 ? E[te].pos : tp >= 0 ? np_center(tp) : CO[dc].pos;
+        p->seekKind = te >= 0 ? 1 : tp >= 0 ? 2 : 3; p->seekIdx = te >= 0 ? te : tp >= 0 ? tp : dc;
+        p->pos = o; p->vel = vmul(vnorm(vsub(at, o)), COIN_ROCKET_SPEED);
+        p->life = fmaxf(p->life, 4.0f);
+        add_beam(o, at, v3(1, 0.85f, 0.3f), 0.5f);
+        if (dmMode && p->netId) net_fx_parry(p->netId, p->pos, p->vel, p->mult, 0);   /* la copie des autres suit le nouveau cap */
+    }
+    if (stolen) snprintf(popText, sizeof popText, "PIECE VOLEE !");
+    else snprintf(popText, sizeof popText, p->coinHits > 1 ? "ROQUETTE x%d" : "ROQUETTE RICOCHET", p->coinHits);
+    popT = 1.0f;
+    if (botMode) netlog("roquette x piece : %s, %d piece(s), x%.2f", p->seekKind ? "redirigee" : "sans cible", p->coinHits, p->mult);
+}
+
 static void proj_tick(float dt) {
     for (int i = 0; i < MAXPR; i++) {
         Proj *p = &PR[i];
         if (!p->alive) continue;
         if (p->kind != PR_SAW && p->pos.y < maps[curMap].killY - 2) { p->alive = 0; continue; }   /* tombe dans le vide */
+        if (p->seekKind && p->kind == PR_ROCKET) {        /* redirigee par une piece : elle suit sa cible (aucune ne l'esquive) */
+            V3 tg = p->pos;
+            int ok = 0;
+            if (p->seekKind == 1 && E[p->seekIdx].alive) { tg = E[p->seekIdx].pos; ok = 1; }
+            else if (p->seekKind == 2 && np_target(p->seekIdx)) { tg = np_center(p->seekIdx); ok = 1; }
+            else if (p->seekKind == 3 && CO[p->seekIdx].alive && CO[p->seekIdx].decoy) {   /* leurre : elle s'y ecrase */
+                tg = CO[p->seekIdx].pos; ok = 1;
+                if (vlen(vsub(tg, p->pos)) < 1.3f) { decoy_absorb(p->seekIdx, "roquette"); p->life = 0; ok = 0; }
+            } else if (p->seekKind == 4 && !P.dead) {     /* PIECE => RICOCHET : elle revient sur son tireur, explose sur lui comme une roquette adverse */
+                tg = pcenter(); ok = 1;
+                if (vlen(vsub(tg, p->pos)) < 1.3f) {
+                    p->alive = 0;
+                    if (dmMode && p->netId) net_fx_rocket_end(p->netId, p->pos);
+                    explode(p->pos, ROCKET_RADIUS, ROCKET_DMG * p->mult, 0);   /* byPlayer 0 : 30 x f sur moi, rien sur les autres */
+                    continue;
+                }
+            }
+            if (ok) p->vel = vmul(vnorm(vsub(tg, p->pos)), COIN_ROCKET_SPEED);
+            else p->seekKind = 0;
+        }
         if (vagOn) {                                      /* VAGUES : a quel chemin de la boutique reviennent ses touches */
             vgProjKind = p->kind;
             vgSrc = p->kind == PR_ROCKET ? WP_ROCKET : p->kind == PR_SAW ? WP_SAW : p->kind == PR_MINE ? WP_MINE :
@@ -35,11 +96,19 @@ static void proj_tick(float dt) {
                 } else np_aabb(j, 0.2f, &mn, &mx);
                 if (ray_box(p->pos, dir, mn, mx, t, &te, NULL) && te < t) { t = te; hitPlayer = j; }
             }
+            if (p->kind == PR_ROCKET && mine && p->coinHits < COIN_ROCKET_CHAIN) {   /* ROQUETTE x PIECE : la piece la plus proche sur le trajet */
+                int hitCoin = -1;
+                for (int j = 0; j < MAXCOIN; j++) {
+                    float tc;
+                    if (CO[j].alive && !CO[j].decoy && ray_sphere(p->pos, dir, CO[j].pos, COIN_RADIUS, t, &tc)) { t = tc; hitCoin = j; }
+                }
+                if (hitCoin >= 0) { rocket_coin(p, hitCoin); continue; }
+            }
             if (p->ricLeft > 0 && p->kind == PR_ROCKET && t < len && hitEnemy < 0 && hitPlayer < 0 && p->life > 0) {
                 V3 at = vadd(p->pos, vmul(dir, t));       /* RICOCHET : le decor renvoie la roquette */
                 p->vel = vmul(vsub(p->vel, vmul(n, 2 * vdot(p->vel, n))), RIC_ROCKET_SLOW);
                 p->pos = vadd(at, vmul(n, 0.05f));
-                p->ricLeft--;
+                p->ricLeft--; p->seekKind = 0;            /* (une roquette qui suivait une cible la perd : le mur est passe avant) */
                 burst(at, v3(0.4f, 1, 0.7f), 14, 5, 0.3f, 0.09f);
                 play(S_LAND, 0.5f * atten(at), 1.6f);
                 if (mine) ricStat[1]++;
@@ -65,7 +134,7 @@ static void proj_tick(float dt) {
                     if (hitEnemy >= 0) damage_enemy(hitEnemy, 40 * p->mult, vmul(dir, 10));
                     explode(c, ROCKET_RADIUS, ROCKET_DMG * p->mult, 2);
                 } else {
-                    float mult = streak_mult();
+                    float mult = streak_mult() * p->mult;   /* p->mult : x1,5 par piece traversee (ROQUETTE x PIECE) */
                     int hits = hitEnemy >= 0 || hitPlayer >= 0;
                     if (hitEnemy >= 0) damage_enemy(hitEnemy, 40 * mult, vmul(dir, 6));
                     hits += explode(c, ROCKET_RADIUS, ROCKET_DMG * mult, 1);

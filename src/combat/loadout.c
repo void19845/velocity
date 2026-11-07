@@ -86,11 +86,11 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     P.loadout[0] = wantLoadout[0]; P.loadout[1] = wantLoadout[1]; P.meleeKind = wantMelee;
     eco_loadout(P.loadout);                               /* boutique : les armes achetees (une seule au debut) */
     if (wantSkill < 0 || wantSkill >= SK_COUNT) wantSkill = SK_COIN;
-    P.skill = wantSkill; P.ricArmed = 0; P.chargeT = P.chargeHold = 0; P.aimT = 0;
+    P.skill = wantSkill; P.ricArmed = 0; P.ricT = 0; P.chargeT = P.chargeHold = 0; P.aimT = 0; P.pushT = 0;
     for (int w = 0; w < WP_COUNT; w++) { P.ammo[w] = ecoAmmoBoost ? ammoDef[w].max : ammoDef[w].start; P.ammoGauge[w] = 0; }   /* MUNITIONS + */
     P.weapon = P.loadout[0]; P.switchT = 0; P.undoPts[0] = P.undoPts[1] = 0;
     P.kinT = 0; P.kinDashT = 1; P.kinPreDash = 0;          /* Elan : ni fenetre de dash-tir ni malus */
-    P.sgPumpT = P.sgPumpMax = 0; P.sgLastT = 0;           /* Eventail : pompe au repos */
+    P.sgPumpT = P.sgPumpMax = 0; P.sgLastT = 0;           /* SHOTGUN : pompe au repos */
     P.sawIdx = 0; P.sawCd = 0;                            /* Scie : neuve, en main */
     tesla_reset();                                        /* Tesla : ni arc, ni cumuls, ni etourdissement */
     P.lanceState = LS_IDLE; P.lanceT = P.lanceVc = 0;     /* Lance : levee, prete */

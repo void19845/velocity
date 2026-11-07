@@ -158,5 +158,5 @@ static const float *pcolor(int i) {
     return c[i];
 }
 static const char *weaponNames[W_COUNT] = { "RAIL", "ROQUETTE", "EPEE", "GRAPPIN", "PARRY", "SOLO", "RICOCHET",
-                                            "ENCLUME", "LANCE", "YOYO", "POINGS", "EGIDE", "EVENTAIL", "ELAN",
+                                            "ENCLUME", "LANCE", "YOYO", "POINGS", "EGIDE", "SHOTGUN", "ELAN",
                                             "SCIE", "VENTOUSE", "TESLA", "VIDE" };

@@ -21,7 +21,9 @@ typedef struct {
     int swingLanded;                                      /* ce coup a-t-il touche ou pare quelque chose ? */
     float skillCh;                                        /* charges de la competence (0..skillDef[skill].max) */
     int skill;                                            /* SK_* */
-    int ricArmed;                                         /* RICOCHET : le prochain projectile rebondit */
+    int ricArmed;                                         /* RICOCHET : fenetre ouverte (ricT > 0), tout ce que je tire rebondit */
+    float ricT;                                           /* RICOCHET : temps restant de la fenetre (RIC_DURATION) */
+    V3 pushV; float pushT;                                /* SHOTGUN : poussee forcee (m/s, secondes restantes), sans toucher a vel */
     float chargeHold, chargeT;                            /* CHARGE : maintien en cours, fenetre ouverte restante */
     float aimT;                                           /* AIMANT : temps restant de l'aimant de visee */
     int hookPlayer;                                       /* 0 = aucun, sinon id du joueur accroche + 1 (LAN) */
@@ -38,8 +40,8 @@ typedef struct {
     int anvilState;                                       /* Enclume : ANVIL_IDLE / DIVE / STUN */
     float anvilStartY, anvilStunT;                        /* y au debut du pique, immobilisation restante */
     float anvilLandT, anvilLastVy;                        /* temps depuis la derniere onde, |vy| de la derniere onde */
-    float sgPumpT, sgPumpMax;                             /* Eventail : animation de pompe (temps restant / duree totale) */
-    int sgLastPellets; float sgLastT;                     /* Eventail : HUD "7/10" apres un tir qui touche */
+    float sgPumpT, sgPumpMax;                             /* SHOTGUN : animation de pompe (temps restant / duree totale) */
+    int sgLastPellets; float sgLastT;                     /* SHOTGUN : HUD "7/10" apres un tir qui touche */
     int sawIdx;                                           /* Scie : 0 = en main (ou pas de scie), sinon index PR + 1 */
     float sawCd;                                          /* Scie : delai avant le prochain lancer */
     /* Tesla : arc actif ce tick (ST_ZAP, son en boucle), clic sec deja joue pour cet appui, "CHAINE x3" deja affiche ;
@@ -98,7 +100,9 @@ static Coin CO[MAXCOIN];
 static int lastChain;                                     /* longueur du dernier ricochet (tests, journal) */
 typedef struct {
     V3 pos, vel; float life, mult; int kind, alive, owner, parries, orb; unsigned int netId;
-    int ricLeft;                                          /* RICOCHET : rebonds restants (roquette) */
+    int ricLeft;                                          /* RICOCHET : rebonds restants (roquette, scie) */
+    int coinHits, seekKind, seekIdx;                      /* roquette redirigee par une piece : pieces enchainees ; cible qu'elle suit
+                                                             (0 aucune, 1 ennemi, 2 joueur LAN) et son indice */
     /* Scie (kind == PR_SAW) : etat SAW_*, temps dans l'etat, rotation, normale de la face (plantee), axe du disque,
      * qui l'a paree (-1), boite ou elle est plantee (-1), renvois consecutifs, pieces relancees (bits),
      * minuterie (reemission si plantee, vrombissement en vol) */
@@ -126,11 +130,11 @@ static Part PA[MAXPA];
 static int paNext;
 
 typedef struct { V3 a, b, col; float life, max; } Beam;
-#define MAXBM 32
+#define MAXBM 64                                          /* un tir RICOCHET dessine un trait par segment (32 avant) */
 static Beam BM[MAXBM];
 static int bmNext;
 
-typedef struct { V3 a, b, col; float t, life; } Tracer;   /* Eventail : traceurs de plombs (pas add_beam : MAXBM 32) */
+typedef struct { V3 a, b, col; float t, life; } Tracer;   /* SHOTGUN : traceurs de plombs (pas add_beam : MAXBM 32) */
 static Tracer TR[MAXTR];
 static int trNext;
 

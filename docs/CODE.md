@@ -114,7 +114,7 @@ velocity/
 │   ├── effets/       combat_fx.c (impact frames, input_poll), particules.c, camera_mort.c, monde_fx.c (neons, meteo)
 │   ├── joueur/       mouvement.c (player_tick, grappin)
 │   ├── combat/       degats.c, loadout.c, melee.c, pieces_rail.c, roquettes.c, projectiles.c, competences.c
-│   ├── armes/        une arme = un fichier : enclume, lance, fleau, poings, egide, elan, eventail, tesla, scie, ventouse
+│   ├── armes/        une arme = un fichier : enclume, lance, fleau, poings, egide, elan, shotgun (ex-eventail), tesla, scie, ventouse
 │   ├── solo/         mode VAGUES : ennemis_vagues.c (ennemis), boss.c, ameliorations.c (boutique), vagues.c
 │   ├── reseau/       etat_partage.c, protocole.c (paquets, EV_*), hote.c, modes.c, client.c, en_ligne.c (lobby, STUN),
 │   │                 classe.c (mode classe : Elo, paliers, identite), classe_match.c (suivi du match, rapport),
@@ -361,17 +361,24 @@ vitesse **relative** : foncer sur quelqu'un qui fonce sur vous frappe très fort
 
 #### Pièces et ricochet (`throw_coin`, `coin_tick`, `ricochet`)
 
-- `A_COIN` lance une pièce si `P.coins >= 1` (charges jusqu'à `COIN_MAX`, une toutes les
-  `COIN_RECHARGE` s). La pièce hérite de la vitesse du joueur, tombe (`COIN_GRAVITY`), vit 4 s, meurt au
-  contact du décor.
-- Zone de touche généreuse `COIN_RADIUS`. Un tir de rail qui touche une pièce appelle
+- `A_SKILL` (compétence PIÈCE) lance une pièce si `P.skillCh >= 1` (**2 charges** `COIN_MAX`, une toutes les
+  **5 s** `COIN_RECHARGE` : 4 charges / 2 s avant le patch d'équilibrage). La pièce hérite de la vitesse du joueur,
+  tombe (`COIN_GRAVITY`), vit 4 s, meurt au contact du décor.
+- Zone de touche généreuse `COIN_RADIUS`. Un tir de rail ou d'Élan qui touche une pièce appelle
   `ricochet(ci, dmg, depth)` :
   1. s'il y a une autre pièce en vue à moins de 40 m (jusqu'à 6 rebonds), la chaîne continue vers elle
      (récursion, chaque pièce remultiplie) ;
-  2. sinon, le tir part vers la cible visible la plus proche (ennemi ou joueur) dans `COIN_SEEK_RANGE`.
+  2. sinon, le tir part vers la cible choisie par `coin_seek` : **un leurre MIRAGE adverse en vue avant tout**
+     (`DECOY_COIN_LURE`, voir ci-dessous), sinon la cible visible la plus proche (ennemi ou joueur) dans `COIN_SEEK_RANGE`.
   - Pièce à soi : dégâts × `COIN_MULT`. Pièce **adverse** (« volée ») : renvoie le tir sans bonus —
-    c'est le contre-jeu.
+    c'est le contre-jeu. **Sauf** si ma fenêtre RICOCHET est ouverte : la pièce renvoie alors mon tir sur moi
+    (`coin_turns_back`, constante `COIN_VS_RIC`).
   - `lastChain` mémorise la longueur de la dernière chaîne (tests, journal).
+- **Roquette × pièce** (comme Ultrakill, `rocket_coin`, `projectiles.c`) : une roquette (`PR_ROCKET`, la mienne) qui touche une
+  pièce non leurre la consomme et part vers la cible de `coin_seek` à `COIN_ROCKET_SPEED` (70 m/s), qu'elle suit
+  (`seekKind` / `seekIdx` : plus rien ne l'esquive) jusqu'à l'explosion ; `p->mult` ×`COIN_MULT` par pièce (×1 si la pièce est à un
+  adversaire), `COIN_ROCKET_CHAIN` (3) pièces au plus par roquette. Sans cible elle garde son cap. Les autres clients reçoivent le
+  nouveau cap par `EV_PARRY` (leur copie est purement visuelle) ; l'explosion est calculée par le tireur comme d'habitude.
 - Chaque pièce a un `netId` (id du joueur + 1 dans les 8 bits hauts, compteur dans les 24 bits bas).
   En LAN : `net_fx_coin(0, ...)` à la création, `net_fx_coin(1, ...)` à la destruction (`EV_COIN`).
 
@@ -383,24 +390,41 @@ Touche `A_SKILL` (ancien `A_COIN`), charges `P.skillCh` (max et recharge par `sk
 
 | Compétence | Fonction | Effet |
 |---|---|---|
-| `SK_COIN` PIÈCE | `throw_coin` | inchangée (4 charges, 2 s) |
+| `SK_COIN` PIÈCE | `throw_coin` | 2 charges, 5 s (4 charges, 2 s avant le patch) ; le rail, l'Élan et la roquette ricochent sur la pièce (§ Pièces) |
 | `SK_MARK` MARQUE | `skill_mark` | tir sans dégâts (90 m) : cible marquée 4 s (`markP[]` / `markE[]`), losange à travers les murs, mes touches ×1,25 |
 | `SK_CHARGE` CHARGE | `skill_tick` | maintenir 0,6 s → `P.chargeT` = 2 s : la prochaine touche ×1,5 (`CHARGE_GRACE` pour les autres touches du même tir), perdue si on perd des PV |
-| `SK_RICOCHET` RICOCHET | `ric_take`, `hitscan_shot` | `P.ricArmed` : le prochain rail / Élan est réfléchi (`r = d − 2(d·n)n`, 3 rebonds, 120 m), la roquette rebondit (`p->ricLeft`, ×0,8) ; recharge seulement après le tir ; retour sur soi à partir du 2e rebond, une fois par tir |
-| `SK_ALLIN` ALL IN ONE | `skill_allin` | toute la munition (rail, roquettes, Éventail, Élan) en éventail régulier, demi-angle `allin_half(n)` ; refus à 1 munition, Scie / Ventouse / Tesla, bouclier levé |
-| `SK_DECOY` MIRAGE | `skill_decoy` | `Coin` avec `decoy = 1` : immobile 3 s, absorbe un rail / Élan / plomb adverse (`decoy_absorb`), mon rail y ricoche ×1 ; ignoré par le yoyo, la scie, le tesla et le viseur adverse ; `decoy_skip` : un tir parti de l'intérieur le traverse |
+| `SK_RICOCHET` RICOCHET | `skill_ricochet`, `ric_take`, `hitscan_shot` | **fenêtre** de `RIC_DURATION` (6 s, `P.ricT`, `P.ricArmed` = fenêtre ouverte) pendant laquelle TOUT ce que je tire rebondit sans limite de rebonds ni de portée, jusqu'à une cible, la sortie de la carte ou un garde-fou technique. Rail / Élan : `r = d − 2(d·n)n`, un segment de `RIC_SEG_LEN` (400 m) sans mur = sorti de la carte, au plus `RIC_CAP_BOUNCES` (24) rebonds, une touche par cible et par tir (`RIC_HITS_MAX`), retour sur soi une fois par tir. Roquette : `p->ricLeft` = `RIC_ROCKET_CAP` (40), sans perte de vitesse (`RIC_ROCKET_SLOW` 1), vie `RIC_ROCKET_LIFE` 15 s. Plombs du SHOTGUN : `RIC_PELLET_CAP` (6) rebonds par plomb. Scie : elle rebondit au lieu de se planter (`RIC_SAW_CAP` 12, `SAW_FLY_MAX` l'arrête aussi). Ni la mine, ni le Tesla. 1 charge, recharge 20 s **qui ne repart qu'à la fermeture de la fenêtre** ; pas de 2e ouverture pendant la fenêtre |
+| `SK_ALLIN` ALL IN ONE | `skill_allin`, `tesla_bolt` | toute la munition (rail, roquettes, SHOTGUN, Élan) en éventail régulier, demi-angle `allin_half(n)` ; refus à 1 munition, Scie / Ventouse, bouclier levé. **Avec la Tesla** : un éclair inévitable (voir §3.4 Tesla × ALL IN ONE) |
+| `SK_DECOY` MIRAGE | `skill_decoy` | `Coin` avec `decoy = 1` : immobile 3 s, absorbe un rail / Élan / plomb adverse (`decoy_absorb`), mon rail y ricoche ×1 ; ignoré par le yoyo, la scie, le tesla et le viseur adverse ; `decoy_skip` : un tir parti de l'intérieur le traverse. **Attire** les ricochets de pièce adverses (MIRAGE ⇒ PIÈCE) |
 | `SK_AIM` AIMANT | `skill_aim`, `aim_assist` | `P.aimT` = `AIM_T` (4 s) : le viseur est attiré vers la cible la plus proche du centre (cône `AIMASSIST_CONE` ~6°, `AIMASSIST_RATE`, 70 m, ligne de vue ; alliés exclus), jamais verrouillé ; 1 charge, recharge `AIM_RECHARGE` 45 s **non remplie au respawn** ; pas de 2e activation pendant l'effet ; les autres joueurs voient l'activation (`EV_SKILL`) |
 
+**Le triangle MIRAGE ⇒ PIÈCE ⇒ RICOCHET ⇒ MIRAGE** est un pierre-feuille-ciseaux à sens unique (pas une synergie de loadout) :
+chaque compétence en contre une autre, chaque flèche se coupe par sa constante (`equilibrage.c`).
+
+| Flèche | Règle | Constante / fonction |
+|---|---|---|
+| MIRAGE ⇒ PIÈCE | le ricochet d'une pièce (rail, Élan, roquette) vise le leurre adverse en vue (≤ 90 m) **avant** le joueur : le leurre l'absorbe (`decoy_absorb`) et le joueur n'est pas touché | `DECOY_COIN_LURE`, `coin_seek` (`pieces_rail.c`) |
+| RICOCHET ⇒ MIRAGE | si j'ai RICOCHET, mon tir (rail, Élan, plombs) qui touche le leurre adverse n'est pas absorbé : il repart vers le joueur qui l'a posé (en vue du leurre, ≤ 90 m, mêmes dégâts, plafond PvP), sinon le leurre l'absorbe comme avant | `DECOY_RIC_ALWAYS` (1 = dès qu'il est équipé, 0 = seulement fenêtre ouverte), `decoy_hit`, `decoy_reflect_owner`, `ric_vs_decoy` |
+| PIÈCE ⇒ RICOCHET | **lecture par défaut, le propriétaire n'a rien précisé** : un projectile en rebond (fenêtre RICOCHET ouverte) qui touche une pièce adverse ne la vole plus, il repart vers son tireur (rail / Élan : touche comme un rebond qui revient, `damage_player` plafonné ; roquette : `seekKind` 4, explose sur son tireur, 30 × f) | `COIN_VS_RIC`, `coin_vs_ric`, `coin_turns_back`, `rocket_coin` |
+
+- **Tesla × ALL IN ONE** (`tesla_bolt`, `tesla.c`) : avec la Tesla en main, ALL IN ONE lance un éclair **instantané** (aucun délai de vol) sur
+  la cible la plus proche du viseur dans un cône de ~10° (`TESLA_BOLT_CONE`), en vue, à `TESLA_BOLT_RANGE` (45 m) ; il saute ensuite comme
+  l'arc (`TESLA_CHAIN_N` sauts à `TESLA_CHAIN_MULT`). Il vide **toute la batterie** (au moins `TESLA_BOLT_MIN` = 20, sinon refus
+  sans dépense) et fait `TESLA_BOLT_DMG` (130) × batterie / 100 ; en PvP × `PVP_SCALE` puis le plafond `PVP_HIT_CAP` de l'hôte, arme `W_TESLA`
+  (donc parable comme une décharge). Réseau : `EV_SKILL` `SK_ALLIN` avec `actor = 1` (`net_fx_bolt`).
 - Bonus centralisé : `skill_out()` dans `damage_enemy`, `net_hit*`, `hit_player_ex` (une fois par touche).
-- Réseau : `EV_SKILL` (marque, charge, all in one, aimant), `EV_COIN` sous-type 4 (leurre), `EV_ROCKET.sub` = rebonds.
+- Réseau : `EV_SKILL` (marque, charge, all in one, aimant, ouverture de RICOCHET), `EV_COIN` sous-type 4 (leurre), `EV_ROCKET.sub` =
+  rebonds restants (jusqu'à `RIC_ROCKET_CAP`), `EV_RAIL` sous-type 2 = **tous les rebonds d'un tir RICOCHET en un seul événement**
+  (départ et direction du 1er segment réfléchi, `actor` = nombre de segments : chaque client recalcule la trace sur le décor, jamais un événement
+  par segment), `EV_SHOT.pad[0]` = rebonds des plombs.
 - Bots (`bot_skill`, appelé en fin de `bot_think`) : MARQUE sur une cible vue à 10–60 m, CHARGE maintenue
-  quand une cible approche, RICOCHET armé cible à couvert / près d'un mur (puis tir par le sol si elle reste
-  cachée), ALL IN ONE à 4–14 m avec ≥ 3 munitions, MIRAGE sous 45 PV ou juste après une touche, AIMANT à l'engagement
+  quand une cible approche, RICOCHET ouvert quand une cible est engagée (vue à moins de 50 m, à couvert ou près d'un mur ; puis tir par le sol
+  si elle reste cachée), ALL IN ONE à 4–14 m avec ≥ 3 munitions (Tesla : jusqu'à 30 m avec ≥ 20 de batterie), MIRAGE sous 45 PV ou juste après une touche, AIMANT à l'engagement
   (cible vue à moins de 49 m ; l'aimant s'applique alors à la visée imprécise du bot, après `bot_think`). Un bot vise
   le leurre adverse une fois sur deux pendant 0,4 à 1 s. Journal : ligne `competences : ...`, et
   `salves mortelles` dans la ligne `equilibre` (kill depuis la pleine vie en < 0,1 s, en plusieurs touches).
 - Captures : `--shot skills.bmp` (marque, leurres), `--shot loadout_small.bmp` (fenêtre 1024×640),
-  `loadout_charge` (description sur deux lignes).
+  `loadout_charge` (description sur deux lignes), `loadout_mirage` / `loadout_ricochet` / `loadout_allin` (descriptions longues).
 
 #### Roquettes (`fire_rocket`, `proj_tick`, `explode`)
 
@@ -416,6 +440,23 @@ Touche `A_SKILL` (ancien `A_COIN`), charges `P.skillCh` (max et recharge par `sk
 - Projectiles renvoyés : orbe parée = `PARRY_DMG` en direct + explosion de 3 m / 80 dégâts ; roquette
   parée = 40 × `mult` en direct + explosion `ROCKET_DMG × mult`.
 - Orbes ennemies (`PR_ORB`) : 12 dégâts au joueur et un petit recul.
+- **RICOCHET** : tirée fenêtre ouverte, la roquette a `p->ricLeft` = `RIC_ROCKET_CAP` (40) rebonds, ne perd pas de vitesse
+  (`RIC_ROCKET_SLOW` 1), vit `RIC_ROCKET_LIFE` (15 s) au lieu de 6 s et explose sur la première cible, ou en fin de vie. Les
+  copies des autres joueurs rebondissent pareil (`EV_ROCKET.sub` = rebonds restants) et sont recalées par `EV_ROCKET_END`.
+- **Roquette × pièce**, **PIÈCE ⇒ RICOCHET** : voir « Pièces et ricochet ».
+
+#### SHOTGUN, Élan, Tesla, scie : ce que change le patch d'équilibrage (fiches : `docs/armes/`)
+
+- **SHOTGUN** (ex-Éventail, `src/armes/shotgun.c`, fiche `06_shotgun.md`) : `SG_PELLET_DMG` 20 ; le tireur reçoit une **poussée forcée**
+  (`push_start(v, t)`, `P.pushV` / `P.pushT`, appliquée dans `player_tick` comme un déplacement en plus : collisions respectées, `P.vel`
+  intacte) **proportionnelle à la vitesse actuelle du tireur** (`sg_push_speed` : `SG_KNOCK_RATIO` m/s de poussée par m/s de vitesse 3D juste
+  avant le tir, **sans plafond** (`SG_KNOCK_MAX` 0 = aucun, réglable), plancher `SG_KNOCK_MIN` 0) pendant `SG_KNOCK_T` (0,10 s) à l'opposé du tir, au sol comme en
+  l'air : 50 m/s → 5 m, 30 m/s → 3 m, immobile → aucun recul ; la victime LAN reçoit la même dans le sens du tir × part de plombs touchés
+  (`knock_apply`, `protocole.c` : seul `W_SHOTGUN` est une poussée, les autres armes ajoutent une vitesse). Le résidu de vitesse en l'air
+  (`sg_recoil`, 7 m/s, indépendant de la vitesse) garde le saut au recul, même depuis l'arrêt. Les plafonds PvP ne changent pas.
+- **Élan** (`elan.c`) : 4 munitions (`ammoDef`), `kin_brake` enlève toute la vitesse horizontale du tireur (`KIN_BRAKE_ALL`).
+- **Tesla** (`tesla.c`) : `tesla_bolt`, l'éclair d'ALL IN ONE (voir « Compétences »).
+- **Scie** (`scie.c`) : `SAW_HOOK_R` 1,2 m pour `saw_hook_test` (crochet) et le viseur ; avec RICOCHET elle rebondit (`saw_tick`).
 
 #### Dégâts et mort
 
@@ -437,7 +478,8 @@ Touche `A_SKILL` (ancien `A_COIN`), charges `P.skillCh` (max et recharge par `sk
 | Épée | `P.meleeCd` | `MELEE_CD`, `MELEE_WHIFF_CD` si raté, `MELEE_PARRIED_CD` si parée |
 | Dash | `P.dashCharge` (0 à 2) | `DASH_RECHARGE` par charge ; +1 sur touche à l'épée ou parry |
 | Grappin | `P.hookCd` | `GRAPPLE_CD` ; 0 après un impact sur cible ou un parry |
-| Pièces | `P.coins` (0 à `COIN_MAX`) | `COIN_RECHARGE` par pièce |
+| Pièces | `P.skillCh` (0 à `COIN_MAX` = 2) | `COIN_RECHARGE` (5 s) par pièce |
+| RICOCHET | `P.skillCh` (0 ou 1), fenêtre `P.ricT` | 6 s de fenêtre (`RIC_DURATION`), puis 20 s de recharge qui ne repart qu'à la fermeture |
 | Slide boost | `P.slideCd` | `SLIDE_CD` |
 | Munitions rail | `P.railAmmo` | cellules (`PICKUP_AMMO`), remises à `RAIL_AMMO_START` au respawn |
 
@@ -470,9 +512,14 @@ boutique n'augmente une stat : chaque étape ajoute un comportement. Réglages :
 |---|---|---|
 | `EN_DRONE` | 100 | tourne autour du joueur à ~13 m, orbe 16 m/s ; élite : esquive de côté quand on le vise |
 | `EN_RUSHER` | 50 | kamikaze à 12 m/s, explose au contact ; élite : zigzag |
-| `EN_SNIPER` SENTINELLE | 80 | se poste à ~30 m, vise 1,4 s (rayon vert visible), se fige 0,35 s avant le tir (orbe 34 m/s, parable) ; élite : suit jusqu'à 0,12 s |
+| `EN_SNIPER` SENTINELLE | 80 | se poste à ~30 m, vise 1,4 s (rayon visible), se fige 0,35 s avant le tir ; élite : suit jusqu'à 0,12 s. À chaque tir elle choisit (`e->phase`, dès le début de la visée) un **laser** (phase 1, probabilité `VG_SNIPER_LASER_P` 0,5, rayon rouge qui blanchit une fois figé) ou une **orbe très rapide** (phase 0, `VG_SNIPER_FAST_SPEED` 110 m/s au lieu de 34, rayon vert). Les dégâts restent ceux de l'orbe du type (`VG_ORB_DMG` 12 : aucune inflation) |
 | `EN_SWARM` ESSAIM | 25 | par 5, tourne autour à 7 m, plonge, touche (6 PV) et repart |
 | `EN_BASTION` | 300 | marche au sol, bouclier de face (×0,15 sur les touches de face, `vg_dmg_filter`), salve de 3 orbes lentes ; tombé dans le vide = revient à son départ ; élite : tourne deux fois plus vite |
+
+*Sentinelle (`sniper_fire`, `ennemis_vagues.c`).* Le laser est un trait **instantané** le long du cap figé (`ray_world`, arrêté par le décor).
+S'il passe à moins de `VG_LASER_R` (0,7 m) du joueur, une orbe-éclair part à 1,6 m de lui, dans le sens du tir, à 110 m/s : tout le reste est
+le chemin d'une orbe (l'Égide la bloque, la mort, et surtout le **parry** de n'importe quelle mêlée via `try_parry` la renvoie sur la
+sentinelle pour `PARRY_DMG`). On l'esquive en quittant la ligne avant le claquement (le cap est figé 0,35 s avant), ou on la pare au timing.
 
 Les élites (`Enemy.elite`, couronne dorée) changent de comportement, jamais de dégâts ; leur part monte de 0 à 60 %
 entre les vagues 66 et 100 (`vg_elite_p`). Champs ajoutés à `Enemy` : `maxHp`, `st` / `stT` (état de l'IA), `phase`,
@@ -524,8 +571,9 @@ effet ne vaut que pour les touches de son chemin, et seulement si l'arme est éq
 - **source** : `vgSrc` dit à quel chemin reviennent les touches en cours. Posé dans `game_tick` (arme en main autour de
   `fire_weapon`, `WP_TESLA`, `WP_MINE`, mêlée autour de `player_tick` et des coups) et par projectile dans `proj_tick`
   (roquette, scie, mine ; projectile paré = mêlée). Les compétences ont un **contexte** (`fx_paths`) : PIÈCE = touches
-  d'un ricochet (`vgCoinCtx`, `pieces_rail.c`), MARQUE = cible marquée, CHARGE = touche chargée, RICOCHET = 1,5 s
-  après le tir qui rebondit, ALL IN ONE = 1,5 s après la salve, AIMANT = sous l'aimant ; MIRAGE agit par le leurre
+  d'un ricochet (`vgCoinCtx`, `pieces_rail.c`), MARQUE = cible marquée, CHARGE = touche chargée, RICOCHET = pendant la
+  fenêtre ouverte (`skill_tick` entretient `vgRicT`) puis 1,5 s après sa fermeture, ALL IN ONE = 1,5 s après la salve, AIMANT = sous
+  l'aimant ; MIRAGE agit par le leurre
   (APPAT : les ennemis le visent, `vg_lure` ; EXPLOSIF ; REFLET ; GOUFFRE) ;
 - **déclencheurs** : touche (`vg_on_hit`, depuis `damage_enemy`), kill (`vg_on_kill`, depuis `kill_enemy`), tir
   (`vg_on_fire`), parry (`vg_on_parry`, depuis `parry_feedback`), dash, retombée de haut, compétence utilisée (charge
@@ -546,7 +594,8 @@ temps passé dans la boutique et le sélecteur compte (`vg_menu_set`). Point d'e
   crédits, boutique (ordre, prix, dégâts inchangés), effets (fourche, gel, fracture, onde de parry, propulsion),
   bastion, chaque boss, vague 100 et splits, INFINI (chrono, boss qui attend, secret), temps, challenges.
 - Captures : `--shot vagues_pyramide.bmp` (`_charge`), `vagues_tesseract`, `vagues_boule`, `vagues_hexaedre`,
-  `vagues_boutique` (`_small`), `vagues_selecteur`, `vagues_fin`, `vagues_infini`, `vagues` (une vague ordinaire).
+  `vagues_boutique` (`_small`), `vagues_selecteur`, `vagues_fin`, `vagues_infini`, `vagues` (une vague ordinaire),
+  `vagues_laser` (la sentinelle fige son laser : rayon blanc).
 
 ### 3.6 Effets visuels
 
@@ -1163,8 +1212,8 @@ Un `NetEvent` contient : `eid` (identifiant unique), `netId` (objet concerné : 
 
 | Événement | Émis par (fonction) | Champs | Arbitrage hôte (`host_handle`) | Effet à la réception (`apply_event`) |
 |---|---|---|---|---|
-| `EV_RAIL` | tireur : `fire_rail`, `ricochet` via `net_fx_rail` | `f[0..2]` départ, `f[3..5]` arrivée, `f[6]` teinte or | — | rayon, étincelles, son |
-| `EV_ROCKET` | tireur : `fire_rocket` via `net_fx_rocket` | `netId`, `f[0..2]` pos, `f[3..5]` vitesse | — | crée la roquette (`owner = from`), purement visuelle chez les autres |
+| `EV_RAIL` | tireur : `fire_rail`, `ricochet` via `net_fx_rail` ; `hitscan_shot` via `net_fx_ricochet` | `f[0..2]` départ, `f[3..5]` arrivée, `f[6]` teinte or ; **`sub` 2 (RICOCHET)** : `f[0..2]` départ du 1er segment réfléchi, `f[3..5]` sa direction, `actor` = nombre de segments | — | rayon, étincelles, son ; `sub` 2 : chaque client recalcule les rebonds sur le décor (`ray_world`) |
+| `EV_ROCKET` | tireur : `fire_rocket` via `net_fx_rocket` | `netId`, `f[0..2]` pos, `f[3..5]` vitesse, `sub` rebonds restants (RICOCHET) | — | crée la roquette (`owner = from`), purement visuelle chez les autres ; `sub` > 0 : elle rebondit aussi (vie 15 s) |
 | `EV_ROCKET_END` | tireur : `proj_tick` via `net_fx_rocket_end` | `netId`, `f[0..2]` point d'explosion | — | supprime la roquette, `explode_fx` |
 | `EV_PARRY` | celui qui pare : `try_parry` via `net_fx_parry` | `netId`, pos, vitesse, `f[6]` mult, `sub` nombre de renvois | soigne l'émetteur de `PARRY_HEAL` | la roquette devient `PR_PARRIED`, appartient à l'émetteur |
 | `EV_HIT` | tireur : `net_hit` (rail, roquette, épée, grappin, ricochet) ; victime elle-même pour `W_SELF` (`damage_player`) | `target`, `sub` = arme `W_*`, `f[0]` dégâts, `f[1..3]` recul | **voir ci-dessous** | victime : recul, flash rouge, flèche de direction ; autres : flash blanc sur la cible |
@@ -1530,7 +1579,11 @@ deux ; 15 règles de partie et objectifs (`PkSnap` : `rMode`…, `obj` ; `EV_OBJ
 (plateau du Canyon, balcons du Puits) ; **18** horloge de match commune (`PkSnap.clk`, `clkSrv`) ; **19** tirs à la tête
 et chaîne pleine (`EV_HIT.pad[0]` = `HF_*`, `f[4..6]` = point sur la tête, `EV_KILL.pad[0]`, `NetPState.spare[1]` =
 chaîne de tirs) et onde de l'Enclume du plan 1b (`EV_SLAM` : centre, rayon, hauteur du mur, cap et vitesse de l'ovale,
-`actor` = |vy|) ; **20** spécialisations retirées (`PkSnap.rFlags` sans le bit 2, `NetPState.spare[0]` libre).
+`actor` = |vy|) ; **20** spécialisations retirées (`PkSnap.rFlags` sans le bit 2, `NetPState.spare[0]` libre) ;
+**21** patch d'équilibrage : `EV_RAIL` sous-type 2 (tous les rebonds d'un tir RICOCHET en un événement), `EV_SHOT.pad[0]` = rebonds des
+plombs, `EV_ROCKET.sub` = rebonds (jusqu'à `RIC_ROCKET_CAP`) et roquette redirigée par une pièce (`EV_PARRY`), `EV_SKILL` `SK_RICOCHET` et
+`SK_ALLIN` avec `actor` 1 (éclair de la Tesla), `EV_HIT` `W_SHOTGUN` : le recul est une vitesse de **poussée** (proportionnelle à la vitesse
+du tireur, pendant `SG_KNOCK_T` s, `push_start`) et non une vitesse ajoutée.
 La valeur fait foi dans `src/reseau/protocole.c`.
 
 ### Horloge de match commune (`src/reseau/horloge.c`)
@@ -1619,18 +1672,43 @@ plafonné à 0,1 s) ou pendant le `hitstop`, la simulation ralentit mais pas le 
 | `RAIL_AMMO_MAX` | 10 | munitions maximales |
 | `PICKUP_AMMO` | 3 | munitions par cellule |
 | `PICKUP_RESPAWN` | 12 s | réapparition d'une cellule |
-| `COIN_MAX` | 4 | charges de pièces |
-| `COIN_RECHARGE` | 2 s | recharge d'une pièce |
+| `COIN_MAX` | 2 | charges de pièces (4 avant le patch d'équilibrage) |
+| `COIN_RECHARGE` | 5 s | recharge d'une pièce (2 s avant) |
 | `COIN_RADIUS` | 0,9 m | rayon de touche d'une pièce |
 | `COIN_MULT` | 1,5 | multiplicateur de dégâts par ricochet sur sa propre pièce |
 | `COIN_GRAVITY` | 16 m/s² | gravité des pièces |
 | `COIN_SEEK_RANGE` | 90 m | portée de recherche de cible du ricochet |
+| `COIN_ROCKET_SPEED` | 70 m/s | vitesse d'une roquette redirigée par une pièce (`ROCKET_SPEED` : 38) |
+| `COIN_ROCKET_CHAIN` | 3 | pièces enchaînées au plus par une même roquette |
 | `RAIL_DMG` | 100 | dégâts du rail |
 | `ROCKET_CD` | 0,75 s | recharge des roquettes (divisée par `streak_rate`) |
 | `ROCKET_SPEED` | 38 m/s | vitesse des roquettes |
 | `ROCKET_DMG` | 110 | dégâts de l'explosion au centre |
 | `ROCKET_RADIUS` | 4,5 m | rayon de l'explosion |
 | `ROCKET_KNOCK` | 13 m/s | recul de l'explosion (rocket jump) |
+
+### Compétences, SHOTGUN, Élan, Tesla, scie (patch d'équilibrage)
+
+| Nom | Valeur | Effet |
+|---|---|---|
+| `RIC_DURATION` | 6 s | RICOCHET : durée de la fenêtre où tout ce que je tire rebondit (recharge 20 s, `skillDef`, qui repart à la fermeture) |
+| `RIC_CAP_BOUNCES` | 24 | garde-fou technique : rebonds au plus par rail / Élan (« sans limite » en jeu : une carte fermée ne laisse jamais sortir un tir) |
+| `RIC_SEG_LEN` | 400 m | un segment sans mur de cette longueur = le tir est sorti de la carte et s'arrête |
+| `RIC_HITS_MAX` | 1 | touches au plus par cible et par tir (un tir qui rebondit recroise ses cibles) |
+| `RIC_PELLET_CAP` | 6 | rebonds au plus par plomb du SHOTGUN |
+| `RIC_ROCKET_CAP` / `RIC_ROCKET_LIFE` / `RIC_ROCKET_SLOW` | 40 / 15 s / 1 | roquette : rebonds au plus, vie, vitesse gardée à chaque rebond (1 = aucune perte) |
+| `RIC_SAW_CAP` | 12 | rebonds au plus de la scie (elle rebondit au lieu de se planter) |
+| `DECOY_COIN_LURE` | 1 | MIRAGE ⇒ PIÈCE : le ricochet d'une pièce vise le leurre adverse avant le joueur |
+| `DECOY_RIC_ALWAYS` | 1 | RICOCHET ⇒ MIRAGE : 1 = dès que RICOCHET est équipé, 0 = seulement fenêtre ouverte |
+| `COIN_VS_RIC` | 1 | PIÈCE ⇒ RICOCHET (lecture par défaut) : un tir en rebond qui touche une pièce adverse revient sur son tireur |
+| `SG_PELLET_DMG` | 20 | SHOTGUN : dégâts PvE par plomb (8 avant ; 200 à bout portant). PvP : × `PVP_SCALE` puis plafond `PVP_HIT_CAP` |
+| `SG_PELLET_KNOCK` | 1,0 | SHOTGUN : recul PvE par plomb sur un ennemi (0,6 avant) |
+| `SG_KNOCK_RATIO` / `SG_KNOCK_MIN` / `SG_KNOCK_MAX` / `SG_KNOCK_T` | 1,0 / 0 / 0 (aucun plafond) / 0,10 s | SHOTGUN : poussée forcée du tireur **proportionnelle à sa vitesse actuelle** (m/s de poussée par m/s de vitesse, plancher, plafond, durée ; sens opposé au tir, sol comme air) et de la cible (sens du tir, × part de plombs touchés) : 50 m/s → 5 m, immobile → rien |
+| `SG_RECOIL` | 7 m/s | SHOTGUN : résidu de vitesse du tireur en l'air (saut au recul), inchangé |
+| `KIN_BRAKE_ALL` / `KIN_BRAKE_VERT` | 1 / 0 | Élan : le tir enlève TOUTE la vitesse horizontale du tireur (0 = l'ancien freinage de 15 m/s au plus) ; `KIN_BRAKE_VERT` 1 enlèverait aussi la vitesse verticale (le tireur se figerait en l'air, non retenu par défaut) ; munitions 4 au départ et au plus (3 / 6 avant) |
+| `TESLA_BOLT_RANGE` / `TESLA_BOLT_CONE` / `TESLA_BOLT_MIN` / `TESLA_BOLT_DMG` | 45 m / 0,985 / 20 / 130 | Tesla × ALL IN ONE : portée, cône (cos ~10°), batterie minimale, dégâts PvE à pleine batterie (× batterie / 100) |
+| `SAW_HOOK_R` | 1,2 m | scie : sphère que le crochet doit toucher pour rappeler la scie plantée (0,6 avant) |
+| `VG_SNIPER_LASER_P` / `VG_SNIPER_FAST_SPEED` / `VG_LASER_R` | 0,5 / 110 m/s / 0,7 m | SENTINELLE : part des tirs au laser, vitesse de l'orbe rapide (34 avant), rayon de touche du laser |
 
 ### Épée et parry
 
@@ -1710,7 +1788,7 @@ plafonné à 0,1 s) ou pendant le `hitstop`, la simulation ralentit mais pas le 
 | `PVP_SCALE` | 0,7 | dégâts contre les joueurs = 70 % des dégâts contre les monstres |
 | `KILL_HEAL` | 30 PV | soin du tueur |
 | `NET_MAGIC` | `0x564C4F43` | signature des paquets (« VLOC ») |
-| `NET_VER` | 20 | version du protocole (historique : §4, « `NET_VER` ») ; 15 = règles et objectifs, 16 = mode classé, 17 = cartes néon seulement, 18 = horloge commune, 19 = tirs à la tête, chaîne pleine, onde de l'Enclume, 20 = spécialisations retirées |
+| `NET_VER` | 21 | version du protocole (historique : §4, « `NET_VER` ») ; 15 = règles et objectifs, 16 = mode classé, 17 = cartes néon seulement, 18 = horloge commune, 19 = tirs à la tête, chaîne pleine, onde de l'Enclume, 20 = spécialisations retirées, 21 = patch d'équilibrage (RICOCHET en fenêtre, poussée du SHOTGUN, éclair de la Tesla) |
 | `RANK_*` | voir §4 | mode classé : `RANK_START` 1000, bornes 100 à 3000, `RANK_K` 32, `RANK_K_PLACE` 64 sur `RANK_PLACEMENT` 10 matchs, paliers, `RANK_END_WAIT`, `RANK_RETRY`, `RANK_TRIES` |
 | `MAXSPEC` | 4 | spectateurs en direct sur l'hôte |
 | `MAXFOUND` | 12 | parties mémorisées (LAN + en ligne ; 7 affichées) |
@@ -1795,10 +1873,10 @@ Ouvre la fenêtre sans l'activer, prépare une scène, la dessine une fois (`ren
 Autres noms reconnus (voir `src/plateforme/demarrage.c`, chercher `strstr(shotPath`) : `loadout` (`_charge`),
 `update`, `skinmenu`, `skins` (`_course`), `small` (fenêtre 1024 × 640), `carte` / `carte3d` (second écran, avec
 `_dm`, `_equipes`, `_fin`), `arene_nuit` / `_jour` / `_orage`, `dm_mort`, `dm_<arme>` (`enclume`, `lance`, `fleau`,
-`poings`, `egide`, `eventail`, `tesla`), `skills`, `bench_dm` (mesure), `boutique`, `armedepart`, `objectifs_zones` /
+`poings`, `egide`, `shotgun` (ou l'ancien `eventail`), `tesla`), `skills`, `bench_dm` (mesure), `boutique`, `armedepart`, `objectifs_zones` /
 `objectifs_drapeau` / `objectifs_bouclier` (objectifs du mode sur la carte `--map N`, §3.22), `course`
 (`_depart`, `_fin`, `_aimant`), et dans la scène solo : `changearme`, `vie`, `style`, `elan`, `enclume`, `lance`,
-`fleau` (`_vide`), `poings` (`_upper`), `egide` (`_bas`), `scie` (`_main`), `tesla`, `eventail`.
+`fleau` (`_vide`), `poings` (`_upper`), `egide` (`_bas`), `scie` (`_main`), `tesla`, `shotgun` (ou `eventail`).
 
 Options après le nom : `--map N` (carte, §3.18), `--yaw A` (orientation) et `--pos x,y,z[,inclinaison]` (point de vue,
 cartes autres que l'Arène et `objectifs_*`). Sur une carte autre que l'Arène

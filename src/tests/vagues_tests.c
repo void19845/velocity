@@ -47,6 +47,45 @@ static void vagues_tests(FILE *f) {
         fprintf(f, "vagues : orbe recue vague 1=%.0f vague 95=%.0f, drone vague 1=%.0f vague 95=%.0f (attendu 12 12, 100 143)\n",
                 hit[0], hit[1], hp[0], hp[1]);
     }
+    {   /* SENTINELLE (ennemi vert) : orbe tres rapide (110 m/s) ou laser parryable, avec les degats de l'orbe du type (aucune inflation) */
+        float speed = 0, hurt[2], pv2 = 0; int orbs = 0, deadByParry = 0, parried = 0, lasers = 0;
+        for (int k = 0; k < 2; k++) {                     /* k = 0 : orbe rapide, k = 1 : laser, laisse toucher */
+            vg_test_begin(0);
+            P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
+            int s = vg_test_enemy(EN_SNIPER, v3(-20, 2.2f, 20), 80);
+            E[s].st = 1; E[s].stT = 0.001f; E[s].phase = k; E[s].aim = vnorm(vsub(pcenter(), E[s].pos));
+            enemy_tick(TICK);
+            for (int i = 0; i < MAXPR; i++) if (PR[i].alive && PR[i].kind == PR_ORB) { orbs++; if (!k) speed = vlen(PR[i].vel); }
+            for (int i = 0; i < 120; i++) proj_tick(TICK);
+            hurt[k] = 100 - P.hp;
+        }
+        vg_test_begin(0);                                 /* laser : parre au bon moment, l'orbe-eclair repart sur la sentinelle */
+        P.pos = P.prevPos = v3(-20, 0, 40);
+        int s = vg_test_enemy(EN_SNIPER, v3(-20, 2.2f, 20), 80);
+        E[s].st = 1; E[s].stT = 0.001f; E[s].phase = 1; E[s].aim = vnorm(vsub(pcenter(), E[s].pos));
+        {
+            V3 d = vsub(E[s].pos, eye_pos());
+            P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
+        }
+        enemy_tick(TICK);
+        P.parryWin = PARRY_WINDOW;
+        parried = try_parry(MELEE_RANGE + 1.5f, 1);
+        for (int i = 0; i < 240; i++) proj_tick(TICK);
+        deadByParry = !E[s].alive; pv2 = P.hp;
+        for (int i = 0; i < 400; i++) {                   /* part des lasers parmi les tirs : VG_SNIPER_LASER_P */
+            vg_test_begin(0);
+            P.pos = P.prevPos = v3(-20, 0, 40);
+            int q = vg_test_enemy(EN_SNIPER, v3(-20, 2.2f, 20), 80);
+            E[q].st = 0; E[q].stT = 0;
+            enemy_tick(TICK);
+            lasers += E[q].st == 1 && E[q].phase == 1;
+        }
+        fprintf(f, "sentinelle : orbes %d, vitesse de l'orbe rapide %.0f m/s (attendu 2, %.0f, au lieu de 34), degats recus orbe %.0f laser %.0f "
+                   "(attendu %.0f %.0f : l'orbe du type, aucune inflation) ; laser pare : orbe renvoyee %d, sentinelle morte %d, PV %.0f "
+                   "(attendu 1, 1, 100) ; part de lasers sur 400 tirs %.0f%% (attendu ~%.0f%%)\n",
+                orbs, speed, VG_SNIPER_FAST_SPEED, hurt[0], hurt[1], VG_ORB_DMG, VG_ORB_DMG, parried, deadByParry, pv2,
+                100.0f * lasers / 400, 100 * VG_SNIPER_LASER_P);
+    }
     {   /* deroule : vagues qui s'enchainent, selecteur apres la 10, choix d'une carte difficile */
         vg_test_begin(0);
         int w0 = 0, wMax = 0;
@@ -361,6 +400,7 @@ static int vagues_shot(const char *path) {
                                         { -4, 3.8f, 19 }, { 6, 2, 20 }, { 12, 7, 10 } };
         for (int k = 0; k < 8; k++) { int i = spawn_enemy_at(ty[k], v3(at[k][0], at[k][1], at[k][2]), 0); if (i >= 0) E[i].fireT = 100; }
         E[1].st = 1; E[1].stT = 0.4f; E[1].aim = vnorm(vsub(pcenter(), E[1].pos));
+        if (strstr(path, "laser")) { E[1].phase = 1; E[1].stT = 0.25f; }   /* SENTINELLE : laser fige (rayon blanc, le claquement est proche) */
         E[2].yaw = atan2f(P.pos.x - E[2].pos.x, P.pos.z - E[2].pos.z);
         vgQn = 12; vgQi = 4;
         vg_shot_look(v3(0, 5, 10));

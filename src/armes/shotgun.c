@@ -1,14 +1,21 @@
-/* VELOCITY - Eventail (fusil a pompe)
+/* VELOCITY - SHOTGUN (fusil a pompe, ex-Eventail)
    Morceau de main.c : inclus dans l'ordre, ne se compile pas seul (voir main.c). */
 
-/* --- Eventail (fusil a pompe) ------------------------------------------- */
+/* --- SHOTGUN (fusil a pompe) -------------------------------------------- */
 /* 10 plombs a motif deterministe (generateur local : le rng global n'est jamais touche, chaque client
  * recalcule les memes directions a partir de la graine d'EV_SHOT). Les degats sont agreges par cible :
- * un seul net_hit par joueur et par tir. Recul en l'air plafonne, dispersion divisee par 2 en slide,
- * un plomb qui touche une piece la fait eclater (souffle de 3 m, ni degats ni recul sur soi). */
+ * un seul net_hit par joueur et par tir. Dispersion divisee par 2 en slide, un plomb qui touche une piece
+ * la fait eclater (souffle de 3 m, ni degats ni recul sur soi).
+ * Recul : le tireur recoit une poussee forcee PROPORTIONNELLE A SA VITESSE ACTUELLE (sg_push_speed : SG_KNOCK_RATIO m/s par m/s, sans
+ * plafond) pendant SG_KNOCK_T s dans le sens oppose au tir, au sol comme en l'air (push_start : un deplacement en plus, sa vitesse
+ * ne change pas) ; la cible recoit la meme dans le sens du tir, x la part de plombs qui l'ont touchee. Immobile : pas de recul.
+ * En l'air, un residu de vitesse (sg_recoil) garde le saut au recul. RICOCHET ouvert : chaque plomb rebondit
+ * (RIC_PELLET_CAP rebonds au plus, SG_RANGE par segment, degats selon la distance totale parcourue). */
 static unsigned int sgCounter;                            /* compteur de graines */
 static int sgBursts;                                      /* pieces eclatees au dernier tir (tests, journal) */
 static int sgShots, sgPelletSum, sgStreakShots, sgJumps, sgBurstSum;   /* journal du bot */
+static int sgPellRic, sgPellRicSum;                        /* rebonds de plombs au dernier tir (tests) et au total (journal) */
+static float sgLastPush;                                  /* poussee (m/s) du dernier tir (tests) */
 
 static float sg_rand(unsigned int *s) { *s = *s * 1664525u + 1013904223u; return (*s >> 8) * (1.0f / 16777216.0f); }
 static unsigned int sg_new_seed(void) {                   /* unique, deterministe, sans toucher rng */
@@ -35,11 +42,16 @@ static float sg_falloff(float t) {                        /* plein jusqu'a 10 m,
     if (t >= SG_FAR) return SG_FAR_MULT;
     return 1 - (1 - SG_FAR_MULT) * (t - SG_NEAR) / (SG_FAR - SG_NEAR);
 }
+/* poussee (m/s) d'un tir tire a la vitesse `speed` : proportionnelle (SG_KNOCK_RATIO), au moins SG_KNOCK_MIN, sans plafond (SG_KNOCK_MAX = 0) */
+static float sg_push_speed(float speed) {
+    float p = fmaxf(SG_KNOCK_MIN, SG_KNOCK_RATIO * speed);
+    return SG_KNOCK_MAX > 0 ? fminf(SG_KNOCK_MAX, p) : p;
+}
 static V3 sg_tint(float k) { return vlerp(v3(1, 0.6f, 0.25f), v3(1, 0.9f, 0.4f), clampf(k, 0, 1)); }   /* cuivre -> or */
 
-/* cumul d'un tir : degats, recul, plombs et dernier point touche par cible */
+/* cumul d'un tir : degats, recul, plombs et dernier point touche par cible ; dd : degats des plombs arretes par un leurre */
 typedef struct {
-    float e[MAXE], p[MAXP];
+    float e[MAXE], p[MAXP], dd[MAXCOIN];
     V3 ke[MAXE], kp[MAXP], he[MAXE], hp[MAXP];
     int ne[MAXE], np[MAXP], burstHit;
 } SgAcc;
@@ -55,7 +67,21 @@ static void sg_burst_fx(V3 o, int mine) {
 static void sg_coin_burst(int ci, int depth, SgAcc *A) {
     Coin *c = &CO[ci];
     if (!c->alive) return;                                /* deja eclatee par un autre plomb */
-    if (c->decoy) { if (!depth) decoy_absorb(ci, "plomb"); return; }   /* MIRAGE adverse : arrete le plomb, n'eclate pas */
+    if (c->decoy) {                                       /* MIRAGE adverse : arrete le plomb, n'eclate pas ; RICOCHET : repart vers le poseur */
+        if (depth) return;
+        int owner = decoy_reflect_owner(ci);
+        float acc = A->dd[ci];
+        V3 o = c->pos;
+        decoy_absorb(ci, "plomb");
+        if (owner >= 0 && acc > 0) {                      /* les plombs arretes par le leurre sont ajoutes a ceux du poseur */
+            A->p[owner] += acc;
+            A->kp[owner] = vadd(A->kp[owner], vmul(vnorm(vsub(np_center(owner), o)), 4));
+            A->burstHit = 1; decoyReflects++;
+            snprintf(popText, sizeof popText, "LEURRE RENVOYE !"); popT = 1.0f;
+            add_beam(o, np_center(owner), v3(0.4f, 1, 0.7f), 0.6f);
+        }
+        return;
+    }
     V3 o = c->pos;
     c->alive = 0; sgBursts++;
     if (dmMode) net_fx_coin(1, c->netId, o, v3(1, 0, 0));   /* f[3] = 1 : detruite EN ECLAT */
@@ -86,8 +112,8 @@ static void sg_coin_burst(int ci, int depth, SgAcc *A) {
             sg_coin_burst(j, depth + 1, A);
 }
 
-/* shotgun jump : 7 m/s a l'oppose de la visee ; peut freiner, ou pousser jusqu'a un seuil, jamais au-dela
- * de la vitesse qu'on avait deja (9 m/s vertical, 16 m/s horizontal) */
+/* saut au recul : residu de vitesse de 7 m/s a l'oppose de la visee, en l'air ; peut freiner, ou pousser jusqu'a un seuil, jamais
+ * au-dela de la vitesse qu'on avait deja (9 m/s vertical, 16 m/s horizontal). S'ajoute a la poussee forcee (push_start). */
 static void sg_recoil(V3 d) {
     V3 v0 = P.vel, v = vadd(P.vel, vmul(d, -SG_RECOIL));
     if (v.y > v0.y && v.y > fmaxf(v0.y, SG_RECOIL_VMAX)) v.y = fmaxf(v0.y, SG_RECOIL_VMAX);
@@ -99,42 +125,63 @@ static void sg_recoil(V3 d) {
 
 static void fire_shotgun(void) {
     if (P.ammo[WP_SHOTGUN] > 0) P.ammo[WP_SHOTGUN]--;
-    V3 eye = eye_pos(), d = view_dir(), dir[SG_PELLETS], end[SG_PELLETS], nrm[SG_PELLETS];
+    enum { SGSEG = SG_PELLETS * (RIC_PELLET_CAP + 1) };   /* segments de plomb au plus (un par rebond avec RICOCHET) */
+    V3 eye = eye_pos(), d = view_dir(), dir[SG_PELLETS];
     float half = SG_HALF_ANGLE * (P.sliding ? SG_SLIDE_SPREAD : 1), mult = streak_mult();
     unsigned int seed = sg_new_seed();
     static SgAcc A;
-    int pellets = 0, burstList[SG_PELLETS], nBurst = 0, onWall[SG_PELLETS];
-    int mineList[SG_PELLETS], nMineHit = 0;               /* Ventouse : mines touchees (une explosion par mine) */
+    static V3 segA[SGSEG], segB[SGSEG], segN[SGSEG];      /* trace de chaque segment : depart, arrivee, normale du mur */
+    static unsigned char segWall[SGSEG], segFirst[SGSEG]; /* le segment finit sur un mur (etincelles) ; premier segment d'un plomb */
+    static int burstList[SGSEG], mineList[SGSEG];
+    int pellets = 0, nBurst = 0, nMineHit = 0, nSeg = 0, ricMax = ric_take() ? RIC_PELLET_CAP : 0;
+    float push = sg_push_speed(vlen(P.vel));           /* poussee de ce tir : ma vitesse actuelle, AVANT le residu de sg_recoil */
     memset(&A, 0, sizeof A);
+    sgPellRic = 0; sgLastPush = push;
     sg_pellet_dirs(d, half, seed, dir);
     for (int k = 0; k < SG_PELLETS; k++) {                /* le plomb s'arrete sur le plus proche : piece, drone ou joueur */
-        float tw = ray_world(eye, dir[k], SG_RANGE, &nrm[k]), t;
-        int ci = -1, te = -1, tp = -1;
-        onWall[k] = tw < SG_RANGE;
-        for (int i = 0; i < MAXCOIN; i++)                 /* toute piece, la mienne ou non (MIRAGE : pas mon leurre) */
-            if (CO[i].alive && !(CO[i].decoy && CO[i].owner == myId) && !decoy_skip(i, eye) &&
-                ray_sphere(eye, dir[k], CO[i].pos, SG_COIN_RADIUS, tw, &t)) { tw = t; ci = i; }
-        for (int i = 0; i < MAXE; i++)
-            if (E[i].alive && ray_sphere(eye, dir[k], E[i].pos, enemy_radius(E[i].type), tw, &t)) { tw = t; te = i; ci = -1; }
-        for (int i = 0; i < MAXP; i++) {
-            V3 mn, mx;
-            if (!np_target(i)) continue;
-            np_aabb(i, 0.05f, &mn, &mx);
-            if (ray_box(eye, dir[k], mn, mx, tw, &t, NULL) && t < tw) { tw = t; tp = i; te = ci = -1; }
+        V3 o = eye, dk = dir[k];
+        float travelled = 0;                              /* distance deja parcourue (les degats baissent avec elle) */
+        for (int sgm = 0; sgm <= ricMax; sgm++) {         /* RICOCHET : un segment par rebond (un seul sans lui) */
+            V3 nrm;
+            float tw = ray_world(o, dk, SG_RANGE, &nrm), t;
+            int ci = -1, te = -1, tp = -1, mi = -1, wall = tw < SG_RANGE;
+            for (int i = 0; i < MAXCOIN; i++)             /* toute piece, la mienne ou non (MIRAGE : pas mon leurre) */
+                if (CO[i].alive && !(CO[i].decoy && CO[i].owner == myId) && !(sgm == 0 && decoy_skip(i, eye)) &&
+                    ray_sphere(o, dk, CO[i].pos, SG_COIN_RADIUS, tw, &t)) { tw = t; ci = i; }
+            for (int i = 0; i < MAXE; i++)
+                if (E[i].alive && ray_sphere(o, dk, E[i].pos, enemy_radius(E[i].type), tw, &t)) { tw = t; te = i; ci = -1; }
+            for (int i = 0; i < MAXP; i++) {
+                V3 mn, mx;
+                if (!np_target(i)) continue;
+                np_aabb(i, 0.05f, &mn, &mx);
+                if (ray_box(o, dk, mn, mx, tw, &t, NULL) && t < tw) { tw = t; tp = i; te = ci = -1; }
+            }
+            for (int i = 0; i < MAXPR; i++)               /* --- Ventouse : le plomb s'arrete sur une mine (x1) --- */
+                if (mine_shootable(&PR[i]) && ray_sphere(o, dk, PR[i].pos, MINE_HIT_R, tw, &t)) { tw = t; te = tp = ci = -1; mi = i; }
+            V3 e = vadd(o, vmul(dk, tw));
+            float dmg = SG_PELLET_DMG * sg_falloff(travelled + tw) * mult;
+            int stopped = 1;
+            if (te >= 0) {
+                A.e[te] += dmg; A.ke[te] = vadd(A.ke[te], vmul(dk, SG_PELLET_KNOCK)); A.ne[te]++; A.he[te] = e;
+                pellets++;
+            } else if (tp >= 0) {
+                A.p[tp] += dmg; A.kp[tp] = vadd(A.kp[tp], vmul(dk, push / SG_PELLETS)); A.np[tp]++; A.hp[tp] = e;
+                pellets++;
+            } else if (ci >= 0) {                         /* eclate apres la boucle (une fois par piece) */
+                burstList[nBurst++] = ci;
+                if (CO[ci].decoy) A.dd[ci] += dmg;        /* leurre adverse : ces degats repartent vers son poseur si j'ai RICOCHET */
+            } else if (mi >= 0) mineList[nMineHit++] = mi;   /* --- fin Ventouse --- */
+            else stopped = 0;
+            if (nSeg < SGSEG) {
+                segA[nSeg] = o; segB[nSeg] = e; segN[nSeg] = nrm; segFirst[nSeg] = (unsigned char)(sgm == 0);
+                segWall[nSeg] = (unsigned char)(wall && !stopped); nSeg++;
+            }
+            if (stopped || !wall || sgm == ricMax) break; /* cible touchee, sortie de la carte (aucun mur a SG_RANGE) ou garde-fou */
+            travelled += tw;
+            dk = vnorm(vsub(dk, vmul(nrm, 2 * vdot(dk, nrm))));   /* reflexion r = d - 2 (d.n) n */
+            o = vadd(e, vmul(nrm, 0.02f));
+            sgPellRic++;
         }
-        int mi = -1;                                      /* --- Ventouse : le plomb s'arrete sur une mine (x1) --- */
-        for (int i = 0; i < MAXPR; i++)
-            if (mine_shootable(&PR[i]) && ray_sphere(eye, dir[k], PR[i].pos, MINE_HIT_R, tw, &t)) { tw = t; te = tp = ci = -1; mi = i; }
-        if (mi >= 0) { mineList[nMineHit++] = mi; onWall[k] = 0; }   /* --- fin Ventouse --- */
-        end[k] = vadd(eye, vmul(dir[k], tw));
-        float dmg = SG_PELLET_DMG * sg_falloff(tw) * mult;
-        if (te >= 0) {
-            A.e[te] += dmg; A.ke[te] = vadd(A.ke[te], vmul(dir[k], SG_PELLET_KNOCK)); A.ne[te]++; A.he[te] = end[k];
-            pellets++; onWall[k] = 0;
-        } else if (tp >= 0) {
-            A.p[tp] += dmg; A.kp[tp] = vadd(A.kp[tp], vmul(dir[k], SG_PELLET_KNOCK)); A.np[tp]++; A.hp[tp] = end[k];
-            pellets++; onWall[k] = 0;
-        } else if (ci >= 0) { burstList[nBurst++] = ci; onWall[k] = 0; }   /* eclate apres la boucle (une fois par piece) */
     }
     sgBursts = 0;
     for (int b = 0; b < nBurst; b++) sg_coin_burst(burstList[b], 0, &A);
@@ -151,7 +198,7 @@ static void fire_shotgun(void) {
         V3 at = A.np[i] ? A.hp[i] : np_center(i);
         if (A.np[i] >= 8 && vlen(vsub(np_center(i), eye)) < 6) { juice = 1; juiceAt = at; }
         burst(at, v3(1, 0.45f, 0.2f), 12, 7, 0.3f, 0.1f);
-        if (!hit_player_ex(i, A.p[i] * PVP_SCALE, vadd(A.kp[i], v3(0, 2, 0)), W_SHOTGUN, A.np[i] ? d : vnorm(vsub(np_center(i), eye)),
+        if (!hit_player_ex(i, A.p[i] * PVP_SCALE, A.kp[i], W_SHOTGUN, A.np[i] ? d : vnorm(vsub(np_center(i), eye)),
                            A.np[i] ? SHB_DIRECT : SHB_BLAST, 0, 0, 0, 0) && A.np[i])
             pellets -= A.np[i];                           /* Egide : plombs bloques = rates (eclat seul : souffle, 50 %) */
     }
@@ -163,16 +210,17 @@ static void fire_shotgun(void) {
         }                                                 /* --- fin Ventouse --- */
     int hit = pellets >= SG_STREAK_MIN || A.burstHit;
     shot_result(hit);
-    sgShots++; sgPelletSum += pellets; sgStreakShots += hit; sgBurstSum += sgBursts;
+    sgShots++; sgPelletSum += pellets; sgStreakShots += hit; sgBurstSum += sgBursts; sgPellRicSum += sgPellRic;
     if (botMode) netlog("tir pompe : %d plomb(s), %d eclat(s), %s", pellets, sgBursts, hit ? "touche" : "rate");
-    if (!P.grounded) sg_recoil(d);
+    if (push > 0) push_start(vmul(d, -push), SG_KNOCK_T); /* poussee du tireur : proportionnelle a sa vitesse, sens oppose au tir, sol et air */
+    if (!P.grounded) sg_recoil(d);                        /* en l'air : le residu de vitesse (saut au recul) */
 
     V3 m = muzzle(), col = sg_tint(shotStreak / (float)STREAK_MAX);   /* effets locaux : traceurs, etincelles, son */
-    for (int k = 0; k < SG_PELLETS; k++) {
-        add_tracer(m, end[k], col);
-        if (onWall[k])
+    for (int s = 0; s < nSeg; s++) {
+        add_tracer(segFirst[s] ? m : segA[s], segB[s], col);
+        if (segWall[s])
             for (int j = 0; j < 3; j++)
-                add_part(end[k], vadd(vmul(nrm[k], 3), vmul(rand_dir(), 2)), v3(1, 0.75f, 0.4f), 0.35f, 0.07f, 12);
+                add_part(segB[s], vadd(vmul(segN[s], 3), vmul(rand_dir(), 2)), v3(1, 0.75f, 0.4f), 0.35f, 0.07f, 12);
     }
     if (dmMode) net_fx_shot(eye, d, half, seed);
     P.fireCd = P.sgPumpMax = P.sgPumpT = SG_CD / streak_rate();
@@ -187,4 +235,4 @@ static void fire_shotgun(void) {
         popT = 1.0f;
     }
 }
-/* --- fin Eventail ------------------------------------------------------- */
+/* --- fin SHOTGUN -------------------------------------------------------- */

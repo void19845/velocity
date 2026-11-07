@@ -543,6 +543,47 @@ Branche `claude/equilibrage-tete-1385aa`. `NET_VER` **19**.
 - Tests : ligne « classe rapport : estimation avec la cote du parti » ; vérifié en vrai : lancement sans lobby, lobby
   démarré 6 s plus tard, cote reçue à 15 s ; match classé de bots (5 matchs appliqués, ±60 des deux côtés).
 
+## 36. Patch d'équilibrage : triangle de compétences, SHOTGUN, RICOCHET en fenêtre, Tesla, sentinelle
+
+Demandé par le propriétaire (notes brutes). Chaque valeur est une constante de `src/reglages/equilibrage.c` ; le détail
+technique est dans `docs/CODE.md` (§3.4, §3.5, §5, `NET_VER` 21) et `docs/COMPETENCES_MARKSMAN.md`.
+
+- **Triangle MIRAGE ⇒ PIÈCE ⇒ RICOCHET ⇒ MIRAGE**, un pierre-feuille-ciseaux à sens unique (pas une synergie de loadout) :
+  - *MIRAGE ⇒ PIÈCE* : le ricochet d'une pièce (rail, Élan, roquette) vise le **leurre adverse** en vue avant le joueur, qui n'est
+    pas touché (`DECOY_COIN_LURE`).
+  - *RICOCHET ⇒ MIRAGE* : si j'ai RICOCHET, mon tir sur le leurre adverse ne s'y arrête plus, il repart vers le **joueur qui l'a posé**
+    (`DECOY_RIC_ALWAYS`).
+  - *PIÈCE ⇒ RICOCHET* : le propriétaire n'a rien précisé ; **lecture par défaut** : un projectile en rebond (fenêtre RICOCHET ouverte)
+    qui touche une pièce adverse repart vers **son tireur** (`COIN_VS_RIC`). À confirmer ou à changer.
+- **ÉVENTAIL devient SHOTGUN** (menus, HUD, LOADOUT, killfeed, tests, docs ; `src/armes/shotgun.c`, `--shot dm_shotgun`, l'ancien
+  nom marche encore) : **20 dégâts par plomb** (8 avant, 200 à bout portant en solo). En PvP `PVP_SCALE` 0,7 et `PVP_HIT_CAP` 60 restent :
+  le plafond s'applique toujours, la hausse étend surtout la portée du kill en 2 tirs (de ~4 m à ~14 m). **Recul** : une poussée forcée
+  **proportionnelle à la vitesse actuelle du tireur** (1 m/s de poussée par m/s, **sans plafond**) pendant 0,10 s, vers l'arrière, au sol comme
+  en l'air (50 m/s → 5 m, 30 m/s → 3 m, immobile → aucun recul), et la même sur la cible vers l'avant (× part de plombs touchés) ; le tireur
+  garde sa vitesse, et le saut au recul (tir vers le bas) marche toujours grâce au résidu de 7 m/s en l'air, même depuis l'arrêt.
+- **TESLA × ALL IN ONE** : un **éclair inévitable** (instantané) sur la cible la plus proche du viseur (cône de ~10°, en vue, 45 m), qui vide
+  toute la batterie (20 au moins) : 130 dégâts à pleine batterie (proportionnels), chaîne comme l'arc, PvP × 0,7 plafonné à 60.
+- **ROQUETTES × PIÈCE** (comme Ultrakill) : une roquette qui traverse une pièce part vers l'ennemi le plus proche (90 m) et le suit
+  jusqu'à l'explosion, × 1,5 par pièce.
+- **ÉLAN** : 4 munitions au départ et au plus (3 et 6 avant) ; **le tir enlève toute la vitesse horizontale** du tireur (avant : seulement
+  les 15 m/s convertis ; `KIN_BRAKE_ALL`). La vitesse verticale n'est pas touchée (`KIN_BRAKE_VERT` 1 la ferait aussi disparaître).
+- **PIÈCE** : 2 charges (4 avant), 5 s par charge (2 s avant).
+- **SCIE** : la sphère que le crochet doit toucher pour rappeler la scie plantée passe à 1,2 m (0,6 avant ; aussi pour le viseur
+  « GRAPPIN -> RAPPEL SCIE »). Effet de bord : un crochet visant un ennemi ou un mur derrière la scie plantée, dans son axe, la rappelle d'abord.
+- **SENTINELLE** (l'ennemi vert) : au lieu de son orbe à 34 m/s, elle tire un **laser** (instantané, annoncé par le rayon qui blanchit,
+  parable) ou une **orbe à 110 m/s**, une fois sur deux ; mêmes dégâts qu'avant (12, aucune inflation).
+- **RICOCHET réécrit** : une fenêtre de **6 s** pendant laquelle TOUT ce que tu tires (rail, Élan, roquettes, plombs, scie) rebondit
+  **sans limite de rebonds ni de portée**, jusqu'à une cible ou la sortie de la carte (garde-fous techniques : 24 rebonds pour le rail,
+  6 par plomb, 40 pour une roquette qui vit 15 s). Recharge 20 s, qui ne repart qu'à la fermeture. Un tir ne touche chaque cible qu'une
+  fois ; il peut te revenir dessus une fois.
+- Réseau : `NET_VER` **21** ; tous les rebonds d'un tir RICOCHET voyagent dans **un seul** événement (`EV_RAIL` sous-type 2).
+- Mesure (match bot contre bot de 90 s, un par scénario, avant / après, tableau dans `docs/COMPETENCES_MARKSMAN.md`) : de 5 à 9 kills dans les
+  onze matchs, rien ne s'emballe ; PIÈCE lance 9 → 5 pièces ; un tir RICOCHET fait ~9 rebonds ; l'Élan fait 13 → 8 touches ; 3 éclairs de Tesla ; le SHOTGUN touche autant qu'avant (6 et 8 touches contre 6, recul proportionnel).
+  Un seul match par case : les moyennes de TTK ne sont pas significatives.
+- Tests (`--test`) : lignes « piece », « elan jauge », « elan munitions », « shotgun poussee du tireur », « shotgun PvP », « ricochet … »
+  (fenêtre, plafond, une touche par cible, roquette, plombs, scie, réseau), « mirage => piece », « ricochet => mirage »,
+  « piece => ricochet », « tesla all in one », « roquette x piece », « scie hitbox du crochet », « sentinelle ».
+
 ## Vérifications faites
 
 - Compilation macOS sans avertissement ; tous les tests `--test` conformes, y compris ceux d'`origin/dev` (stéréo,

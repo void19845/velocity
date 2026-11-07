@@ -616,7 +616,8 @@ static void run_tests(const char *path) {
             dm[s] = 1000 - E[0].hp; hl[s] = hlen(P.vel);
         }
         fprintf(f, "elan a 0 / 9.5 / 15 / 25 m/s : degats %.1f / %.1f / %.1f / %.1f, vitesse apres %.1f / %.1f / %.1f / %.1f "
-                   "(attendu 20 / 67.5 / 95 / 95, 0 / 0 / 0 / 10)\n", dm[0], dm[1], dm[2], dm[3], hl[0], hl[1], hl[2], hl[3]);
+                   "(attendu 20 / 67.5 / 95 / 95, 0 / 0 / 0 / 0 : le tir enleve toute la vitesse horizontale, plus seulement les 15 m/s convertis)\n",
+                dm[0], dm[1], dm[2], dm[3], hl[0], hl[1], hl[2], hl[3]);
 
         reset_game();                                      /* 2. vitesse sur le cote et en montee */
         P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
@@ -660,7 +661,8 @@ static void run_tests(const char *path) {
             P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
         }
         fire_kinetic();
-        fprintf(f, "elan piece a 20 m/s : degats au drone %.1f, vitesse apres %.1f (attendu 142.5, 5)\n", 1000 - E[0].hp, hlen(P.vel));
+        fprintf(f, "elan piece a 20 m/s : degats au drone %.1f, vitesse apres %.1f (attendu 142.5, 0 : toute la vitesse part avec le tir)\n",
+                1000 - E[0].hp, hlen(P.vel));
 
         reset_game();                                      /* 6. slide : degats pleins, le tir arrete le slide */
         P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
@@ -718,8 +720,16 @@ static void run_tests(const char *path) {
         melee();
         P.meleeCd = 0; P.parryWin = 0; hitstop = 0;
         melee();
-        fprintf(f, "elan jauge : 2 coups d'epee -> munitions %d, jauge %.0f (attendu 4, 20)\n", P.ammo[WP_KINETIC],
-                P.ammoGauge[WP_KINETIC]);
+        fprintf(f, "elan jauge : 2 coups d'epee a 3 munitions -> munitions %d, jauge %.0f (attendu 4, 0 : plafond de %d munitions, le surplus de 20 va a l'autre arme)\n",
+                P.ammo[WP_KINETIC], P.ammoGauge[WP_KINETIC], ammoDef[WP_KINETIC].max);
+        P.ammo[WP_KINETIC] = 2; P.ammoGauge[WP_KINETIC] = 0; P.meleeCd = 0; P.parryWin = 0; hitstop = 0;
+        melee();
+        P.meleeCd = 0; P.parryWin = 0; hitstop = 0;
+        melee();
+        fprintf(f, "elan jauge : a 2 munitions, 2 coups d'epee -> munitions %d, jauge %.0f (attendu 3, 20 : 100 points = une munition (80) + 20)\n",
+                P.ammo[WP_KINETIC], P.ammoGauge[WP_KINETIC]);
+        reset_game();
+        fprintf(f, "elan munitions : au depart %d, plafond %d (attendu 4, 4 : 3 et 6 avant)\n", P.ammo[WP_KINETIC], ammoDef[WP_KINETIC].max);
     }
 
     /* grappin plus nerveux : vitesse atteinte en 0,5 s vers un mur */
@@ -867,14 +877,14 @@ static void run_tests(const char *path) {
                 P.anvilLandT == 0, P.vel.x, P.vel.y, P.vel.z, P.anvilState, L.x, L.y, L.z);
     }
 
-    /* --- Eventail (solo) : motif, cone, degats selon la distance, recul, pieces, munitions --- */
+    /* --- SHOTGUN (solo) : motif, cone, degats selon la distance, recul, pieces, munitions --- */
     {
         V3 dA[SG_PELLETS], dB[SG_PELLETS], dC[SG_PELLETS], d0 = vnorm(v3(0.3f, -0.2f, -0.93f));
         unsigned int rng0 = rng;                           /* 1-2. meme graine = memes plombs, rng global intact */
         sg_pellet_dirs(d0, SG_HALF_ANGLE, 1234u, dA);
         sg_pellet_dirs(d0, SG_HALF_ANGLE, 1234u, dB);
         sg_pellet_dirs(d0, SG_HALF_ANGLE, 98765u, dC);
-        fprintf(f, "eventail motif : meme graine identique %d, autre graine differente %d, rng global intact %d (attendu 1, 1, 1)\n",
+        fprintf(f, "shotgun motif : meme graine identique %d, autre graine differente %d, rng global intact %d (attendu 1, 1, 1)\n",
                 !memcmp(dA, dB, sizeof dA), memcmp(dA, dC, sizeof dA) != 0, rng == rng0);
         float amax[2] = { 0, 0 };                          /* 3. angle max sur 200 graines, debout puis en slide */
         for (int pass = 0; pass < 2; pass++)
@@ -883,7 +893,7 @@ static void run_tests(const char *path) {
                 for (int k = 0; k < SG_PELLETS; k++)
                     amax[pass] = fmaxf(amax[pass], atan2f(vlen(vcross(d0, dA[k])), vdot(d0, dA[k])) * 180 / PI);
             }
-        fprintf(f, "eventail cone : angle max %.2f deg debout, %.2f en slide (attendu <= 4.50, <= 2.25)\n", amax[0], amax[1]);
+        fprintf(f, "shotgun cone : angle max %.2f deg debout, %.2f en slide (attendu <= 4.50, <= 2.25)\n", amax[0], amax[1]);
 
         static const float dz[3] = { 5, 10, 20 };          /* 4, 5 b, 5. drone a 5 / 10 / 20 m */
         int pel[3]; float hpD[3];
@@ -891,12 +901,50 @@ static void run_tests(const char *path) {
             reset_game();
             P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0; P.grounded = 1;
             P.ammo[WP_SHOTGUN] = 6; shotStreak = 0;
-            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-20, 1.6f, 40 - dz[s]);
+            E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.6f, 40 - dz[s]);
             fire_shotgun();
-            pel[s] = P.sgLastPellets; hpD[s] = E[0].hp; hitstop = 0;
+            pel[s] = P.sgLastPellets; hpD[s] = 1000 - E[0].hp; hitstop = 0;   /* degats subis (PV 1000 : le drone ne meurt pas) */
         }
-        fprintf(f, "eventail drone a 5 / 10 / 20 m : plombs %d / %d / %d, PV %.1f / %.1f / %.1f (attendu 10 / 10 / 4, 20 / 20 / ~78.5)\n",
-                pel[0], pel[1], pel[2], hpD[0], hpD[1], hpD[2]);
+        fprintf(f, "shotgun drone a 5 / 10 / 20 m : plombs %d / %d / %d, degats %.1f / %.1f / %.1f "
+                   "(attendu 10 / 10 / 4, %.0f / %.0f / ~53.8 : 10 plombs x %.0f, x2,5 par rapport a avant)\n",
+                pel[0], pel[1], pel[2], hpD[0], hpD[1], hpD[2], SG_PELLETS * SG_PELLET_DMG, SG_PELLETS * SG_PELLET_DMG, SG_PELLET_DMG);
+
+        reset_game();                                      /* 8 bis. poussee du tireur : PROPORTIONNELLE a sa vitesse actuelle, plafonnee, sol et air */
+        {
+            static const float spd[5] = { 0, 10, 20, 50, 100 };   /* m/s juste avant le tir, vers l'avant (-z), tir vers l'avant */
+            float push[5]; int okDir = 0;
+            for (int k = 0; k < 5; k++) {
+                reset_game();
+                P.pos = P.prevPos = v3(-20, 8, 40); P.grounded = 0; P.yaw = 0; P.pitch = 0;
+                P.vel = v3(0, 0, -spd[k]); P.ammo[WP_SHOTGUN] = 6;
+                fire_shotgun(); hitstop = 0;
+                push[k] = sgLastPush;
+                okDir += spd[k] <= 0 ? P.pushT <= 0 : (P.pushT > 0 && P.pushV.z > 0 && fabsf(vlen(P.pushV) - push[k]) < 0.01f);   /* a l'oppose du tir */
+            }
+            fprintf(f, "shotgun poussee proportionnelle a la vitesse : a 0 / 10 / 20 / 50 / 100 m/s -> %.1f / %.1f / %.1f / %.1f / %.1f m/s "
+                       "(attendu %.0f / %.0f / %.0f / %.0f / %.0f : x%.1f, AUCUN plafond (SG_KNOCK_MAX %.0f)), sens oppose au tir et aucune poussee a l'arret : %d / 5 (attendu 5)\n",
+                    push[0], push[1], push[2], push[3], push[4], SG_KNOCK_RATIO * 0, SG_KNOCK_RATIO * 10, SG_KNOCK_RATIO * 20, SG_KNOCK_RATIO * 50,
+                    SG_KNOCK_RATIO * 100, SG_KNOCK_RATIO, SG_KNOCK_MAX, okDir);
+
+            float zz[2], yy[2];                            /* deplacement ajoute par la poussee : avec le tir, moins un essai temoin sans tirer */
+            for (int pass = 0; pass < 2; pass++) {         /* sol : 30 m/s vers l'avant, tir devant */
+                reset_game();
+                P.pos = P.prevPos = v3(-20, 0, 60); P.grounded = 1; P.yaw = 0; P.pitch = 0; P.vel = v3(0, 0, -30); P.ammo[WP_SHOTGUN] = 6;
+                if (pass) { fire_shotgun(); hitstop = 0; }
+                for (int i = 0; i < 14; i++) player_tick(TICK, 0, 0);   /* 0,12 s : la poussee dure SG_KNOCK_T = 0,10 s */
+                zz[pass] = P.pos.z;
+            }
+            for (int pass = 0; pass < 2; pass++) {         /* air : chute a -20 m/s, tir vers le bas (le residu de 7 m/s s'ajoute) */
+                reset_game();
+                P.pos = P.prevPos = v3(-20, 30, 40); P.grounded = 0; P.yaw = 0; P.pitch = -PI / 2; P.vel = v3(0, -20, 0); P.ammo[WP_SHOTGUN] = 6;
+                if (pass) { fire_shotgun(); hitstop = 0; }
+                for (int i = 0; i < 14; i++) player_tick(TICK, 0, 0);
+                yy[pass] = P.pos.y;
+            }
+            fprintf(f, "shotgun poussee du tireur : au sol a 30 m/s, tir devant, recul ajoute %.2f m vers l'arriere ; en l'air a -20 m/s, tir vers le bas, "
+                       "poussee ajoutee %.2f m vers le haut (attendu %.1f = 30 m/s x %.2f s ; ~%.1f = 20 m/s x %.2f s + residu de 7 m/s)\n",
+                    zz[1] - zz[0], yy[1] - yy[0], 30 * SG_KNOCK_RATIO * SG_KNOCK_T, SG_KNOCK_T, 20 * SG_KNOCK_RATIO * SG_KNOCK_T + 0.8f, SG_KNOCK_T);
+        }
 
         reset_game();                                      /* 9-10. recul en l'air, plafonds, au sol */
         P.pos = P.prevPos = v3(-20, 8, 40); P.grounded = 0; P.yaw = 0; P.pitch = -PI / 2; P.ammo[WP_SHOTGUN] = 6;
@@ -906,7 +954,7 @@ static void run_tests(const char *path) {
         P.vel = v3(0, -10, 0); fire_shotgun(); rv[2] = P.vel.y;
         P.vel = v3(0, 0, -20); P.yaw = PI; P.pitch = 0; fire_shotgun(); rv[3] = hlen(P.vel);   /* tir arriere apres un dash */
         P.grounded = 1; P.vel = v3(3, 0, -5); P.pitch = -PI / 2; fire_shotgun();
-        fprintf(f, "eventail recul : vy %.1f depuis 0, %.1f depuis 8.4, %.1f en chute a -10, vitesse %.1f (tir arriere a 20), "
+        fprintf(f, "shotgun recul : vy %.1f depuis 0, %.1f depuis 8.4, %.1f en chute a -10, vitesse %.1f (tir arriere a 20), "
                    "au sol (%.1f %.1f %.1f) (attendu 7.0, 9.0, -3.0, 20.0, (3.0 0.0 -5.0))\n",
                 rv[0], rv[1], rv[2], rv[3], P.vel.x, P.vel.y, P.vel.z);
         hitstop = 0;
@@ -916,7 +964,7 @@ static void run_tests(const char *path) {
         CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 3; CO[0].pos = v3(-20, 1.6f, 36);
         E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 100; E[0].pos = v3(-18, 1.6f, 36);
         fire_shotgun();
-        fprintf(f, "eventail eclat : pieces eclatees %d, plombs %d, PV drone %.1f, PV joueur %.0f, chaine %d (attendu 1, 0, 71.2, 100, 1)\n",
+        fprintf(f, "shotgun eclat : pieces eclatees %d, plombs %d, PV drone %.1f, PV joueur %.0f, chaine %d (attendu 1, 0, 71.2, 100, 1)\n",
                 sgBursts, P.sgLastPellets, E[0].hp, P.hp, shotStreak);
         hitstop = 0;
 
@@ -925,10 +973,10 @@ static void run_tests(const char *path) {
         CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 3; CO[0].pos = v3(-20, 1.6f, 36);
         CO[1].alive = 1; CO[1].owner = myId; CO[1].life = 3; CO[1].pos = v3(-18, 1.6f, 36);
         fire_shotgun();
-        fprintf(f, "eventail eclat en chaine : pieces eclatees %d, message \"%s\" (attendu 2, ECLAT x2)\n", sgBursts, popText);
+        fprintf(f, "shotgun eclat en chaine : pieces eclatees %d, message \"%s\" (attendu 2, ECLAT x2)\n", sgBursts, popText);
         hitstop = 0;
 
-        int wl0 = wantLoadout[0], wl1 = wantLoadout[1];    /* 14. loadout Eventail + rail : 3 au spawn, 3 tirs, bascule */
+        int wl0 = wantLoadout[0], wl1 = wantLoadout[1];    /* 14. loadout SHOTGUN + rail : 3 au spawn, 3 tirs, bascule */
         wantLoadout[0] = WP_SHOTGUN; wantLoadout[1] = WP_RAIL;
         reset_game();
         waveDelay = 1000;                                  /* aucun drone pendant le test */
@@ -941,14 +989,14 @@ static void run_tests(const char *path) {
             shots += P.ammo[WP_SHOTGUN] < a0;
         }
         botHeld[A_FIRE] = 0;
-        fprintf(f, "eventail munitions : au spawn %d (%s), %d tirs puis a sec : munitions %d, arme %s (attendu 3 (EVENTAIL), 3, 0, RAILGUN)\n",
+        fprintf(f, "shotgun munitions : au spawn %d (%s), %d tirs puis a sec : munitions %d, arme %s (attendu 3 (SHOTGUN), 3, 0, RAILGUN)\n",
                 spawnAmmo, ammoDef[spawnW].name, shots, P.ammo[WP_SHOTGUN], ammoDef[P.weapon].name);
 
         P.weapon = WP_SHOTGUN; P.switchT = 0;              /* 15. a vide pendant 10 s : aucune recharge passive */
         for (int i = 0; i < 1200; i++) game_tick(TICK);
-        fprintf(f, "eventail a vide 10 s : munitions %d, jauge %.0f (attendu 0, 0)\n", P.ammo[WP_SHOTGUN], P.ammoGauge[WP_SHOTGUN]);
+        fprintf(f, "shotgun a vide 10 s : munitions %d, jauge %.0f (attendu 0, 0)\n", P.ammo[WP_SHOTGUN], P.ammoGauge[WP_SHOTGUN]);
 
-        reset_game();                                      /* 16. a vide, Eventail en main : 2 coups d'epee = 1 cartouche */
+        reset_game();                                      /* 16. a vide, SHOTGUN en main : 2 coups d'epee = 1 cartouche */
         P.pos = P.prevPos = v3(-20, 0, 40); P.yaw = 0; P.pitch = 0;
         P.weapon = WP_SHOTGUN; P.ammo[WP_SHOTGUN] = 0; P.ammoGauge[WP_SHOTGUN] = 0;
         E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3(-20, 1.6f, 38);
@@ -959,7 +1007,7 @@ static void run_tests(const char *path) {
         int afterSword = P.ammo[WP_SHOTGUN]; float gSword = P.ammoGauge[WP_SHOTGUN];
         P.ammo[WP_SHOTGUN] = 5; P.ammoGauge[WP_SHOTGUN] = 0;   /* 17. a 5 : grande cellule (150) -> 6, jauge pleine */
         pickup_taken(0, myId);
-        fprintf(f, "eventail jauge : 2 coups d'epee -> %d cartouche(s), jauge %.0f ; a 5 + grande cellule (%d) -> %d, jauge affichee %.0f "
+        fprintf(f, "shotgun jauge : 2 coups d'epee -> %d cartouche(s), jauge %.0f ; a 5 + grande cellule (%d) -> %d, jauge affichee %.0f "
                    "(attendu 1, 0 ; 150, 6, 100)\n", afterSword, gSword, PU[0].pts, P.ammo[WP_SHOTGUN], 100 * gauge_frac(WP_SHOTGUN));
         PU[0].t = 0;
         wantLoadout[0] = wl0; wantLoadout[1] = wl1;
@@ -1146,12 +1194,12 @@ static void run_tests(const char *path) {
                 dived, slamWaveHits - wavesBefore, NP[1].hp);
     }
 
-    /* Eventail en LAN simule : un seul EV_HIT par tir (agregation), x0,7, plafond 60, chaine a 3 plombs, traceurs recus */
+    /* SHOTGUN en LAN simule : un seul EV_HIT par tir (agregation), x0,7, plafond 60, chaine a 3 plombs, traceurs recus */
     {
-        static const float dist[5] = { 3, 10, 3, 30, 10 };
-        static const int streak0[5] = { 0, 0, 8, 2, 2 };
-        float hpLeft[5]; int evHits[5], streakAfter[5], pel[5];
-        for (int s = 0; s < 5; s++) {
+        static const float dist[6] = { 3, 10, 3, 30, 10, 14 };
+        static const int streak0[6] = { 0, 0, 8, 2, 2, 0 };
+        float hpLeft[6]; int evHits[6], streakAfter[6], pel[6];
+        for (int s = 0; s < 6; s++) {
             reset_game();
             dmMode = 1;
             memset(NP, 0, sizeof NP);
@@ -1167,13 +1215,45 @@ static void run_tests(const char *path) {
             hpLeft[s] = NP[1].hp; evHits[s] = hitCount[W_SHOTGUN] - h0; streakAfter[s] = shotStreak; pel[s] = P.sgLastPellets;
         }
         hitstop = 0;
-        fprintf(f, "eventail PvP a 3 m : %d EV_HIT, %d plombs, PV %.1f (attendu 1, 10, 44)\n", evHits[0], pel[0], hpLeft[0]);
-        fprintf(f, "eventail PvP a 10 m : %d EV_HIT, %d plombs, PV %.1f (attendu 1, 6 a 8 selon la rotation, %.1f = 100 - plombs x 5.6)\n",
-                evHits[1], pel[1], hpLeft[1], 100 - pel[1] * SG_PELLET_DMG * PVP_SCALE);
-        fprintf(f, "eventail PvP a 3 m, chaine 8 : PV %.1f (attendu 40 : plafond de 60)\n", hpLeft[2]);
-        fprintf(f, "eventail PvP a 30 m, chaine 2 : %d plomb(s), chaine apres %d (attendu 1, 0 : moins de 3 plombs)\n", pel[3], streakAfter[3]);
-        fprintf(f, "eventail PvP a 10 m, chaine 2 : %d plombs, chaine apres %d, PV %.1f (attendu 6 a 8, 3, %.1f = 100 - plombs x 7.28)\n",
-                pel[4], streakAfter[4], hpLeft[4], 100 - pel[4] * SG_PELLET_DMG * 1.3f * PVP_SCALE);
+        fprintf(f, "shotgun PvP a 3 m : %d EV_HIT, %d plombs, PV %.1f (attendu 1, 10, 40 : %.0f demandes, plafonnes a %.0f)\n",
+                evHits[0], pel[0], hpLeft[0], pel[0] * SG_PELLET_DMG * PVP_SCALE, PVP_HIT_CAP);
+        fprintf(f, "shotgun PvP a 10 m : %d EV_HIT, %d plombs, PV %.1f (attendu 1, 6 a 8 selon la rotation, %.1f = 100 - min(plombs x 14, 60))\n",
+                evHits[1], pel[1], hpLeft[1], 100 - fminf(pel[1] * SG_PELLET_DMG * PVP_SCALE, PVP_HIT_CAP));
+        fprintf(f, "shotgun PvP a 3 m, chaine 8 : PV %.1f (attendu 40 : plafond de 60)\n", hpLeft[2]);
+        fprintf(f, "shotgun PvP a 30 m, chaine 2 : %d plomb(s), chaine apres %d (attendu 1 a 2, 0 : moins de 3 plombs)\n", pel[3], streakAfter[3]);
+        fprintf(f, "shotgun PvP a 10 m, chaine 2 : %d plombs, chaine apres %d, PV %.1f (attendu 6 a 8, 3, %.1f = 100 - min(plombs x 18.2, 60))\n",
+                pel[4], streakAfter[4], hpLeft[4], 100 - fminf(pel[4] * SG_PELLET_DMG * 1.3f * PVP_SCALE, PVP_HIT_CAP));
+        fprintf(f, "shotgun PvP a 14 m : %d plombs, PV %.1f (attendu 4 a 6 plombs, PV 40 a 51 selon la rotation : avant, 5 plombs x 5.6 = PV 72 ; maintenant le kill en 2 tirs va a 14 m)\n",
+                pel[5], hpLeft[5]);
+
+        {   /* recul de la victime : la MEME poussee que celle du tireur (proportionnelle a la vitesse du tireur), x part de plombs touches */
+            float kn[3], ps[3]; int nh[3];
+            static const float vsh[3] = { 0, 30, 100 };    /* vitesse du tireur vers la cible a 3 m : a l'arret, 30 m/s, au-dela du plafond */
+            for (int pass = 0; pass < 3; pass++) {
+                reset_game();
+                dmMode = 1;
+                memset(NP, 0, sizeof NP);
+                NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi");
+                NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible");
+                P.pos = P.prevPos = v3(-20, 0, 60); P.grounded = 1; P.vel = v3(0, 0, -vsh[pass]);
+                NP[1].disp = v3(-20, 0, 57); vf(NP[1].st.pos, NP[1].disp);
+                V3 d = vsub(np_center(1), eye_pos());
+                P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
+                P.ammo[WP_SHOTGUN] = 6; shotStreak = 0; hitstop = 0;
+                int q0 = outqHead;
+                fire_shotgun();
+                hitstop = 0;
+                kn[pass] = -1; nh[pass] = P.sgLastPellets; ps[pass] = sgLastPush;
+                for (int k = 0; k < OUTQ; k++) {           /* l'EV_HIT W_SHOTGUN que le tireur vient d'emettre : norme du recul */
+                    int idx = (q0 + k) % OUTQ;
+                    if (k < (outqHead - q0 + OUTQ) % OUTQ && outq[idx].ev.kind == EV_HIT && outq[idx].ev.sub == W_SHOTGUN)
+                        kn[pass] = vlen(fv(outq[idx].ev.f + 1));
+                }
+            }
+            fprintf(f, "shotgun recul de la victime a 3 m, tireur a 0 / 30 / 100 m/s : %d / %d / %d plombs, recul emis %.1f / %.1f / %.1f m/s, poussee du tireur "
+                       "%.1f / %.1f / %.1f m/s (attendu 10 plombs, 0 / 30 / %.0f sans plafond, identique a la poussee du tireur)\n",
+                    nh[0], nh[1], nh[2], kn[0], kn[1], kn[2], ps[0], ps[1], ps[2], SG_KNOCK_RATIO * 100);
+        }                                                  /* (dmMode et NP restent comme apres le test precedent : la suite en depend) */
 
         memset(TR, 0, sizeof TR);                          /* 13. EV_SHOT recu d'un autre joueur : 10 traceurs recalcules */
         NetEvent e = ev_new(EV_SHOT);
@@ -1182,16 +1262,16 @@ static void run_tests(const char *path) {
         apply_event(&e);
         int live = 0;
         for (int i = 0; i < MAXTR; i++) live += TR[i].t < TR[i].life;
-        fprintf(f, "eventail EV_SHOT recu : %d traceurs, recul visuel du tireur %.2f (attendu 10, 0.12)\n", live, NP[1].sgFireT);
+        fprintf(f, "shotgun EV_SHOT recu : %d traceurs, recul visuel du tireur %.2f (attendu 10, 0.12)\n", live, NP[1].sgFireT);
 
-        reset_game();                                      /* bot au loadout Eventail + rail, cible immobile a 8 m */
+        reset_game();                                      /* bot au loadout SHOTGUN + rail, cible immobile a 8 m */
         dmMode = 1;
         NP[1].active = NP[1].alive = 1; NP[1].hp = 100; NP[1].disp = v3(-20, 0, 52); vf(NP[1].st.pos, NP[1].disp);
         P.pos = P.prevPos = v3(-20, 0, 60); P.yaw = 0; P.dashCharge = 0;   /* pas de cross-up : on veut le tir direct */
         P.loadout[0] = WP_RAIL; P.loadout[1] = WP_SHOTGUN; P.weapon = WP_RAIL;
         int hs0 = hitCount[W_SHOTGUN], hr0 = hitCount[W_RAIL];
         for (int i = 0; i < 90 && NP[1].alive; i++) { nowT += TICK; bot_think(TICK); game_tick(TICK); hitstop = 0; }
-        fprintf(f, "bot eventail a 8 m : arme %s, touches eventail %d, rail %d (attendu EVENTAIL, >= 1, 0)\n",
+        fprintf(f, "bot shotgun a 8 m : arme %s, touches shotgun %d, rail %d (attendu SHOTGUN, >= 1, 0)\n",
                 ammoDef[P.weapon].name, hitCount[W_SHOTGUN] - hs0, hitCount[W_RAIL] - hr0);
     }
 
@@ -1243,6 +1323,25 @@ static void run_tests(const char *path) {
                        "munition %d (attendu 0, 0.00, 0.000, 0.50, ~calcul, 1)\n",
                     hookAfter, vAt, moved, cdAt, (caughtTick - recallTick) * TICK, (dist0 - SAW_CATCH_R) / SAW_RECALL_SPEED,
                     P.ammo[WP_SAW]);
+        }
+        /* 6 bis. hitbox du crochet (patch d'equilibrage) : la scie plantee est rappelee si le crochet passe a ~1 m de son centre
+         * (SAW_HOOK_R 1,2 ; a 0,6 avant, il s'accrochait au mur a cote) */
+        for (int pass = 0; pass < 2; pass++) {
+            saw_test_reset(v3(-20, 0, 60), PI, 0);
+            Proj *o = saw_test_put(v3(-20, 1.0f, 78.4f + SAW_EMBED), v3(0, 0, 0), SAW_PLANTED, myId);   /* dans la face -z du mur */
+            o->sawN = v3(0, 0, -1);
+            V3 aimAt = v3(-20 + (pass ? 2.0f : 1.0f), 1.0f, 78.4f), d = vsub(aimAt, eye_pos());   /* a 1 m, puis a 2 m du centre de la scie */
+            P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(d.y / vlen(d));
+            hookPressIn = 1; hookHeldIn = 1;
+            int recalled = 0, attached = 0;
+            for (int i = 0; i < 40; i++) {
+                player_tick(TICK, 0, 0); hookPressIn = 0;
+                if (o->sawState == SAW_RECALL) { recalled = 1; break; }
+                if (P.hook == HOOK_ATTACHED) { attached = 1; break; }
+            }
+            hookHeldIn = 0;
+            fprintf(f, "scie hitbox du crochet a %.0f m du centre : rappelee %d, crochet accroche au mur %d (attendu %s, SAW_HOOK_R = %.1f m ; avant 0.6 : "
+                       "0, 1 des 1 m)\n", pass ? 2.0f : 1.0f, recalled, attached, pass ? "0, 1" : "1, 0", SAW_HOOK_R);
         }
         /* 7. la scie plantee d'un autre est ignoree : le crochet s'accroche au mur derriere */
         saw_test_reset(v3(-20, 0, 60), PI, 0);
@@ -1901,7 +2000,7 @@ static void run_tests(const char *path) {
                 MINE_DMG * MINE_BOOST_MULT * (0.3f + 0.7f * (1 - 2 / (MINE_BOOST_RADIUS + enemy_radius(EN_DRONE)))));
         hitstop = 0;
     }
-    {   /* 5b. un plomb de l'Eventail, puis l'arc de la Tesla, dans une mine a 2 m d'un drone (x1) */
+    {   /* 5b. un plomb du SHOTGUN, puis l'arc de la Tesla, dans une mine a 2 m d'un drone (x1) */
         float dm[2];
         for (int k = 0; k < 2; k++) {
             mine_test_reset(v3(-20, 0, 40), 0, 0);
@@ -3540,7 +3639,7 @@ static void run_tests(const char *path) {
             eco_gain(ECO_KILL, NULL);
             int bought = eco_buy(WP_ROCKET);
             int lo[2]; eco_loadout(lo);
-            fprintf(f, "boutique : depart %d pieces, arme a choisir %d, ROQUETTES trop cheres %d puis achetees %d, reste %d, armes %s + %s (attendu %d, 1, 0, 1, %d, EVENTAIL + ROQUETTES)\n",
+            fprintf(f, "boutique : depart %d pieces, arme a choisir %d, ROQUETTES trop cheres %d puis achetees %d, reste %d, armes %s + %s (attendu %d, 1, 0, 1, %d, SHOTGUN + ROQUETTES)\n",
                     c0, need, noMoney, bought, credits, ammoDef[lo[0]].name, ammoDef[lo[1]].name, ECO_START, ECO_START + ECO_KILL - eco_price(WP_ROCKET));
             #undef TICKS
             botLog = logSave;
@@ -3784,7 +3883,7 @@ static void run_tests(const char *path) {
 #define SK_DRONE(x, z) do { E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 1000; E[0].pos = v3((x), eye_pos().y, (z)); } while (0)
 
         reset_game();                                     /* PIECE par defaut, recharge propre a chaque competence */
-        fprintf(f, "competences : par defaut %s, %.0f charges (attendu PIECE, %d)\n", skillDef[P.skill].name, P.skillCh, COIN_MAX);
+        fprintf(f, "competences : par defaut %s, %.0f charges (attendu PIECE, %d : 2 charges au lieu de 4)\n", skillDef[P.skill].name, P.skillCh, COIN_MAX);
         {
             char rb[256];
             int rn = 0;
@@ -3794,7 +3893,7 @@ static void run_tests(const char *path) {
                 while (P.skillCh < 1 && ticks < 60 * 120) { skill_tick(TICK, 0, 0); ticks++; }
                 rn += snprintf(rb + rn, sizeof rb - rn, "%s %.1f s, ", skillDef[k].name, ticks * TICK);
             }
-            fprintf(f, "competences : recharge d'une charge : %s(attendu 2.0, 6.0, 8.0, 15.0, 20.0, 7.0, 45.0)\n", rb);
+            fprintf(f, "competences : recharge d'une charge : %s(attendu 5.0, 6.0, 8.0, 20.0, 20.0, 7.0, 45.0)\n", rb);
         }
 
         SK_LAB(SK_MARK, 2); SK_DRONE(20, 100);            /* MARQUE : drone a 20 m, x1,25 pendant 4 s */
@@ -3845,20 +3944,25 @@ static void run_tests(const char *path) {
                     at05, at06, d1, d2, RAIL_DMG * CHARGE_MULT, RAIL_DMG, split, ready, 1000 - E[0].hp, RAIL_DMG);
         }
 
-        {                                                 /* RICOCHET : reflexion sur un mur, 3 rebonds, recharge au tir */
+        {                                                 /* RICOCHET : fenetre de RIC_DURATION s, tout rebondit sans fin, recharge apres la fermeture */
             SK_LAB(SK_RICOCHET, 1); P.yaw = PI - 0.5f;    /* 28,6 degres d'incidence sur le mur z = 110 */
             skill_tick(TICK, 1, 1);
             int armed = P.ricArmed, b0 = ricStat[1];
-            for (int i = 0; i < 600; i++) skill_tick(TICK, 0, 0);   /* 5 s armee sans tirer */
-            float ch5 = P.skillCh;
+            float chOpen = P.skillCh;
+            for (int i = 0; i < 600; i++) skill_tick(TICK, 0, 0);   /* 5 s : encore ouverte (6 s) */
+            int open5 = P.ricArmed;
             fire_rail();
             float inc = acosf(clampf(-vdot(ricDir[0], ricNrm[0]), -1, 1)) * 180 / PI;
             float out = acosf(clampf(vdot(ricDir[1], ricNrm[0]), -1, 1)) * 180 / PI;
             int segs = ricSegs, bounces = ricStat[1] - b0, armedAfter = P.ricArmed;
-            for (int i = 0; i < 1800; i++) skill_tick(TICK, 0, 0);  /* 15 s apres le tir */
-            fprintf(f, "ricochet : arme %d, charge apres 5 s sans tirer %.2f (attendu 1, 0.00) ; incidence %.2f, sortie %.2f, ecart %.2f "
-                       "(attendu ecart < 0.5) ; segments %d, rebonds %d (attendu 4, 3 : plafond) ; desarme %d, charge 15 s apres le tir %.2f "
-                       "(attendu 1, 1.00)\n", armed, ch5, inc, out, fabsf(inc - out), segs, bounces, !armedAfter, P.skillCh);
+            for (int i = 0; i < 132; i++) skill_tick(TICK, 0, 0);   /* 6,1 s depuis l'ouverture */
+            int closed = !P.ricArmed; float chClosed = P.skillCh;
+            for (int i = 0; i < 20 * 120 - 12; i++) skill_tick(TICK, 0, 0);   /* 20 s apres la fermeture */
+            fprintf(f, "ricochet : ouvert %d, charge %.2f (attendu 1, 0.00) ; a 5 s encore ouvert %d (attendu 1) ; incidence %.2f, sortie %.2f, ecart %.2f "
+                       "(attendu ecart < 0.5) ; segments %d, rebonds %d (attendu 6, 5 : le tir sort du labo de 120 m, plus de plafond a 3) ; "
+                       "encore ouvert apres le tir %d (attendu 1) ; ferme a 6,1 s %d, charge juste apres %.2f, 20 s apres la fermeture %.2f "
+                       "(attendu 1, ~0.00, 1.00)\n", armed, chOpen, open5, inc, out, fabsf(inc - out), segs, bounces, armedAfter, closed, chClosed,
+                    P.skillCh);
 
             float dxw = 10 * tanf(0.5f);                  /* touche le mur z = 110 en x = 10 tan(0,5), repasse en z = 100 en x = 2 x */
             SK_LAB(SK_RICOCHET, 1); P.yaw = PI - 0.5f; SK_DRONE(2 * dxw, 100);
@@ -3874,10 +3978,17 @@ static void run_tests(const char *path) {
             skill_tick(TICK, 1, 1);
             int self0 = ricStat[2];
             fire_rail();
-            fprintf(f, "ricochet : tir perpendiculaire entre deux murs, PV %.0f, retours sur soi %d (attendu %.0f, 1 : 2e rebond, une fois)\n",
-                    P.hp, ricStat[2] - self0, 100 - RAIL_DMG * 0.5f);
+            fprintf(f, "ricochet : tir perpendiculaire entre deux murs, PV %.0f, retours sur soi %d, segments %d (attendu %.0f, 1 : une seule fois, %d = 1 + "
+                       "RIC_CAP_BOUNCES : le garde-fou technique arrete le tir)\n", P.hp, ricStat[2] - self0, ricSegs, 100 - RAIL_DMG * 0.5f,
+                    1 + RIC_CAP_BOUNCES);
 
-            for (int pass = 0; pass < 2; pass++) {        /* roquette : rebondit 3 fois puis explose ; ou sur un drone apres le 1er rebond */
+            SK_LAB(SK_RICOCHET, 1); P.yaw = PI; SK_DRONE(0, 105);   /* un drone sur la ligne : le tir le croise a chaque aller-retour, mais ne le touche qu'une fois */
+            skill_tick(TICK, 1, 1);
+            fire_rail();
+            fprintf(f, "ricochet : drone sur la ligne d'un tir de %d segments (il la croise a chaque aller-retour), degats %.0f (attendu %.0f : "
+                       "RIC_HITS_MAX = %d touche par cible et par tir)\n", ricSegs, 1000 - E[0].hp, RAIL_DMG, RIC_HITS_MAX);
+
+            for (int pass = 0; pass < 2; pass++) {        /* roquette : rebondit jusqu'a sortir du labo ou toucher un drone (vie 15 s au plus) */
                 SK_LAB(SK_RICOCHET, 1); P.yaw = PI - 0.5f; P.weapon = WP_ROCKET;
                 if (pass) SK_DRONE(2 * dxw, 100);
                 skill_tick(TICK, 1, 1);
@@ -3885,20 +3996,46 @@ static void run_tests(const char *path) {
                 fire_rocket();
                 Proj *rk = &PR[0];
                 int bounces = 0, prev = rk->ricLeft, leftAtEnd = -1, endOk = 0;
-                float v1 = 0;
-                for (int i = 0; i < 6 * 120 && rk->alive; i++) {
+                float v1 = 0, vEnd = 0;
+                for (int i = 0; i < 16 * 120 && rk->alive; i++) {
                     proj_tick(TICK);
                     if (rk->ricLeft != prev) { bounces++; prev = rk->ricLeft; if (bounces == 1) v1 = vlen(rk->vel); }
-                    if (!rk->alive) { leftAtEnd = rk->ricLeft; endOk = rk->life > 0; }
+                    vEnd = vlen(rk->vel);
+                    if (!rk->alive) { leftAtEnd = rk->ricLeft; endOk = rk->life <= 0; }
                 }
                 if (!pass)
-                    fprintf(f, "ricochet roquette : rebonds %d, vitesse apres le 1er %.1f, explose au 4e impact %d (attendu 3, %.1f, 1)\n",
-                            bounces, v1, endOk && leftAtEnd == 0, ROCKET_SPEED * RIC_ROCKET_SLOW);
+                    fprintf(f, "ricochet roquette : rebonds %d, vitesse apres le 1er %.1f, a la fin %.1f, explose en fin de vie (%.0f s) %d "
+                               "(attendu 5 a 6, %.1f, %.1f, %.0f s, 1 : sortie du labo, plus de 3 rebonds)\n",
+                            bounces, v1, vEnd, RIC_ROCKET_LIFE, endOk, ROCKET_SPEED * RIC_ROCKET_SLOW, ROCKET_SPEED * RIC_ROCKET_SLOW, RIC_ROCKET_LIFE);
                 else
-                    fprintf(f, "ricochet roquette : drone sur le rebond touche %d, rebonds restants %d (attendu 1, 2)\n",
-                            E[0].hp < 1000, leftAtEnd);
+                    fprintf(f, "ricochet roquette : drone sur le rebond touche %d, rebonds restants %d (attendu 1, %d = RIC_ROCKET_CAP - 1)\n",
+                            E[0].hp < 1000, leftAtEnd, RIC_ROCKET_CAP - 1);
             }
             memset(PR, 0, sizeof PR);
+
+            {                                             /* plombs : le meme drone, cache derriere le rebond, n'est touche que fenetre ouverte */
+                float dmg[2]; int pr[2];
+                for (int pass = 0; pass < 2; pass++) {
+                    SK_LAB(SK_RICOCHET, 1); P.yaw = PI - 0.5f; P.weapon = WP_SHOTGUN; P.ammo[WP_SHOTGUN] = 6; SK_DRONE(2 * dxw, 100);
+                    if (pass) skill_tick(TICK, 1, 1);
+                    fire_shotgun(); hitstop = 0;
+                    dmg[pass] = 1000 - E[0].hp; pr[pass] = sgPellRic;
+                }
+                fprintf(f, "ricochet plombs : drone derriere le rebond, fenetre fermee %.1f (rebonds %d), ouverte %.1f (rebonds de plombs %d) "
+                           "(attendu 0 (0), > 0 (> 0))\n", dmg[0], pr[0], dmg[1], pr[1]);
+            }
+            {                                             /* scie : fenetre ouverte, elle rebondit sur le mur au lieu de s'y planter */
+                SK_LAB(SK_RICOCHET, 1); P.yaw = PI - 0.5f; P.weapon = WP_SAW; P.ammo[WP_SAW] = 1;
+                skill_tick(TICK, 1, 1);
+                memset(PR, 0, sizeof PR);
+                int rb0 = ricStat[1];
+                fire_saw();
+                Proj *sw = &PR[0];
+                for (int i = 0; i < 264 && sw->alive; i++) proj_tick(TICK);   /* 2,2 s de vol : 1er mur a 0,36 s, 2e a 1,07 s, 3e a 1,8 s */
+                fprintf(f, "ricochet scie : rebonds %d, etat %d, rebonds restants %d (attendu >= 2, %d = SAW_FLY, < %d)\n",
+                        ricStat[1] - rb0, sw->sawState, sw->ricLeft, SAW_FLY, RIC_SAW_CAP);
+                memset(PR, 0, sizeof PR);
+            }
         }
 
         {                                                 /* ALL IN ONE : n projectiles, munition a 0, eventail, refus */
@@ -3925,8 +4062,8 @@ static void run_tests(const char *path) {
             snprintf(why, sizeof why, "%s", popText);
             SK_LAB(SK_ALLIN, 1); P.weapon = WP_TESLA;
             skill_tick(TICK, 1, 1);
-            fprintf(f, "all in one : refus a 1 munition (munition %d, charges %.0f, \"%s\"), tesla en main charges %.0f \"%s\" "
-                       "(attendu 1, 1, 1)\n", a1, c1, why, P.skillCh, popText);
+            fprintf(f, "all in one : refus a 1 munition (munition %d, charges %.0f, \"%s\"), tesla en main sans cible charges %.0f \"%s\" "
+                       "(attendu 1, 1, 1, \"ALL IN ONE : PAS DE CIBLE\")\n", a1, c1, why, P.skillCh, popText);
 
             SK_LAB(SK_ALLIN, 1); dmMode = 1;              /* PvP : 2 rails a 8 m, plafond par projectile : one-shot */
             NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi");
@@ -3986,6 +4123,169 @@ static void run_tests(const char *path) {
             fprintf(f, "mirage : mon rail ricoche sur mon leurre -> drone %.0f, chaine %d (attendu %.0f, 1) ; leurre a mes pieds traverse : "
                        "drone en face %.0f, leurre intact %d (attendu %.0f, 1)\n", dr, ch, RAIL_DMG * DECOY_MULT, 1000 - E[0].hp,
                     CO[0].alive, RAIL_DMG);
+        }
+
+        {   /* --- Triangle MIRAGE => PIECE => RICOCHET => MIRAGE, TESLA x ALL IN ONE, ROQUETTE x PIECE (patch d'equilibrage) --- */
+            double nt0 = nowT;
+            nowT = 1000;                                  /* loin de lastParryT = 0 : aucun parry fortuit de l'hote */
+#define SK_PLAYERS() do { memset(NP, 0, sizeof NP); \
+                          NP[0].active = NP[0].alive = 1; NP[0].hp = 100; snprintf(NP[0].name, 16, "Moi"); \
+                          NP[1].active = NP[1].alive = 1; NP[1].hp = 100; snprintf(NP[1].name, 16, "Cible"); \
+                          NP[2].active = NP[2].alive = 1; NP[2].hp = 100; snprintf(NP[2].name, 16, "Poseur"); } while (0)
+            /* MIRAGE => PIECE : le ricochet de ma piece suit le leurre adverse (62 m) et non le joueur (12 m) */
+            float hpLure[2]; int lureGone = 0, lured0 = decoyLured;
+            for (int pass = 0; pass < 2; pass++) {
+                SK_LAB(SK_COIN, 2); dmMode = 1; SK_PLAYERS();
+                NP[1].disp = v3(20, SKY, 105); vf(NP[1].st.pos, NP[1].disp);
+                NP[2].disp = v3(80, SKY, 100); vf(NP[2].st.pos, NP[2].disp);
+                memset(CO, 0, sizeof CO);
+                CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 3; CO[0].netId = 0x01000001; CO[0].pos = vadd(eye_pos(), v3(8, 0, 0));
+                if (pass == 0) { CO[1].alive = 1; CO[1].decoy = 1; CO[1].owner = 2; CO[1].life = 3; CO[1].netId = 0x03000001; CO[1].pos = vadd(eye_pos(), v3(70, 0, 0)); }
+                fire_rail();
+                hpLure[pass] = NP[1].hp; if (pass == 0) lureGone = !CO[1].alive;
+            }
+            fprintf(f, "mirage => piece : ricochet de ma piece avec un leurre adverse a 62 m et un joueur a 12 m : PV du joueur %.0f, leurre detruit %d, "
+                       "ricochets detournes +%d (attendu 100, 1, 1) ; sans le leurre : PV %.0f (attendu 40 : 105 plafonnes a %.0f)\n",
+                    hpLure[0], lureGone, decoyLured - lured0, hpLure[1], PVP_HIT_CAP);
+            dmMode = 0; memset(NP, 0, sizeof NP);
+
+            /* RICOCHET => MIRAGE : si j'ai RICOCHET, mon rail sur le leurre adverse repart vers son poseur (derriere lui, en vue) */
+            float hpRef[2]; int refl0 = decoyReflects, gone2 = 0; char pop2[32] = "";
+            for (int pass = 0; pass < 2; pass++) {
+                SK_LAB(pass ? SK_COIN : SK_RICOCHET, 1); dmMode = 1; SK_PLAYERS();
+                NP[1].disp = v3(20, SKY, 100); vf(NP[1].st.pos, NP[1].disp);
+                memset(CO, 0, sizeof CO);
+                CO[0].alive = 1; CO[0].decoy = 1; CO[0].owner = 1; CO[0].life = 3; CO[0].netId = 0x02000078; CO[0].pos = vadd(eye_pos(), v3(10, 0, 0));
+                fire_rail();
+                hpRef[pass] = NP[1].hp;
+                if (!pass) { gone2 = !CO[0].alive; snprintf(pop2, sizeof pop2, "%s", popText); }
+            }
+            fprintf(f, "ricochet => mirage : avec RICOCHET, mon rail sur le leurre de Poseur : PV du poseur %.0f, leurre detruit %d, renvois +%d, \"%s\" "
+                       "(attendu 40, 1, 1, LEURRE RENVOYE !) ; avec PIECE : PV %.0f (attendu 100 : absorbe)\n",
+                    hpRef[0], gone2, decoyReflects - refl0, pop2, hpRef[1]);
+            dmMode = 0; memset(NP, 0, sizeof NP);
+
+            /* PIECE => RICOCHET (lecture par defaut, COIN_VS_RIC) : mon tir en rebond qui touche la piece adverse repart vers moi, au lieu de la voler */
+            {
+                float hpBack[2], hpFoe[2]; int cb0 = coinBacks, goneBack = 0;
+                for (int pass = 0; pass < 2; pass++) {    /* pass 0 : fenetre RICOCHET ouverte ; pass 1 : fermee (contre-jeu habituel : je vole la piece) */
+                    SK_LAB(SK_RICOCHET, 1); dmMode = 1; SK_PLAYERS();
+                    NP[1].disp = v3(20, SKY, 105); vf(NP[1].st.pos, NP[1].disp);
+                    memset(CO, 0, sizeof CO);
+                    CO[0].alive = 1; CO[0].owner = 1; CO[0].life = 3; CO[0].netId = 0x02000091; CO[0].pos = vadd(eye_pos(), v3(8, 0, 0));
+                    if (pass == 0) skill_tick(TICK, 1, 1);
+                    fire_rail();
+                    hpBack[pass] = NP[0].hp; hpFoe[pass] = NP[1].hp; if (pass == 0) goneBack = !CO[0].alive;
+                }
+                fprintf(f, "piece => ricochet : ma fenetre RICOCHET ouverte, mon rail dans la piece de Cible : mes PV %.0f, ceux de Cible %.0f, piece detruite %d, "
+                           "renvois +%d (attendu 40, 100, 1, 1 : 70 plafonnes a %.0f) ; fenetre fermee : mes PV %.0f, ceux de Cible %.0f (attendu 100, 40 : "
+                           "je vole la piece)\n", hpBack[0], hpFoe[0], goneBack, coinBacks - cb0, PVP_HIT_CAP, hpBack[1], hpFoe[1]);
+                dmMode = 0; memset(NP, 0, sizeof NP);
+
+                SK_LAB(SK_RICOCHET, 1); dmMode = 1; SK_PLAYERS(); P.weapon = WP_ROCKET; P.ammo[WP_ROCKET] = 4;   /* roquette en rebond dans la piece adverse */
+                NP[1].disp = v3(60, SKY, 100); vf(NP[1].st.pos, NP[1].disp);   /* hors du chemin, hors de portee du souffle */
+                memset(CO, 0, sizeof CO); memset(PR, 0, sizeof PR);
+                CO[0].alive = 1; CO[0].owner = 1; CO[0].life = 3; CO[0].netId = 0x02000092; CO[0].pos = vadd(eye_pos(), v3(10, 0, 0));
+                skill_tick(TICK, 1, 1);
+                int cb1 = coinBacks;
+                fire_rocket();
+                for (int i = 0; i < 3 * 120 && PR[0].alive; i++) proj_tick(TICK);
+                fprintf(f, "piece => ricochet : ma roquette en rebond dans la piece de Cible : piece detruite %d, renvois +%d, roquette finie %d, mes PV %.0f, "
+                           "ceux de Cible %.0f (attendu 1, 1, 1, 70 a 85 : 30 x f sur moi, 100)\n", !CO[0].alive, coinBacks - cb1, !PR[0].alive,
+                        NP[0].hp, NP[1].hp);
+                memset(PR, 0, sizeof PR); hitstop = 0;
+                dmMode = 0; memset(NP, 0, sizeof NP);
+            }
+
+            /* TESLA x ALL IN ONE : un eclair instantane sur la cible du viseur (drone decale de 7 deg : l'arc normal le rate), toute la batterie */
+            {
+                SK_LAB(SK_ALLIN, 1); P.weapon = WP_TESLA; P.ammo[WP_TESLA] = 100; SK_DRONE(20, 102.5f);
+                tesla_pulse(); tesla_flush();             /* l'arc normal rate (cible a 2,5 m du viseur, marge de 1,3 m) */
+                float arc = 1000 - E[0].hp;
+                P.ammo[WP_TESLA] = 100; P.fireCd = 0; E[0].hp = 1000;
+                skill_tick(TICK, 1, 1);
+                fprintf(f, "tesla all in one : arc normal sur le drone decale %.0f (attendu 0) ; eclair %.0f (attendu %.0f = batterie 100), batterie %d, charges %.0f, "
+                           "\"%s\" (attendu 0, 0, \"ECLAIR !\")\n", arc, 1000 - E[0].hp, TESLA_BOLT_DMG, P.ammo[WP_TESLA], P.skillCh, popText);
+
+                SK_LAB(SK_ALLIN, 1); P.weapon = WP_TESLA; P.ammo[WP_TESLA] = 50; SK_DRONE(20, 102.5f);   /* batterie 50 : moitie des degats ; + une chaine */
+                E[1].alive = 1; E[1].type = EN_DRONE; E[1].hp = 1000; E[1].pos = v3(20, eye_pos().y, 106.5f);
+                skill_tick(TICK, 1, 1);
+                fprintf(f, "tesla all in one : batterie 50 -> drone %.0f (attendu %.0f), 2e drone a 4 m (chaine) %.0f (attendu %.0f)\n",
+                        1000 - E[0].hp, TESLA_BOLT_DMG * 0.5f, 1000 - E[1].hp, TESLA_BOLT_DMG * 0.5f * TESLA_CHAIN_MULT);
+                E[1].alive = 0;
+
+                SK_LAB(SK_ALLIN, 1); P.weapon = WP_TESLA; P.ammo[WP_TESLA] = TESLA_BOLT_MIN - 1; SK_DRONE(20, 100);
+                skill_tick(TICK, 1, 1);
+                char r1[40]; snprintf(r1, sizeof r1, "%s", popText);
+                float c1 = P.skillCh; int b1 = P.ammo[WP_TESLA], hp1 = E[0].hp < 1000;
+                SK_LAB(SK_ALLIN, 1); P.weapon = WP_TESLA; P.ammo[WP_TESLA] = 100; SK_DRONE(20, 94);   /* a 17 degres du viseur : hors du cone de 10 */
+                skill_tick(TICK, 1, 1);
+                fprintf(f, "tesla all in one : refus batterie %d \"%s\" charges %.0f touche %d ; hors du cone \"%s\" charges %.0f batterie %d "
+                           "(attendu %d, ALL IN ONE : BATTERIE < %d, 1, 0 ; ALL IN ONE : PAS DE CIBLE, 1, 100)\n",
+                        b1, r1, c1, hp1, popText, P.skillCh, P.ammo[WP_TESLA], TESLA_BOLT_MIN - 1, TESLA_BOLT_MIN);
+
+                SK_LAB(SK_ALLIN, 1); dmMode = 1; SK_PLAYERS(); P.weapon = WP_TESLA; P.ammo[WP_TESLA] = 100;   /* PvP : x0,7, plafond de 60 */
+                NP[1].disp = v3(20, SKY, 102.5f); vf(NP[1].st.pos, NP[1].disp);
+                skill_tick(TICK, 1, 1);
+                fprintf(f, "tesla all in one PvP : PV de la cible %.0f (attendu 40 : %.0f x 0,7 plafonnes a %.0f)\n", NP[1].hp, TESLA_BOLT_DMG, PVP_HIT_CAP);
+                dmMode = 0; memset(NP, 0, sizeof NP);
+            }
+
+            /* ROQUETTE x PIECE (comme Ultrakill) : la roquette qui traverse ma piece part vers le drone hors de la ligne, x1,5 */
+            {
+                float dd[2]; int rc0 = rocketCoin, coinGone = 0;
+                for (int pass = 0; pass < 2; pass++) {
+                    SK_LAB(SK_COIN, 2); P.weapon = WP_ROCKET; P.ammo[WP_ROCKET] = 4;
+                    memset(CO, 0, sizeof CO); memset(PR, 0, sizeof PR);
+                    if (pass == 0) { CO[0].alive = 1; CO[0].owner = myId; CO[0].life = 4; CO[0].pos = vadd(eye_pos(), v3(10, 0, 0)); SK_DRONE(12, 93); }
+                    else SK_DRONE(12, 100);               /* temoin : le meme drone, tir direct */
+                    fire_rocket();
+                    for (int i = 0; i < 3 * 120 && PR[0].alive; i++) proj_tick(TICK);
+                    dd[pass] = 1000 - E[0].hp; if (pass == 0) coinGone = !CO[0].alive;
+                    hitstop = 0;
+                }
+                fprintf(f, "roquette x piece : drone hors de la ligne, degats %.0f, piece consommee %d, redirigees +%d (attendu 1) ; tir direct %.0f ; "
+                           "rapport %.2f (attendu 1,50 = COIN_MULT)\n", dd[0], coinGone, rocketCoin - rc0, dd[1], dd[1] > 0 ? dd[0] / dd[1] : 0.0f);
+                memset(PR, 0, sizeof PR);
+            }
+
+            /* reseau : EV_RAIL sous-type 2 (un seul evenement pour tous les rebonds), EV_HIT W_SHOTGUN (poussee), EV_SHOT avec rebonds */
+            {
+                SK_LAB(SK_RICOCHET, 1); P.yaw = PI - 0.5f; dmMode = 1; SK_PLAYERS();
+                skill_tick(TICK, 1, 1);
+                memset(BM, 0, sizeof BM);
+                int q0 = outqHead;
+                fire_rail();
+                int own = 0, remote = 0, nev = 0, act = 0;
+                for (int i = 0; i < MAXBM; i++) own += BM[i].life > 0;
+                for (int k = 0; k < OUTQ; k++) {
+                    int idx = (q0 + k) % OUTQ;
+                    if (k < (outqHead - q0 + OUTQ) % OUTQ && outq[idx].ev.kind == EV_RAIL && outq[idx].ev.sub == 2) {
+                        nev++; act = outq[idx].ev.actor;
+                        memset(BM, 0, sizeof BM);
+                        apply_event(&outq[idx].ev);
+                        for (int i = 0; i < MAXBM; i++) remote += BM[i].life > 0;
+                    }
+                }
+                fprintf(f, "ricochet reseau : %d evenement EV_RAIL sous-type 2 pour %d rebonds, traits chez le tireur %d, recalcules chez les autres %d "
+                           "(attendu 1, 5, 6, 5)\n", nev, act, own, remote);
+                dmMode = 0; memset(NP, 0, sizeof NP);
+
+                SK_LAB(SK_COIN, 2);                        /* EV_HIT W_SHOTGUN : poussee forcee de la victime, vitesse intacte ; autre arme : vitesse ajoutee */
+                P.pos = P.prevPos = v3(0, SKY, 100); P.grounded = 1; P.vel = v3(0, 0, 0);
+                NetEvent hv = ev_new(EV_HIT);
+                hv.from = 1; hv.target = (unsigned char)myId; hv.sub = W_SHOTGUN; vf(hv.f + 1, v3(0, 0, 50));
+                apply_event(&hv);
+                float pt0 = P.pushT, vs0 = vlen(P.vel);
+                P.pushT = 0;
+                hv.sub = W_ROCKET; vf(hv.f + 1, v3(0, 0, 10));
+                apply_event(&hv);
+                fprintf(f, "shotgun recul recu : EV_HIT 50 m/s -> poussee %.2f s, vitesse %.1f (attendu %.2f, 0.0) ; EV_HIT roquette 10 m/s -> vitesse %.1f, "
+                           "poussee %.2f (attendu 10.0, 0.00)\n", pt0, vs0, SG_KNOCK_T, vlen(P.vel), P.pushT);
+                P.vel = v3(0, 0, 0); P.pushT = 0;
+            }
+            nowT = nt0;
+#undef SK_PLAYERS
         }
 #undef SK_LAB
 #undef SK_DRONE
@@ -4144,7 +4444,7 @@ static void run_tests(const char *path) {
     {   /* fusion : 2e ecran opt-in ; protocole */
         fprintf(f, "second ecran : actif par defaut %d (attendu 0)\n", secondScreen);
         PkAnnounce pa;
-        fprintf(f, "protocole : NET_VER %d, PkAnnounce %d octets avec ranked a l'octet %d (attendu 20, %d, %d)\n", NET_VER,
+        fprintf(f, "protocole : NET_VER %d, PkAnnounce %d octets avec ranked a l'octet %d (attendu 21, %d, %d)\n", NET_VER,
                 (int)sizeof(PkAnnounce), (int)((unsigned char *)&pa.ranked - (unsigned char *)&pa), (int)sizeof(PkHead) + 16 + 8, (int)sizeof(PkHead) + 20);
         double sNow = nowT;                               /* chargement de carte : l'arrivant a NET_LOAD_GRACE de plus */
         nowT = 100;

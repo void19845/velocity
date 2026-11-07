@@ -11,20 +11,25 @@
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   20      /* 15 : regles (mode, grappin, munitions, boutique, specs) et objectifs dans PkSnap, EV_OBJ, spec dans NetPState ;
+#define NET_VER   21      /* 15 : regles (mode, grappin, munitions, boutique, specs) et objectifs dans PkSnap, EV_OBJ, spec dans NetPState ;
                              16 = fusion du fork + mode classe (PkJoin, PkRoster, PkAnnounce.ranked, PkWelcome pad[1]) ;
                              17 = cartes CITADELLE et OASIS retirees, objectifs sur les cartes neon ;
                              18 = horloge de match commune (PkSnap.clk, clkSrv) ;
                              19 = tirs a la tete et chaine de tirs pleine (EV_HIT.pad[0] = HF_*, f[4..6] = point sur la tete ;
                                   EV_KILL.pad[0] ; NetPState.spare[1] = chaine de tirs) ; onde de l'Enclume du plan 1b
                                   (EV_SLAM : hauteur du mur, cap et vitesse de l'ovale) ;
-                             20 = specialisations retirees (PkSnap.rFlags sans le bit 2, NetPState.spare[0] libre) */
+                             20 = specialisations retirees (PkSnap.rFlags sans le bit 2, NetPState.spare[0] libre) ;
+                             21 = patch d'equilibrage : EV_RAIL sous-type 2 (trace d'un tir RICOCHET, un seul evenement pour tous les
+                                  rebonds), EV_SHOT.pad[0] = rebonds des plombs, EV_ROCKET.sub = rebonds (jusqu'a RIC_ROCKET_CAP) et
+                                  roquette redirigee par une piece (EV_PARRY), EV_SKILL SK_RICOCHET et SK_ALLIN actor 1 (eclair de la
+                                  Tesla), EV_HIT W_SHOTGUN : le recul est une vitesse de poussee (proportionnelle a la vitesse du
+                                  tireur, SG_KNOCK_RATIO), pas une vitesse ajoutee */
 static int net_silent(double last) { return nowT - last > NET_TIMEOUT; }   /* plus de nouvelles (grace : last dans le futur) */
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
 enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KILL, EV_RESPAWN, EV_MATCH, EV_INFO, EV_PICKUP,
        EV_PICKUP_TAKEN, EV_COIN, EV_MELEE_PARRY,
-       EV_SHOT = 15,                                      /* Eventail : un tir = un evenement (graine des plombs) */
+       EV_SHOT = 15,                                      /* SHOTGUN : un tir = un evenement (graine des plombs) */
        EV_SAW = 16,                                       /* Scie */
        EV_MINE = 17,                                      /* Ventouse : sub = MINE_EV_* */
        EV_TESLA = 18,                                     /* Tesla : relais (0) ou decharge renvoyee (1) */
@@ -279,6 +284,21 @@ static void net_fx_kinetic(V3 a, V3 b, float e) {          /* Elan : EV_RAIL sou
     ev.sub = 1; ev.actor = (unsigned char)(clampf(e, 0, 1) * 255);
     net_emit(&ev);
 }
+/* RICOCHET : un tir reflechi (rail, Elan) fait jusqu'a RIC_CAP_BOUNCES segments ; un seul evenement les decrit tous : EV_RAIL sous-type 2,
+ * f[0..2] = depart du 1er segment reflechi, f[3..5] = sa direction, actor = nombre de segments reflechis. Les autres clients
+ * recalculent les rebonds sur le decor (ray_world), sans autre evenement par segment */
+static void net_fx_ricochet(V3 o, V3 d, int n) {
+    NetEvent e = ev_new(EV_RAIL);
+    vf(e.f, o); vf(e.f + 3, d); e.sub = 2; e.actor = (unsigned char)(n > 255 ? 255 : n);
+    net_emit(&e);
+}
+/* Tesla + ALL IN ONE : l'eclair, vu par les autres (EV_SKILL SK_ALLIN, actor = 1) de a vers b */
+static void net_fx_bolt(V3 a, V3 b) {
+    NetEvent e = ev_new(EV_SKILL);
+    e.sub = SK_ALLIN; e.target = 255; e.actor = 1;
+    vf(e.f, a); vf(e.f + 3, b);
+    net_emit(&e);
+}
 static Proj *find_proj(unsigned int netId);
 static void net_fx_rocket(V3 pos, V3 vel, unsigned int netId) {
     NetEvent e = ev_new(EV_ROCKET);
@@ -318,11 +338,12 @@ static void net_fx_fist(V3 pos, V3 dir, float x, int sub) {   /* Poings : x = vi
     vf(e.f, pos); vf(e.f + 3, dir); e.f[6] = x; e.sub = (unsigned char)sub;
     net_emit(&e);
 }
-static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed) {   /* Eventail : chaque client recalcule les plombs */
+static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed) {   /* SHOTGUN : chaque client recalcule les plombs */
     NetEvent e = ev_new(EV_SHOT);
     vf(e.f, eye); vf(e.f + 3, dir); e.f[6] = half;        /* demi-angle : encode le slide */
     e.netId = seed; e.sub = SG_PELLETS;
     e.actor = (unsigned char)(shotStreak < STREAK_MAX ? shotStreak : STREAK_MAX);   /* teinte des traceurs */
+    e.pad[0] = (unsigned char)(ric_take() ? RIC_PELLET_CAP : 0);   /* RICOCHET : rebonds de chaque plomb (les clients les recalculent) */
     net_emit(&e);
 }
 /* onde de l'Enclume : purement visuelle (les touches partent du frappeur, quand le front passe chaque cible).
@@ -615,6 +636,13 @@ static void mine_apply(const NetEvent *ev) {
 }
 /* --- fin Ventouse : reception --- */
 
+/* recul recu par la victime : une vitesse ajoutee, sauf pour le SHOTGUN, dont le "recul" est une poussee forcee (vitesse proportionnelle
+ * a celle du tireur, pendant SG_KNOCK_T s, push_start) qui laisse la vitesse du joueur intacte */
+static void knock_apply(V3 kn, int w) {
+    if (w == W_SHOTGUN) { push_start(kn, SG_KNOCK_T); return; }
+    P.vel = vadd(P.vel, kn);
+    if (kn.y > 2) P.grounded = 0;
+}
 /* --- Egide : reception des decisions de l'hote (les CLAIM ne font rien ici : le resultat suit) --- */
 static V3 any_center(int i) { return i == myId ? pcenter() : np_center(i); }
 static void shield_apply(const NetEvent *ev) {
@@ -628,8 +656,7 @@ static void shield_apply(const NetEvent *ev) {
         shield_spark_fx(vsub(ct, vmul(dir, 0.5f)), dir);
         if (t == myId) {
             P.shieldGauge = ev->f[1]; P.shieldHitT = 0.2f;
-            P.vel = vadd(P.vel, fv(ev->f + 3));
-            if (ev->f[4] > 2) P.grounded = 0;
+            knock_apply(fv(ev->f + 3), (int)ev->f[6]);
             hitstop = fmaxf(hitstop, 0.03f); shake += 0.12f;
             play(S_SHIELD_BLOCK, 0.9f, frange(0.95f, 1.05f));
             if (ev->f[2] > 0) { P.hurtFlash = 0.4f; play(S_HURT, 0.6f, 1.0f); }   /* souffle : la moitie passe */
@@ -680,8 +707,7 @@ static void shield_apply(const NetEvent *ev) {
     case SHE_DENIED: {                                    /* comme un EV_HIT : actor = attaquant, f[0] degats, f[1..3] recul, f[4] arme */
         int w = (int)ev->f[4];
         if (t == myId) {
-            P.vel = vadd(P.vel, fv(ev->f + 1));
-            if (ev->f[2] > 2) P.grounded = 0;
+            knock_apply(fv(ev->f + 1), w);
             P.hurtFlash = 0.6f; shake += 0.25f;
             play(S_HURT, 0.8f, frange(0.9f, 1.1f));
             if (a < MAXP) { hurtFrom = np_center(a); hurtDirT = 1.2f; }
@@ -740,6 +766,20 @@ static void apply_event(const NetEvent *ev) {
             play(S_KIN, (0.45f + 0.45f * e) * atten(a), 0.85f + 0.3f * e);
             break;
         }
+        if (ev->sub == 2) {                               /* RICOCHET : les rebonds d'un autre joueur, recalcules sur le decor */
+            V3 o = a, d = vnorm(b);
+            for (int s = 0; s < ev->actor && s <= RIC_CAP_BOUNCES; s++) {
+                V3 nn;
+                float tw = ray_world(o, d, RIC_SEG_LEN, &nn);
+                V3 en = vadd(o, vmul(d, tw));
+                add_beam(o, en, v3(0.4f, 1, 0.7f), 0.5f);
+                if (tw >= RIC_SEG_LEN - 0.01f) break;     /* sortie de la carte */
+                for (int k = 0; k < 4; k++) add_part(en, vadd(vmul(nn, 3), vmul(rand_dir(), 3)), v3(0.4f, 1, 0.7f), 0.35f, 0.08f, 8);
+                d = vnorm(vsub(d, vmul(nn, 2 * vdot(d, nn))));
+                o = vadd(en, vmul(nn, 0.02f));
+            }
+            break;
+        }
         float k = ev->f[6];
         add_beam(a, b, v3(0.3f + 0.7f * k, 0.85f - 0.05f * k, 1.0f - 0.7f * k), 0.6f);
         for (int i = 0; i < 12; i++) add_part(b, vmul(rand_dir(), 4), v3(0.6f, 0.9f, 1.0f), 0.4f, 0.1f, 10);
@@ -748,7 +788,7 @@ static void apply_event(const NetEvent *ev) {
     }
     case EV_ROCKET: {
         Proj *p = spawn_proj(PR_ROCKET, a, b);
-        if (p) { p->owner = ev->from; p->netId = ev->netId; p->ricLeft = ev->sub; }
+        if (p) { p->owner = ev->from; p->netId = ev->netId; p->ricLeft = ev->sub; if (ev->sub) p->life = RIC_ROCKET_LIFE; }
         play(S_ROCKET, 0.7f * atten(a), 1.0f);
         break;
     }
@@ -774,8 +814,7 @@ static void apply_event(const NetEvent *ev) {
         int t = ev->target;
         if (t == myId) {
             if (ev->from != myId) {                       /* recul applique par la victime */
-                P.vel = vadd(P.vel, fv(ev->f + 1));
-                if (ev->f[2] > 2) P.grounded = 0;
+                knock_apply(fv(ev->f + 1), ev->sub);
                 if (P.meleeKind == MK_FIST && P.fistStep && vlen(fv(ev->f + 1)) >= FIST_STAGGER_KNOCK)
                     fist_combo_break(FIST_STAGGER_CD);    /* Poings : un gros recul casse le combo */
             }
@@ -842,19 +881,27 @@ static void apply_event(const NetEvent *ev) {
         for (int k = 0; k < 10; k++) add_part(vadd(a, vmul(b, 1.5f + k * 0.15f)), vmul(b, 3), v3(0.9f, 0.9f, 1), 0.15f, 0.08f, 0);
         play(S_DASH, 0.4f * atten(a), 1.8f);
         break;
-    case EV_SHOT: {                                       /* Eventail d'un autre joueur : memes plombs, traceurs seulement */
+    case EV_SHOT: {                                       /* SHOTGUN d'un autre joueur : memes plombs, traceurs seulement */
         V3 dir[SG_PELLETS], n;
         sg_pellet_dirs(b, ev->f[6], ev->netId, dir);
         for (int k = 0; k < SG_PELLETS && k < ev->sub; k++) {
-            float tw = ray_world(a, dir[k], SG_RANGE, &n), t;
-            V3 mn, mx;
-            for (int i = 0; i < MAXP; i++) {              /* arret visuel sur les corps affiches */
-                if (i == ev->from || !NP[i].active || !NP[i].alive || same_team(i, ev->from)) continue;
-                if (i == myId) { if (P.dead) continue; paabb(P.pos, pheight(), &mn, &mx); }
-                else np_aabb(i, 0.05f, &mn, &mx);
-                if (ray_box(a, dir[k], mn, mx, tw, &t, NULL) && t < tw) tw = t;
+            V3 o = a, dk = dir[k];
+            for (int sgm = 0; sgm <= ev->pad[0] && sgm <= RIC_PELLET_CAP; sgm++) {   /* pad[0] : RICOCHET, rebonds de chaque plomb */
+                float tw = ray_world(o, dk, SG_RANGE, &n), t;
+                int body = 0;
+                V3 mn, mx;
+                for (int i = 0; i < MAXP; i++) {          /* arret visuel sur les corps affiches */
+                    if (i == ev->from || !NP[i].active || !NP[i].alive || same_team(i, ev->from)) continue;
+                    if (i == myId) { if (P.dead) continue; paabb(P.pos, pheight(), &mn, &mx); }
+                    else np_aabb(i, 0.05f, &mn, &mx);
+                    if (ray_box(o, dk, mn, mx, tw, &t, NULL) && t < tw) { tw = t; body = 1; }
+                }
+                V3 e = vadd(o, vmul(dk, tw));
+                add_tracer(sgm ? o : vadd(a, vmul(b, 0.7f)), e, sg_tint(ev->actor / (float)STREAK_MAX));
+                if (body || tw >= SG_RANGE) break;        /* un corps arrete le plomb ; sans mur il sort de la carte */
+                dk = vnorm(vsub(dk, vmul(n, 2 * vdot(dk, n))));
+                o = vadd(e, vmul(n, 0.02f));
             }
-            add_tracer(vadd(a, vmul(b, 0.7f)), vadd(a, vmul(dir[k], tw)), sg_tint(ev->actor / (float)STREAK_MAX));
         }
         if (ev->from < MAXP) NP[ev->from].sgFireT = 0.12f;
         play(S_SG_FIRE, 0.75f * atten(a), 1.0f);
@@ -920,7 +967,7 @@ static void apply_event(const NetEvent *ev) {
             loadout_apply();
             anvil_reset();
             if (P.skill != SK_AIM) P.skillCh = (float)skillDef[P.skill].max;   /* AIMANT : la recharge continue */
-            P.ricArmed = 0; P.chargeT = P.chargeHold = 0; P.aimT = 0;
+            P.ricArmed = 0; P.ricT = 0; P.pushT = 0; P.chargeT = P.chargeHold = 0; P.aimT = 0;
             P.yaw = atan2f(-a.x, a.z); P.pitch = 0; P.eyeH = EYE_STAND; P.roll = 0;
             shotStreak = 0;
         }
@@ -986,7 +1033,13 @@ static void apply_event(const NetEvent *ev) {
                 play(S_HIT, 0.6f, 0.6f);
             }
         } else if (ev->sub == SK_CHARGE) burst(a, v3(1, 0.55f, 0.2f), 30, 5, 0.4f, 0.1f);
+        else if (ev->sub == SK_ALLIN && ev->actor == 1) { /* Tesla : l'eclair d'un autre joueur, de a vers b */
+            tesla_link(TK_POINT, 0, TK_POINT, 0, a, b, 0.35f, 0);
+            burst(b, v3(0.6f, 0.8f, 1), 30, 8, 0.4f, 0.1f);
+            play(S_TESLA_ZAP, 0.8f * atten(a), 0.6f);
+        }
         else if (ev->sub == SK_ALLIN) { play(S_EXPLO, 0.5f * atten(a), 1.5f); }
+        else if (ev->sub == SK_RICOCHET) { burst(a, v3(0.4f, 1, 0.7f), 26, 5, 0.4f, 0.1f); play(S_PAD, 0.4f * atten(a), 2.0f); }
         else if (ev->sub == SK_AIM) { burst(a, v3(1, 0.95f, 0.45f), 24, 4, 0.4f, 0.1f); play(S_PAD, 0.4f * atten(a), 1.8f); }
         break;
     case EV_COIN:                                         /* piece d'un autre joueur : visible, mais pas a nous */
@@ -1005,7 +1058,7 @@ static void apply_event(const NetEvent *ev) {
                     CO[i].pos = a; CO[i].vel = b; CO[i].life = 4; CO[i].spin = 0; CO[i].teslaT = 0; CO[i].flailStruck = 0; CO[i].decoy = 0;
                     break;
                 }
-        } else if (ev->sub == 1 && ev->f[3] == 1) {       /* Eventail : piece eclatee par un plomb */
+        } else if (ev->sub == 1 && ev->f[3] == 1) {       /* SHOTGUN : piece eclatee par un plomb */
             for (int i = 0; i < MAXCOIN; i++)
                 if (CO[i].alive && CO[i].netId == ev->netId) CO[i].alive = 0;
             sg_burst_fx(a, 0);

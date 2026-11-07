@@ -49,7 +49,7 @@
 #include "src/combat/pieces_rail.c"              /* pieces, ricochets, tir instantane, railgun */
 
 #include "src/armes/elan.c"                      /* Elan (convertisseur cinetique) */
-#include "src/armes/eventail.c"                  /* Eventail (fusil a pompe) */
+#include "src/armes/shotgun.c"                   /* SHOTGUN (fusil a pompe, ex-Eventail) */
 #include "src/armes/tesla.c"                     /* Tesla (arc electrique) */
 
 #include "src/combat/roquettes.c"                /* projectiles generiques, lance-roquettes */

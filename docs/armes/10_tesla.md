@@ -1,5 +1,8 @@
 # Fiche 10 — Arc électrique « Tesla »
 
+> **Patch d'équilibrage (7 nov.)** — **ALL IN ONE avec la Tesla** : un éclair inévitable (instantané) sur la cible la plus proche du viseur (cône ~10°, en vue,
+> 45 m), toute la batterie (20 au moins), 130 dégâts × batterie / 100, chaîne comme l'arc, PvP × 0,7 plafonné à 60 (`tesla_bolt`, `TESLA_BOLT_*`).
+
 > Arme à distance `WP_TESLA` (6), source de dégâts `W_TESLA` (16), événement `EV_TESLA` (18), bit d'état `ST_ZAP` (0x80).
 > Source : [`../IDEES_ARMES_CARTES.md`](../IDEES_ARMES_CARTES.md) § 3.5 et § 1.5. Interfaces : [`PLAN.md`](PLAN.md) § 3.
 > Loadout, `P.ammo[]`, points de mêlée et de cellules (conversion Tesla : 1 point = 0,4 de batterie), cellules génériques, clic sec et bascule automatique : **`00_infra_loadout_munitions.md`** (non redéfinis ici).

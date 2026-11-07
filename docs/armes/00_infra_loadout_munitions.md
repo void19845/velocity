@@ -162,7 +162,7 @@ typedef struct { const char *name; int start, max; float gauge; float r, g, b; }
 static const AmmoDef ammoDef[WP_COUNT] = {
     { "RAILGUN",   2,  2,   250, 0.40f, 0.85f, 1.00f },   /* tres haut degats : 2 tirs, tres lent */
     { "ROQUETTES", 4,  8,   50,  1.00f, 0.60f, 0.20f },   /* 1 coup d'epee = 1 roquette */
-    { "EVENTAIL",  3,  6,   100, 1.00f, 0.85f, 0.35f },
+    { "SHOTGUN",   3,  6,   100, 1.00f, 0.85f, 0.35f },   /* ex-EVENTAIL */
     { "ELAN",      3,  6,   80,  0.55f, 1.00f, 0.55f },
     { "SCIE",      1,  1,   0,   0.90f, 0.90f, 0.95f },   /* objet unique : aucune jauge */
     { "VENTOUSE",  1,  3,   150, 1.00f, 0.35f, 0.35f },
@@ -202,7 +202,7 @@ static int cellsTaken, hitCount[W_COUNT];          /* hitCount etait [7] */
 
 - `NetPState` : taille inchangée ; `weapon` = `WP_*` ; `pad` = `meleeKind | ST_*`.
 - `NetEvent`, `PkWelcome`, `PkSnap` : inchangés (`PkWelcome.pad[0]` reste réservé au choix de carte).
-- `weaponNames[W_COUNT]` : `"RAIL", "ROQUETTE", "EPEE", "GRAPPIN", "PARRY", "SOLO", "RICOCHET", "ENCLUME", "LANCE", "FLEAU", "POINGS", "EGIDE", "EVENTAIL", "ELAN", "SCIE", "VENTOUSE", "TESLA"`.
+- `weaponNames[W_COUNT]` : `"RAIL", "ROQUETTE", "EPEE", "GRAPPIN", "PARRY", "SOLO", "RICOCHET", "ENCLUME", "LANCE", "FLEAU", "POINGS", "EGIDE", "SHOTGUN", "ELAN", "SCIE", "VENTOUSE", "TESLA"`.
 
 ## 5. Algorithme
 

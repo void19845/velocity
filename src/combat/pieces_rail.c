@@ -89,6 +89,81 @@ static void decoy_absorb(int ci, const char *what) {
 static int decoy_skip(int ci, V3 eye) {
     return CO[ci].decoy && vlen(vsub(eye, CO[ci].pos)) < COIN_RADIUS + (CO[ci].owner == myId ? 0.5f : 0.0f);
 }
+/* RICOCHET => MIRAGE : si j'ai RICOCHET, un tir qui touche le leurre adverse `ci` ne s'y arrete pas, il repart vers le joueur qui
+ * l'a pose. Renvoie son indice s'il est ciblable, en vue du leurre et a portee (COIN_SEEK_RANGE), sinon -1 (le leurre absorbe) */
+static int decoyReflects, decoyLured;                     /* journal : tirs renvoyes au poseur ; ricochets de piece detournes */
+static int decoy_reflect_owner(int ci) {
+    if (!CO[ci].alive || !CO[ci].decoy || CO[ci].owner == myId || !ric_vs_decoy()) return -1;
+    int o = CO[ci].owner;
+    if (o < 0 || o >= MAXP || !np_target(o)) return -1;
+    V3 pc = np_center(o);
+    return vlen(vsub(pc, CO[ci].pos)) <= COIN_SEEK_RANGE && los(CO[ci].pos, pc) ? o : -1;
+}
+/* le tir (degats dmg, arme w) touche le leurre adverse `ci` : absorbe, ou renvoie au poseur avec RICOCHET. Renvoie 1 si le poseur est touche */
+static int decoy_hit(int ci, float dmg, const char *what) {
+    int owner = decoy_reflect_owner(ci);
+    V3 o = CO[ci].pos;
+    decoy_absorb(ci, what);
+    if (owner < 0) return 0;
+    V3 pc = np_center(owner), dir = vnorm(vsub(pc, o));
+    add_beam(o, pc, v3(0.4f, 1, 0.7f), 0.7f);
+    if (dmMode) net_fx_rail(o, pc, 0);
+    if (!hit_player(owner, dmg * PVP_SCALE * DECOY_MULT, vmul(dir, 6), W_COIN, dir)) return 0;   /* Egide : bloque */
+    decoyReflects++;
+    snprintf(popText, sizeof popText, "LEURRE RENVOYE !"); popT = 1.0f;
+    hitMarker = 0.25f;
+    if (botMode) netlog("mirage : %s renvoye au poseur %s (RICOCHET)", what, NP[owner].name);
+    return 1;
+}
+
+/* cible d'un ricochet de piece depuis o (rail, Elan, roquette). MIRAGE => PIECE : un leurre adverse en vue est vise AVANT le joueur
+ * (la piece le suit, pas le joueur ; il absorbe le tir) ; sinon l'ennemi ou le joueur visible le plus proche (COIN_SEEK_RANGE).
+ * Renvoie 1 s'il y a une cible : *te / *tp = ennemi / joueur, *dc = leurre (les autres a -1) */
+static int coin_seek(V3 o, int *te, int *tp, int *dc) {
+    float best = COIN_SEEK_RANGE;
+    *te = *tp = *dc = -1;
+#if DECOY_COIN_LURE
+    for (int i = 0; i < MAXCOIN; i++) {
+        if (!CO[i].alive || !CO[i].decoy || CO[i].owner == myId || same_team(CO[i].owner, myId)) continue;   /* leurre ADVERSE seulement */
+        float d = vlen(vsub(CO[i].pos, o));
+        if (d < best && los(o, CO[i].pos)) { best = d; *dc = i; }
+    }
+    if (*dc >= 0) return 1;
+#endif
+    best = COIN_SEEK_RANGE;
+    for (int i = 0; i < MAXE; i++) {
+        if (!E[i].alive) continue;
+        float d = vlen(vsub(E[i].pos, o));
+        if (d < best && los(o, E[i].pos)) { best = d; *te = i; *tp = -1; }
+    }
+    for (int i = 0; i < MAXP; i++) {
+        if (!np_target(i)) continue;
+        float d = vlen(vsub(np_center(i), o));
+        if (d < best && los(o, np_center(i))) { best = d; *tp = i; *te = -1; }
+    }
+    return *te >= 0 || *tp >= 0;
+}
+
+/* PIECE => RICOCHET (lecture par defaut, constante COIN_VS_RIC) : mon tir en rebond (fenetre RICOCHET ouverte) touche la piece de
+ * l'adversaire ; au lieu de la voler (contre-jeu habituel), la piece le renvoie sur moi, qui l'ai tire. Le tir me touche comme un
+ * rebond qui revient (moitie des degats en solo, x PVP_SCALE plafonne en LAN) si la piece me voit, sinon il s'eteint. Renvoie 0. */
+static int coinBacks;                                     /* journal : tirs et roquettes renvoyes a leur tireur par une piece adverse */
+static int coin_turns_back(int ci, float dmg) {
+    Coin *c = &CO[ci];
+    V3 o = c->pos, at = pcenter();
+    c->alive = 0; coinBacks++;
+    if (dmMode) net_fx_coin(1, c->netId, o, v3(0, 0, 0));
+    for (int k = 0; k < 20; k++) add_part(o, vmul(rand_dir(), 6), v3(1, 0.85f, 0.3f), 0.35f, 0.1f, 0);
+    play(S_PARRY, 0.55f, 1.2f);
+    hitstop = fmaxf(hitstop, 0.03f);
+    snprintf(popText, sizeof popText, "PIECE ADVERSE : RENVOYE !"); popT = 1.0f;
+    if (P.dead || !los(o, at)) return 0;                  /* la piece ne me voit pas : le tir s'eteint */
+    add_beam(o, at, v3(1, 0.85f, 0.3f), 0.6f);
+    if (dmMode) net_fx_rail(o, at, 1);
+    damage_player(dmMode ? fminf(dmg * PVP_SCALE, PVP_HIT_CAP) : dmg * 0.5f);   /* soi : pas de plafond de l'hote, on le pose ici */
+    if (botMode) netlog("piece contre ricochet : le tir revient sur son tireur (piece de %s)", c->owner < MAXP ? NP[c->owner].name : "?");
+    return 0;
+}
 
 /* Le rail touche la piece `ci` : il repart vers une autre piece (chaine) ou vers la cible visible la plus proche,
  * avec des degats multiplies. Renvoie 1 si une cible a ete touchee. */
@@ -96,7 +171,8 @@ static int ricochet(int ci, float dmg, int depth) {
     Coin *c = &CO[ci];
     V3 o = c->pos;
     int stolen = c->owner != myId;                        /* contre-jeu : la piece d'un adversaire se retourne contre lui */
-    if (c->decoy && stolen) { decoy_absorb(ci, "rail"); return 0; }   /* MIRAGE adverse : le leurre absorbe le tir */
+    if (c->decoy && stolen) return decoy_hit(ci, dmg, "rail");   /* MIRAGE adverse : le leurre absorbe le tir (RICOCHET : il le renvoie) */
+    if (stolen && !same_team(c->owner, myId) && coin_vs_ric()) return coin_turns_back(ci, dmg);   /* PIECE => RICOCHET : la piece adverse renvoie mon tir en rebond */
     c->alive = 0;
     if (dmMode) net_fx_coin(1, c->netId, o, v3(0, 0, 0));
     dmg *= c->decoy ? DECOY_MULT : stolen ? 1.0f : COIN_MULT;   /* piece volee : renvoie le tir, mais sans bonus */
@@ -139,17 +215,14 @@ static int ricochet(int ci, float dmg, int depth) {
         }
     }                                                     /* --- fin Ventouse --- */
 
-    int te = -1, tp = -1;                                 /* 2. la cible visible la plus proche */
-    best = COIN_SEEK_RANGE;
-    for (int i = 0; i < MAXE; i++) {
-        if (!E[i].alive) continue;
-        float d = vlen(vsub(E[i].pos, o));
-        if (d < best && los(o, E[i].pos)) { best = d; te = i; tp = -1; }
-    }
-    for (int i = 0; i < MAXP; i++) {
-        if (!np_target(i)) continue;
-        float d = vlen(vsub(np_center(i), o));
-        if (d < best && los(o, np_center(i))) { best = d; tp = i; te = -1; }
+    int te = -1, tp = -1, dc = -1;                        /* 2. la cible visible la plus proche (le leurre adverse avant le joueur) */
+    coin_seek(o, &te, &tp, &dc);
+    if (dc >= 0) {                                        /* MIRAGE => PIECE : le ricochet suit le leurre, il est absorbe */
+        add_beam(o, CO[dc].pos, v3(1, 0.85f, 0.3f), 0.7f);
+        if (dmMode) net_fx_rail(o, CO[dc].pos, 1);
+        decoyLured++;
+        decoy_absorb(dc, "ricochet");
+        return 0;
     }
     if (te < 0 && tp < 0 && botMode) {
         for (int i = 0; i < MAXP; i++)
@@ -178,7 +251,8 @@ static int ricochet(int ci, float dmg, int depth) {
 /* RICOCHET : journal (tirs reflechis, rebonds, retours sur le tireur) et trace du dernier tir (directions de chaque
  * segment, normale du decor a son extremite) pour les tests */
 static int ricStat[3], ricSelfDone, ricSegs;
-static V3 ricDir[RIC_BOUNCES + 1], ricNrm[RIC_BOUNCES + 1];
+static V3 ricDir[RIC_CAP_BOUNCES + 2], ricNrm[RIC_CAP_BOUNCES + 2];
+static int ricHitE[MAXE], ricHitP[MAXP];                  /* touches de ce tir par cible : au plus RIC_HITS_MAX (un tir qui rebondit recroise ses cibles) */
 /* trajet hitscan perforant (rail, Elan) : piece (le tir s'y arrete), ennemis, joueurs LAN ; renvoie 1 si touche.
  * dmg : degats PvE (deja multiplies par la chaine), knockE / knockP : recul PvE / PvP, w : W_* des touches LAN */
 static int hitscan_seg(V3 eye, V3 d, float maxLen, int selfHit, float dmg, float knockE, float knockP, int w,
@@ -203,8 +277,9 @@ static int hitscan_seg(V3 eye, V3 d, float maxLen, int selfHit, float dmg, float
     }
     for (int i = 0; i < MAXE; i++) {
         float t;
-        if (E[i].alive && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type), tw, &t)) {
+        if (E[i].alive && ricHitE[i] < RIC_HITS_MAX && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type), tw, &t)) {
             V3 at = vadd(eye, vmul(d, t));
+            ricHitE[i]++;
             int head = head_mult(w) > 1 && head_hit_enemy(i, at);   /* point faible : le sommet du drone */
             float de = dmg * (head ? head_mult(w) : 1);
             int one = chainArmed && chain_direct_w(w) && !EN_BOSS(E[i].type);   /* VAGUES : jamais un boss d'un coup */
@@ -217,11 +292,12 @@ static int hitscan_seg(V3 eye, V3 d, float maxLen, int selfHit, float dmg, float
     }
     for (int i = 0; i < MAXP; i++) {                     /* LAN : le tir traverse aussi les joueurs (un net_hit chacun) */
         V3 mn, mx, ha; float t;
-        if (!np_target(i)) continue;
+        if (!np_target(i) || ricHitP[i] >= RIC_HITS_MAX) continue;
         np_aabb(i, 0.05f, &mn, &mx);
         if (ray_box(eye, d, mn, mx, tw, &t, NULL)) {
             int head = head_mult(w) > 1 && head_hit_player(i, eye, d, tw, &ha);   /* tete : x1,5 (rail, one-shot) ou x1,35 */
             V3 at = head ? ha : vadd(eye, vmul(d, t));
+            ricHitP[i]++;
             burst(at, v3(1, 1, 1), 15, 8, 0.3f, 0.12f);
             if (hit_player_fl(i, dmg * PVP_SCALE * (head ? head_mult(w) : 1), vmul(d, knockP), w, d, hit_flags(w, head), at)) {
                 hit = 1;                                  /* Egide : bloque = rate (chaine) */
@@ -254,28 +330,33 @@ static int hitscan_seg(V3 eye, V3 d, float maxLen, int selfHit, float dmg, float
     *stop = coinHit >= 0 || mineHit >= 0 || shieldStop || !wall;
     return hit;
 }
+/* tir instantane (rail, Elan). RICOCHET ouvert : le tir est reflechi (r = d - 2 (d.n) n) a chaque mur, sans limite de rebonds ni de
+ * portee ; il ne s'arrete que sur une cible qui l'arrete (piece, mine, bouclier), en sortant de la carte (un segment de RIC_SEG_LEN
+ * sans mur) ou au garde-fou RIC_CAP_BOUNCES. Reseau : un seul evenement pour tous les rebonds (net_fx_ricochet), chaque client
+ * recalcule la trace sur le decor. Chaque cible n'est touchee qu'RIC_HITS_MAX fois par tir. */
 static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut, V3 *nOut) {
-    V3 o = eye_pos(), d = view_dir();
-    int stop, bounces = ric_take();
+    V3 o = eye_pos(), d = view_dir(), o1 = o, d1 = d;
+    int stop, bounces = ric_take(), nBounce = 0;
     ricSelfDone = 0;
-    int hit = hitscan_seg(o, d, 400, 0, dmg, knockE, knockP, w, endOut, nOut, &stop);
+    memset(ricHitE, 0, sizeof ricHitE); memset(ricHitP, 0, sizeof ricHitP);
+    int hit = hitscan_seg(o, d, RIC_SEG_LEN, 0, dmg, knockE, knockP, w, endOut, nOut, &stop);
     V3 a = *endOut, n = *nOut;
-    float left = RIC_MAX_LEN - vlen(vsub(a, o));
     ricSegs = 1; ricDir[0] = d; ricNrm[0] = n;
     if (bounces) ricStat[0]++;
-    for (int b = 1; b <= bounces && !stop && left > 0.5f; b++) {   /* RICOCHET : reflexion r = d - 2 (d.n) n */
+    for (int b = 1; b <= bounces && !stop; b++) {         /* RICOCHET : reflexion r = d - 2 (d.n) n */
         V3 e2, n2;
         d = vnorm(vsub(d, vmul(n, 2 * vdot(d, n))));
         o = vadd(a, vmul(n, 0.02f));
-        hit |= hitscan_seg(o, d, left, b >= 2, dmg, knockE, knockP, w, &e2, &n2, &stop);
+        if (b == 1) { o1 = o; d1 = d; }
+        hit |= hitscan_seg(o, d, RIC_SEG_LEN, b >= 2, dmg, knockE, knockP, w, &e2, &n2, &stop);
         add_beam(o, e2, v3(0.4f, 1, 0.7f), 0.5f);
-        if (dmMode) net_fx_rail(o, e2, 0);
-        for (int k = 0; k < 8; k++) add_part(a, vadd(vmul(n, 3), vmul(rand_dir(), 3)), v3(0.4f, 1, 0.7f), 0.35f, 0.08f, 8);
-        left -= vlen(vsub(e2, o));
-        a = e2; n = n2;
-        ricDir[ricSegs] = d; ricNrm[ricSegs] = n; ricSegs++;
+        for (int k = 0; k < 6; k++) add_part(a, vadd(vmul(n, 3), vmul(rand_dir(), 3)), v3(0.4f, 1, 0.7f), 0.35f, 0.08f, 8);
+        a = e2; n = n2; nBounce++;
+        if (ricSegs < RIC_CAP_BOUNCES + 2) { ricDir[ricSegs] = d; ricNrm[ricSegs] = n; }
+        ricSegs++;
         ricStat[1]++;
     }
+    if (nBounce && dmMode) net_fx_ricochet(o1, d1, nBounce);
     return hit;
 }
 

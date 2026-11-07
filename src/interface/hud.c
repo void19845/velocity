@@ -657,7 +657,7 @@ static void draw_hud(void) {
         if (P.weapon == WP_TESLA) snprintf(wnBuf, sizeof wnBuf, "TESLA %d%%", P.ammo[WP_TESLA]);
         else if (P.weapon == WP_SAW) saw_hud_name(wnBuf, (int)sizeof wnBuf);
         else snprintf(wnBuf, sizeof wnBuf, "%s %d/%d%s", ad->name, P.ammo[P.weapon], ad->max,
-                      P.weapon == WP_SHOTGUN && !P.ammo[WP_SHOTGUN] ? " - MELEE !" : "");   /* Eventail a sec */
+                      P.weapon == WP_SHOTGUN && !P.ammo[WP_SHOTGUN] ? " - MELEE !" : "");   /* SHOTGUN a sec */
         const char *wn = wnBuf;
         int dryW = !wp_has_ammo(P.weapon);
         if (P.weapon == WP_SAW) dryW = saw_mine() && saw_mine()->sawState == SAW_PLANTED;   /* elle ne reviendra pas seule */
@@ -669,7 +669,7 @@ static void draw_hud(void) {
              dryW ? 0.3f : ad->b, 1);
         rect(winW - 230.0f, winH - 40.0f, 200, 8, 0.1f, 0.1f, 0.15f, 0.7f);
         {
-            float cdMax = P.weapon == WP_SHOTGUN && P.sgPumpMax > 0 ? P.sgPumpMax : wpCd[P.weapon];   /* Eventail : recharge reelle */
+            float cdMax = P.weapon == WP_SHOTGUN && P.sgPumpMax > 0 ? P.sgPumpMax : wpCd[P.weapon];   /* SHOTGUN : recharge reelle */
             float cdLeft = P.weapon == WP_SAW ? P.sawCd / SAW_CD : P.fireCd / cdMax;                    /* Scie : delai de lancer */
             if (P.weapon == WP_TESLA) tesla_hud_bar(winW - 230.0f, winH - 40.0f);                      /* Tesla : batterie */
             else rect(winW - 230.0f, winH - 40.0f, 200 * clampf(1 - cdLeft, 0, 1), 8, 1, 1, 1, 0.8f);
@@ -712,7 +712,7 @@ static void draw_hud(void) {
                 rect(cx - 30, cy + 20, 60 * k2, 3, 0.6f, 0.6f, 0.65f, 0.85f);
             }
         }
-        if (P.weapon == WP_SHOTGUN && !P.dead) {             /* Eventail : cercle de dispersion (moitie en slide), plombs touches */
+        if (P.weapon == WP_SHOTGUN && !P.dead) {             /* SHOTGUN : cercle de dispersion (moitie en slide), plombs touches */
             float half = SG_HALF_ANGLE * (P.sliding ? SG_SLIDE_SPREAD : 1);
             float r = tanf(half) / tanf(fminf(P.fovCur, 150.0f) * PI / 360.0f) * winW * 0.5f;
             glLineWidth(P.sliding ? 2.0f : 1.5f);
@@ -759,9 +759,10 @@ static void draw_hud(void) {
             }
             snprintf(kb, sizeof kb, "%s [%s]", sd->name, bind_text(A_SKILL));
             text(0, winW - 36.0f - sd->max * 20.0f - fontW[0] * (float)strlen(kb), winH - 83.0f, kb, sd->r * 0.8f, sd->g * 0.8f, sd->b * 0.8f, 0.9f);
-            char aimBuf[24];
+            char aimBuf[24], ricBuf[24];
             snprintf(aimBuf, sizeof aimBuf, "AIMANT %.1f s", P.aimT);
-            const char *st = P.ricArmed ? "RICOCHET ARME" : P.chargeT > 0 ? "CHARGE PRETE x1,5" : P.aimT > 0 ? aimBuf : NULL;
+            snprintf(ricBuf, sizeof ricBuf, "RICOCHET %.1f s", P.ricT);
+            const char *st = P.ricArmed ? ricBuf : P.chargeT > 0 ? "CHARGE PRETE x1,5" : P.aimT > 0 ? aimBuf : NULL;
             if (st) text_c(0, cx, cy + 74, st, sd->r, sd->g, sd->b, 0.6f + 0.4f * sinf(gameTime * 12));
             if (P.chargeHold > 0) {                           /* CHARGE : jauge de maintien */
                 rect(cx - 40, cy + 62, 80, 4, 0.1f, 0.1f, 0.15f, 0.7f);

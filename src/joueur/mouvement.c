@@ -20,6 +20,9 @@ static V3 view_dir(void) {
 }
 static V3 eye_pos(void) { return v3(P.pos.x, P.pos.y + P.eyeH, P.pos.z); }
 static V3 pcenter(void) { return v3(P.pos.x, P.pos.y + pheight() * 0.5f, P.pos.z); }
+/* SHOTGUN : poussee forcee de v (m/s) pendant t secondes. C'est un deplacement EN PLUS du mouvement normal (collisions
+ * comprises) : la vitesse du joueur n'est pas modifiee, il garde son elan quand la poussee s'arrete (voir player_tick) */
+static void push_start(V3 v, float t) { P.pushV = v; P.pushT = t; }
 
 static void move_axis(int ax, float d, int canStep) {
     if (d == 0) return;
@@ -440,6 +443,20 @@ static void player_tick(float dt, int jumpPress, int dashPress) {
         move_axis(2, P.vel.z * dt / steps, wasG);
         move_axis(1, P.vel.y * dt / steps, 0);
         if (P.grounded && boxes[P.groundBox].kind == B_PAD) onPad = 1;
+    }
+    if (P.pushT > 0) {                                    /* SHOTGUN : poussee forcee (deplacement en plus, la vitesse reste la meme) */
+        float pt = fminf(dt, P.pushT), y0 = P.pos.y;
+        P.pushT -= dt;
+        if (!alive) P.pushT = 0;
+        else {
+            int ps = (int)(vlen(P.pushV) * pt / 0.3f) + 1;
+            for (int s = 0; s < ps && !onPad; s++) {
+                move_axis(0, P.pushV.x * pt / ps, wasG);
+                move_axis(2, P.pushV.z * pt / ps, wasG);
+                move_axis(1, P.pushV.y * pt / ps, 0);
+            }
+            if (P.pos.y > y0 + 0.01f) P.grounded = 0;     /* poussee vers le haut : on a decolle */
+        }
     }
     if (wasG && !P.grounded && P.stairT > 0 && alive && P.hook != HOOK_ATTACHED) {   /* haut de l'escalier : decollage de rampe */
         float ramp = stairSp * STAIR_SLOPE;

@@ -222,6 +222,71 @@ static void tesla_pulse(void) {
     P.recoil = fmaxf(P.recoil, 0.15f); shake += 0.01f; muzzleT = 0.03f;
 }
 
+/* --- ALL IN ONE : l'eclair inevitable ----------------------------------------------------------------------------------
+ * Instantane (pas de vol, donc rien a esquiver), il s'accroche a la cible la plus proche du viseur dans un cone de ~10 deg, en vue, a
+ * TESLA_BOLT_RANGE, puis saute comme l'arc (TESLA_CHAIN_N cibles a TESLA_CHAIN_MULT). Il vide TOUTE la batterie (TESLA_BOLT_MIN au moins)
+ * et fait TESLA_BOLT_DMG x batterie / 100 ; en PvP x PVP_SCALE puis le plafond par touche de l'hote. Un parry de la cible le renvoie
+ * comme une decharge (tesla_host_reflect). Renvoie 1 s'il est parti ; sinon rien n'est depense (message). */
+static int teslaBolts;                                    /* journal : eclairs lances */
+static int tesla_bolt(void) {
+    V3 eye = eye_pos(), d = view_dir();
+    int n = P.ammo[WP_TESLA], bk = TK_NONE, bi = -1;
+    float best = TESLA_BOLT_CONE;
+    if (n < TESLA_BOLT_MIN) {
+        play(S_HIT, 0.5f, 0.45f);
+        snprintf(popText, sizeof popText, "ALL IN ONE : BATTERIE < %d", TESLA_BOLT_MIN); popT = 1.0f;
+        return 0;
+    }
+    for (int i = 0; i < MAXE; i++) {                      /* la cible la plus proche du viseur (cosinus le plus grand), en vue */
+        if (!E[i].alive) continue;
+        V3 to = vsub(E[i].pos, eye);
+        float l = vlen(to);
+        if (l < 0.5f || l > TESLA_BOLT_RANGE + enemy_radius(E[i].type)) continue;
+        float c = vdot(to, d) / l;
+        if (c > best && los(eye, E[i].pos)) { best = c; bk = TK_ENEMY; bi = i; }
+    }
+    for (int i = 0; dmMode && i < MAXP; i++) {
+        if (!tesla_player_ok(i, myId)) continue;
+        V3 pc = tesla_pcenter(i), to = vsub(pc, eye);
+        float l = vlen(to);
+        if (l < 0.5f || l > TESLA_BOLT_RANGE) continue;
+        float c = vdot(to, d) / l;
+        if (c > best && los(eye, pc)) { best = c; bk = TK_PLAYER; bi = i; }
+    }
+    TeslaTgt t[3];
+    int k = 0;
+    if (bi >= 0) k = tesla_trace(eye, vnorm(vsub(bk == TK_ENEMY ? E[bi].pos : tesla_pcenter(bi), eye)), TESLA_BOLT_RANGE + 2,
+                                 dmMode ? myId : -1, t, NULL, NULL);
+    if (k <= 0) {
+        play(S_HIT, 0.5f, 0.45f);
+        snprintf(popText, sizeof popText, "ALL IN ONE : PAS DE CIBLE"); popT = 1.0f;
+        return 0;
+    }
+    float base = TESLA_BOLT_DMG * (float)n / (float)ammoDef[WP_TESLA].max;
+    P.ammo[WP_TESLA] = 0; teslaSpent += n; teslaBolts++;
+    tesla_flush();                                        /* les cumuls de l'arc partent avant : pas de melange */
+    tesla_link(TK_MUZZLE, 0, t[0].kind, t[0].idx, muzzle(), t[0].at, 0.35f, 0);
+    for (int j = 0; j < k; j++) {
+        V3 from = j ? t[j - 1].at : eye, dj = vnorm(vsub(t[j].at, from));
+        float dmg = base * (j ? TESLA_CHAIN_MULT : 1);
+        if (j) tesla_link(t[j - 1].kind, t[j - 1].idx, t[j].kind, t[j].idx, t[j - 1].at, t[j].at, 0.35f, 0);
+        burst(t[j].at, v3(0.6f, 0.8f, 1), 30, 8, 0.4f, 0.1f);
+        if (t[j].kind == TK_ENEMY) damage_enemy(t[j].idx, dmg, vmul(dj, 6));
+        else if (t[j].kind == TK_PLAYER && np_target(t[j].idx))
+            hit_player(t[j].idx, dmg * PVP_SCALE, v3(0, 0, 0), W_TESLA, dj);
+    }
+    if (dmMode) net_fx_bolt(muzzle(), t[0].at);
+    P.fireCd = fmaxf(P.fireCd, 0.5f); P.teslaHitT = 0.3f; P.recoil = 1.5f; shake += 0.3f; muzzleT = 0.1f;
+    hitMarker = 0.25f; impact_frame(t[0].at, 0.08f); hitstop = fmaxf(hitstop, 0.05f);
+    play(S_TESLA_ZAP, 0.9f, 0.6f);
+    if (k > 1) snprintf(popText, sizeof popText, "ECLAIR x%d", k);
+    else snprintf(popText, sizeof popText, "ECLAIR !");
+    popT = 1.0f;
+    if (botMode) netlog("tesla : eclair ALL IN ONE, batterie %d -> %.0f degats, %d cible(s)", n, base, k);
+    return 1;
+}
+/* --- fin ALL IN ONE --- */
+
 /* tir maintenu : held = A_FIRE tenu, Tesla en main, vivant, pas en train de changer d'arme */
 static void tesla_tick(float dt, int held) {
     int was = P.teslaOn;

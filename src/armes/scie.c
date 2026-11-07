@@ -46,6 +46,7 @@ static void fire_saw(void) {
     Proj *p = spawn_proj(PR_SAW, vadd(eye_pos(), v3(0, SAW_SPAWN_UP, 0)), vmul(f, s));
     if (!p) return;
     p->sawState = SAW_FLY; p->sawAxis = saw_axis(f);
+    if (ric_take()) p->ricLeft = RIC_SAW_CAP;             /* RICOCHET : le disque rebondit sur le decor (saw_tick) au lieu de se planter */
     p->netId = ((unsigned int)(myId + 1) << 24) | ((unsigned int)PR_SAW << 20) | (++sawCounter & 0xFFFFF);
     P.ammo[WP_SAW] = 0; P.sawIdx = (int)(p - PR) + 1; P.sawCd = SAW_CD;
     P.recoil = 0.6f; shake += 0.04f;
@@ -278,6 +279,17 @@ static void saw_tick(Proj *p, float dt) {
             }
         }
         if (he >= 0 || hp >= 0) { saw_strike(p, dir, t, he, hp); return; }
+        if (t < len && mine && p->sawState == SAW_FLY && p->ricLeft > 0) {   /* RICOCHET : le disque rebondit au lieu de se planter */
+            V3 hit = vadd(p->pos, vmul(dir, t));
+            p->vel = vsub(p->vel, vmul(n, 2 * vdot(p->vel, n)));
+            p->pos = vadd(hit, vmul(n, 0.05f));
+            p->ricLeft--; ricStat[1]++;
+            burst(hit, v3(1, 0.85f, 0.5f), 14, 6, 0.3f, 0.09f);
+            play(S_SAW_BOUNCE, 0.5f * atten(hit), 1.2f);
+            p->sawAxis = saw_axis(vnorm(p->vel));
+            if (dmMode) net_fx_saw(SAWE_THROW, p, -1, 0);   /* les autres recalent la copie (position et vitesse) */
+            return;
+        }
         if (t < len) {                                    /* decor : elle se plante */
             V3 hit = vadd(p->pos, vmul(dir, t));
             if (mine) saw_plant(p, hit, n, dir, box);

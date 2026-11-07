@@ -5,22 +5,27 @@ Remplace la v1 (qui supprimait les pieces) : ici la **piece devient une competen
 
 ### Ce qui est code, choix faits et ecarts au design
 
-- Les 6 competences (`SK_COIN` .. `SK_DECOY`), une seule par loadout, valeurs de §3 (charges / recharge de
+- Les 7 competences (`SK_COIN` .. `SK_AIM`), une seule par loadout, valeurs de §3 (charges / recharge de
   `skillDef`). Description complete dans `docs/CODE.md` (section Competences).
+- **Patch d'equilibrage (7 nov.)** : PIECE passe a 2 charges / 5 s (4 / 2 s avant) ; RICOCHET est reecrit en **fenetre** (§3 bis) ;
+  ALL IN ONE marche avec la Tesla (un eclair, §3 ter) ; le **triangle MIRAGE => PIECE => RICOCHET => MIRAGE** (§3 quinquies).
 - **MARQUE** : ×1,25 sur **toutes** les touches du marqueur (pas de « rail qui ricoche vers la marque suivante »).
   Marque perdue a la mort de la cible. Pas encore : contre-jeu « un parry retire la marque », tesla qui propage.
 - **CHARGE** : ×1,5 sur la prochaine touche, quelle que soit l'arme (les autres touches du meme tir en
   profitent pendant 0,05 s : plombs, perforation). Pas de perforation en plus ni de bonus de portee de melee.
-- **RICOCHET** : rail et Elan reflechis (3 rebonds, 120 m), roquette (×0,8 par rebond, explose sur une cible ou
-  au 4e impact). Shotgun, mine, scie et tesla : pas encore. Retour sur soi a partir du 2e rebond, **une seule
-  fois par tir** (rail perpendiculaire entre deux murs : 50 PV en solo, sinon il tuait). Une seule competence
-  par loadout : la synergie RICOCHET + ALL IN ONE n'existe donc pas.
-- **ALL IN ONE** : rail, roquettes, Eventail, Elan ; refus (son, message, charge gardee) a 1 munition, avec la
-  Scie / Ventouse / Tesla, bouclier leve ou sous decharge Tesla. Le plafond PvP s'applique par projectile :
+- **RICOCHET** (v2, fenetre de 6 s) : pendant la fenetre, rail, Elan, roquettes, plombs du shotgun et scie rebondissent
+  **sans limite de rebonds ni de portee**, jusqu'a une cible ou la sortie de la carte (garde-fous techniques seulement :
+  24 rebonds pour le rail / l'Elan, 6 par plomb, 40 pour une roquette qui vit 15 s, 12 pour la scie). Ni la mine, ni la
+  tesla. Retour sur soi a partir du 2e rebond, **une seule fois par tir** (rail perpendiculaire entre deux murs : 50 PV en
+  solo, sinon il tuait) ; un tir ne touche chaque cible qu'une fois. Une seule competence par loadout : la synergie
+  RICOCHET + ALL IN ONE n'existe donc pas.
+- **ALL IN ONE** : rail, roquettes, Shotgun (ex-Eventail), Elan ; **Tesla : un eclair inevitable** (§3 ter) ; refus (son,
+  message, charge gardee) a 1 munition, avec la Scie / Ventouse, bouclier leve ou sous decharge Tesla. Le plafond PvP s'applique par projectile :
   le one-shot passe par plusieurs touches, compte dans « salves mortelles » (journal `equilibre`), pas
   dans « one-shots » (un seul coup).
 - **MIRAGE** : leurre immobile 3 s (silhouette coloree du lanceur). Absorbe un rail, un Elan ou un plomb
-  adverse ; mon rail y ricoche ×1 vers la cible la plus proche. Un tir qui part de l'interieur du leurre le
+  adverse (sauf face a RICOCHET, qui le renvoie a son poseur) et attire les ricochets de piece adverses ; mon rail y ricoche ×1
+  vers la cible la plus proche. Un tir qui part de l'interieur du leurre le
   traverse (sinon : leurre a ses pieds + rail = visee automatique). Le yoyo, la scie et le tesla l'ignorent ;
   le viseur adverse ne s'allume pas dessus. Pas encore : « un coup de melee le detruit et rend la moitie de
   la recharge ».
@@ -44,6 +49,28 @@ Match bot contre bot (90 s, un match par ligne, variance forte) :
 | CHARGE / MARQUE (impose) | 0,82 s | 6 | 0 | 0 | 7 | charge 3 (3 bonifiees), marque 10 (7 bonifiees) |
 
 A surveiller : ALL IN ONE aux roquettes (2 salves mortelles en 90 s) et le cumul MARQUE ×1,25 + CHARGE.
+
+Patch d'equilibrage (7 nov.) : match bot contre bot **avant / apres**, 90 s, hote + client sur la machine, loadout identique des deux
+cotes (`--loadout a,b,m,s`). **Un seul match par case (5 a 9 kills) : les moyennes de TTK ne signifient rien seules, il faut lire les compteurs.**
+
+| Scenario | Version | Kills | TTK moyen | One-shots | Salves | Parries | A retenir |
+|---|---|---|---|---|---|---|---|
+| PIECE, rail + roquettes (`--skill 0`) | avant | 7 | 7,96 s | 0 | 0 | 2 | 9 pieces lancees, 3 touches de ricochet |
+| | apres | 9 | 5,91 s | 0 | 2 | 3 | **5 pieces lancees** (2 charges / 5 s), 1 touche de ricochet |
+| SHOTGUN + rail (`2,0,0,0`) | avant | 7 | 9,64 s | 0 | 1 | 0 | 6 touches d'Eventail |
+| | apres (recul proportionnel a la vitesse, 2 matchs) | 7 et 8 | 6,45 et 7,93 s | 0 / 0 | 1 / 1 | 0 / 0 | **6 et 8 touches** de SHOTGUN (plafond de 60 par touche inchange) |
+| | (1er essai, recul fixe de 5 m) | 7 | 0,41 s | 0 | 2 | 0 | 4 touches ; ce TTK de 0,41 s etait un hasard : 5 kills sur 7 etaient des combos epee + tir en moins de 0,4 s |
+| RICOCHET, rail + roquettes (`0,1,0,3`) | avant | 7 | 3,24 s | 1 | 0 | 5 | 2 armements, 0 tir reflechi dans le match |
+| | apres | 6 | 8,77 s | 0 | 0 | 5 | 3 fenetres, **4 tirs reflechis, 37 rebonds** (9 par tir), 0 retour sur soi |
+| ELAN + rail (`3,0,0,0`) | avant | 7 | 8,21 s | 0 | 0 | 0 | 13 touches d'Elan (3 au depart, 6 au plus) |
+| | apres | 8 | 1,50 s | 0 | 0 | 0 | 8 touches d'Elan (4 munitions, le tir freine tout) |
+| TESLA + rail, ALL IN ONE (`6,0,0,4`) | avant | 8 | 8,13 s | 1 | 0 | 0 | 17 touches de Tesla, ALL IN ONE refuse avec la Tesla |
+| | apres | 5 | 4,39 s | 0 | 1 | 0 | 10 touches de Tesla, **3 eclairs** |
+
+Lecture : aucun match ne s'emballe ni ne cale (5 a 9 kills dans les onze). PIECE perd ~45 % de ses lancers (9 -> 5), ce qui justifie 2 charges /
+5 s. RICOCHET fait ce qu'il doit (une fenetre = ~1 tir reflechi de 9 rebonds). L'Elan fait moins de touches (8 contre 13), attendu : un tir plein
+exige maintenant de reprendre toute sa vitesse. Le SHOTGUN et la sentinelle ne se jugent pas sur un match de bots (plafond PvP inchange ; la
+sentinelle n'existe qu'en VAGUES) : voir les lignes de `--test`.
 
 ## 1. Idee
 
@@ -76,33 +103,40 @@ contre-jeu). Le jeu actuel reste jouable a l'identique tant qu'on ne choisit pas
 
 | Competence | Utilisation | Effet | Charges / recharge |
 |---|---|---|---|
-| **PIECE** (`SK_COIN`) | appui | lance une piece ; le rail qui la touche ricoche (x1,5), yoyo et scie interagissent | 4 / 2 s (actuel) |
+| **PIECE** (`SK_COIN`) | appui | lance une piece ; le rail, l'Elan ou la roquette qui la touche ricochent (x1,5), yoyo et scie interagissent | **2 / 5 s** (4 / 2 s avant le patch d'equilibrage) |
 | **MARQUE** (`SK_MARK`) | appui | tir sans degats : marque 4 s une cible, visible a travers les murs ; le rail qui touche une cible marquee ricoche vers la marque suivante (x1,25) | 2 / 6 s |
 | **CHARGE** (`SK_CHARGE`) | maintenir 0,6 s | ouvre 2 s pendant lesquelles le prochain rail fait x1,5 et perce une cible ; perdue si on est touche | 1 / 8 s |
-| **RICOCHET** (`SK_RICOCHET`) | appui | arme le prochain projectile tire (rail ou roquette) : il rebondit sur les surfaces au lieu de s'arreter. Voir §3 bis | 1 / 15 s |
-| **ALL IN ONE** (`SK_ALLIN`) | appui | tire **toute** la munition de l'arme en main d'un coup, en eventail ; plus il y en a, plus l'eventail est large. Voir §3 ter | 1 / 20 s (a regler) |
-| **MIRAGE** (`SK_DECOY`) | appui | leurre immobile 3 s ; un rail qui le traverse ricoche vers la cible la plus proche (piece qui ne tombe pas) | 2 / 7 s |
+| **RICOCHET** (`SK_RICOCHET`) | appui | ouvre une **fenetre de 6 s** pendant laquelle tout ce que tu tires rebondit sans fin sur les surfaces. Voir §3 bis | 1 / 20 s (la recharge repart a la fermeture ; 15 s et « prochain projectile » avant) |
+| **ALL IN ONE** (`SK_ALLIN`) | appui | tire **toute** la munition de l'arme en main d'un coup, en eventail ; plus il y en a, plus l'eventail est large. **Tesla : un eclair inevitable**. Voir §3 ter | 1 / 20 s (a regler) |
+| **MIRAGE** (`SK_DECOY`) | appui | leurre immobile 3 s ; un rail qui le traverse ricoche vers la cible la plus proche (piece qui ne tombe pas) ; attire les ricochets de piece adverses | 2 / 7 s |
 
-### 3 bis. RICOCHET (choix du proprietaire : « le prochain projectile rebondit sur les surfaces », 15 s)
+### 3 bis. RICOCHET v2 (patch d'equilibrage : « une duree pendant laquelle tous les projectiles rebondissent a l'infini »)
 
-- **Armement** : appui sur la touche, `P.ricArmed = 1` (indicateur au HUD et sur le viewmodel). La competence
-  est consommee au premier projectile tire ; si on change d'arme, elle reste armee. Recharge de 15 s qui
-  demarre **au tir** (pas a l'armement), pour ne pas bloquer le joueur qui arme sans tirer.
-- **Rail** : au lieu de s'arreter au mur, le tir est reflechi (`r = d - 2(d.n)n`), jusqu'a `RIC_BOUNCES` = 3
-  rebonds, portee totale plafonnee a `RIC_MAX_LEN` = 120 m. Touche chaque cible traversee, sans bonus
-  de degats par rebond au depart (le gain est la couverture, pas la puissance), perce toujours selon la
-  regle du rail. Un joueur peut se toucher lui-meme par un rebond : degats `W_SELF` a partir du 2e rebond,
-  c'est le risque de la competence.
-- **Roquette** : rebondit (vitesse x0,8 par rebond, `RIC_BOUNCES` rebonds) et n'explose qu'au contact d'une
-  cible ou au 4e impact.
-- **Scie** : rebondit deja ; l'armer n'ajoute que +1 renvoi dans `SAW_BOUNCE_CHAIN`.
-- **Interactions** : un rail qui ricoche touche aussi une piece / marque / mirage (ancrage commun, §4) apres
-  rebond, ce qui permet les tirs « sans ligne de vue » ; le yoyo et le tesla ne sont pas concernes.
-- **Reseau** : le tir est valide chez le tireur, comme aujourd'hui ; `EV_SKILL` (`sub = SK_RICOCHET`) porte
-  le fait que le tir est reflechi, et la trace (`Beam`) est dessinee avec ses segments. Le plafond PvP par
-  touche (`PVP_HIT_CAP`) reste inchange. **Incrementer `NET_VER`.**
-- **Tests a ajouter** : reflexion sur un mur (angle d'incidence = angle de sortie, a 0,5 deg pres), 3 rebonds
-  maximum, recharge 15 s apres le tir, projectile non arme = comportement actuel, auto-degats au 2e rebond.
+Remplace la v1 (« arme le prochain projectile, 3 rebonds, 120 m, 15 s » : `P.ricArmed` consomme au premier tir).
+
+- **Fenetre** : appui = `P.ricT = RIC_DURATION` (6 s, `P.ricArmed` en est le miroir pour le HUD, les bots et la boutique de VAGUES). Le HUD
+  affiche `RICOCHET 4.2 s`. Pas de 2e ouverture pendant la fenetre. Charge : 1 ; recharge **20 s qui repart a la fermeture**
+  (`skillDef`, a mesurer : cycle de 26 s, 23 % du temps ouvert). Mort et respawn ferment la fenetre.
+- **Rail et Elan** (`hitscan_shot`) : a chaque mur, reflexion `r = d - 2 (d.n) n`. **Aucun plafond de portee** : un segment de
+  `RIC_SEG_LEN` = 400 m sans mur veut dire « sorti de la carte » (kill zone, carte ouverte) et le tir s'arrete. Garde-fou technique
+  `RIC_CAP_BOUNCES` = 24 (une carte fermee ne laisse jamais sortir un tir ; cout CPU et traits a l'ecran). Le tir s'arrete aussi sur une
+  piece, une mine ou un bouclier. **Une touche par cible et par tir** (`RIC_HITS_MAX`) : sans cela un tir qui recroise sa cible
+  la toucherait a chaque aller-retour (2 x 60 = un one-shot imprevu). Retour sur soi a partir du 2e rebond, une seule fois par tir (`W_SELF` :
+  moitie des degats en solo, x `PVP_SCALE` plafonne en LAN).
+- **Roquette** : `ricLeft` = `RIC_ROCKET_CAP` (40), **aucune perte de vitesse** (`RIC_ROCKET_SLOW` 1, 0,8 en v1), vie `RIC_ROCKET_LIFE`
+  15 s (6 s sinon) : elle rebondit jusqu'a une cible, a sa fin de vie ou jusqu'a sortir de la carte.
+- **Plombs du SHOTGUN** : chaque plomb rebondit, `RIC_PELLET_CAP` = 6 rebonds, `SG_RANGE` par segment, degats selon la distance totale parcourue
+  (donc faibles loin). **Scie** : elle rebondit sur le decor au lieu de se planter (`RIC_SAW_CAP` = 12, `SAW_FLY_MAX` l'arrete aussi).
+  **Ni la mine, ni la Tesla** (la mine colle, l'arc n'est pas un projectile).
+- **Interactions** : une piece, un mirage ou une marque touches apres un rebond jouent comme avant. RICOCHET est la competence du triangle
+  qui contre MIRAGE (§3 quinquies).
+- **Reseau** : le tir est valide chez le tireur. **Tous les rebonds d'un tir tiennent dans un seul evenement** (`EV_RAIL` sous-type 2 :
+  depart et direction du 1er segment reflechi, nombre de segments) : chaque client recalcule la trace sur le decor, jamais un evenement par
+  segment (24 par tir saturaient la file des 128 evenements). `EV_ROCKET.sub` = rebonds restants, `EV_SHOT.pad[0]` = rebonds des plombs,
+  `EV_SKILL` `SK_RICOCHET` = ouverture. `PVP_HIT_CAP` inchange. **`NET_VER` 21.**
+- **Tests** (`--test`, lignes « ricochet ») : fenetre ouverte / encore ouverte a 5 s / fermee a 6,1 s, incidence = sortie (< 0,5 deg), tir sorti du
+  labo (6 segments, 5 rebonds), plafond de 24 rebonds entre deux murs paralleles, une touche par cible, roquette (vitesse constante, vie 15 s),
+  plombs derriere le rebond, scie, trace recalculee par les autres, recharge de 20 s apres la fermeture.
 
 ### 3 ter. ALL IN ONE (choix du proprietaire : « toutes les munitions d'un coup, spread croissant »)
 
@@ -127,6 +161,14 @@ contre-jeu). Le jeu actuel reste jouable a l'identique tant qu'on ne choisit pas
 - **Tests a ajouter** : n projectiles pour n munitions, munition a zero apres le tir, demi-angle conforme
   a la formule (n = 2, 4, 6), refus a 1 munition, plafond PvP applique par projectile (un tir a courte portee peut one-shot), recharge.
 
+- **Tesla : un eclair inevitable** (patch d'equilibrage, `tesla_bolt`) : la Tesla est un faisceau, pas un projectile, donc pas de
+  « toute la munition en eventail » ; ALL IN ONE lance a la place **un eclair instantane** (aucun delai de vol, rien a esquiver) sur la
+  cible la plus proche du viseur dans un cone de ~10 deg (`TESLA_BOLT_CONE`), en vue, a 45 m. Il saute ensuite comme l'arc
+  (2 cibles de plus a 6 m, x0,6). **Il vide toute la batterie** (`TESLA_BOLT_MIN` = 20 au moins, sinon refus sans depense) et fait
+  `TESLA_BOLT_DMG` = 130 x batterie / 100 en PvE (65 a demi-batterie) ; en PvP x `PVP_SCALE` puis le plafond de 60 de l'hote (donc ~71 % de
+  batterie suffisent), arme `W_TESLA` : la cible peut toujours le parer comme une decharge. Hypotheses a confirmer : cout = toute la batterie,
+  degats proportionnels, pas de verrou au-dela du cone. Reseau : `EV_SKILL` `SK_ALLIN` avec `actor` = 1 (`net_fx_bolt`).
+
 Les autres competences n'ont pas besoin de projectile physique propre : MARQUE et CHARGE sont des etats,
 MIRAGE reutilise l'entite `Coin` (immobile, sans gravite). C'est ce qui rend l'etape 1 peu risquee.
 
@@ -139,16 +181,30 @@ tir » ou sur « le prochain coup », avec une regle par famille. Une case vide 
 
 | Competence | Armes de tir | Melee | Ignore |
 |---|---|---|---|
-| **PIECE** | rail ricoche (x1,5) ; roquette, shotgun, kinetic, tesla la touchent et partent vers une cible | yoyo frappe la piece ; epee et lance la renvoient (parry de projectile) | poings, egide |
+| **PIECE** | rail et kinetic ricochent (x1,5) ; **roquette : redirigee vers l'ennemi le plus proche (x1,5, patch)** ; shotgun, tesla la touchent | yoyo frappe la piece ; epee et lance la renvoient (parry de projectile) | poings, egide |
 | **MARQUE** | tout tir qui touche une cible marquee : +25 % (rail, shotgun, kinetic) ou souffle +20 % (roquette, mine) ; tesla propage la marque | tout coup de melee sur une marquee : +25 % ; yoyo la tire ; egide : le coup de bouclier la marque | scie (traverse, voir §4) |
 | **CHARGE** | le prochain tir : x1,5 et perce ; scie : traverse sans s'arreter ; mine : rayon x1,3 | le prochain coup : x1,5, portee +20 % | — |
-| **RICOCHET** | rail, shotgun, kinetic : reflechis ; roquette : rebondit ; mine : roule et rebondit ; scie : +1 renvoi ; tesla : l'arc rebondit | — (rien a faire rebondir) | les 6 armes de melee |
-| **ALL IN ONE** | vide la munition de l'arme de tir en main en eventail (rail, roquette, shotgun, kinetic ; mines posees en ligne ; tesla : arcs en eventail) | — | scie (1 seule), melee |
+| **RICOCHET** | fenetre de 6 s : rail, kinetic, plombs du shotgun, roquette et scie rebondissent a l'infini (garde-fous techniques) ; mine et tesla : non (la mine colle, l'arc n'est pas un projectile) | — (rien a faire rebondir) | les 6 armes de melee |
+| **ALL IN ONE** | vide la munition de l'arme de tir en main en eventail (rail, roquette, shotgun, kinetic ; mines posees en ligne ; **tesla : un eclair inevitable**) | — | scie (1 seule), melee |
 | **MIRAGE** | tout tir qui traverse le leurre est redirige vers la cible la plus proche | tout coup de melee qui touche le leurre le detruit et rend la moitie de la recharge | — |
 
 Verification : les competences de la ligne « Ignore » doivent rester a 2 armes ou moins ; RICOCHET et
 ALL IN ONE sont volontairement des competences de tir (elles n'ont pas de sens au corps a corps) : si on
 choisit un loadout de melee seul, on propose a la place MARQUE, CHARGE ou MIRAGE.
+
+## 3 quinquies. Le triangle MIRAGE => PIECE => RICOCHET => MIRAGE (pierre-feuille-ciseaux)
+
+Choix du proprietaire : « c'est plus comme un pierre feuille ciseaux ». Ce n'est **pas** une synergie de loadout (une seule competence par
+loadout) : chaque competence en **contre** une autre, a sens unique. Chaque fleche se coupe par une constante de `equilibrage.c`.
+
+| Fleche | Regle | Constante |
+|---|---|---|
+| MIRAGE => PIECE | le ricochet d'une piece (rail, Elan, roquette) vise le **leurre adverse** en vue (90 m) **avant** le joueur : le leurre l'absorbe, le joueur n'est pas touche (« les pieces suivent le mirage et non le joueur ») | `DECOY_COIN_LURE` |
+| RICOCHET => MIRAGE | si j'ai RICOCHET, mon tir (rail, Elan, plombs) sur le leurre adverse repart vers le **joueur qui l'a pose** (en vue du leurre, 90 m, memes degats, plafond PvP) ; sans ligne de vue, le leurre absorbe | `DECOY_RIC_ALWAYS` (1 : des qu'il est equipe) |
+| PIECE => RICOCHET | **lecture par defaut, le proprietaire n'a « rien de particulier »** : un projectile en rebond (fenetre RICOCHET ouverte) qui touche une piece **adverse** repart vers **son tireur** au lieu de la voler (rail / Elan : touche comme un rebond qui revient ; roquette : revient et explose sur lui, 30 x f) | `COIN_VS_RIC` |
+
+Le yoyo, la scie et la Tesla continuent d'ignorer le leurre. Les roquettes ignorent le leurre aussi (elles le traversent), sauf quand une
+piece les y envoie : elles s'y ecrasent.
 
 ## 4. Interactions avec les autres armes
 

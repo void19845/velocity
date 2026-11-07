@@ -12,7 +12,7 @@ enum { S_RAIL, S_ROCKET, S_EXPLO, S_JUMP, S_LAND, S_DASH, S_HIT, S_KILL, S_HURT,
        S_ESHOT, S_PAD, S_WAVE, S_WALLJUMP, S_SLIDE, S_HOOK, S_HOOKHIT, S_PUNCH, S_PARRY,
        S_KIN,                                             /* Elan */
        S_ANVIL_DIVE, S_ANVIL_SLAM, S_ANVIL_CLANG,
-       S_SG_FIRE, S_SG_PUMP,                              /* Eventail */
+       S_SG_FIRE, S_SG_PUMP,                              /* SHOTGUN */
        S_SAW_THROW, S_SAW_PLANT, S_SAW_HIT, S_SAW_CATCH, S_SAW_BOUNCE,   /* Scie */
        S_TESLA_LOOP, S_TESLA_ZAP,                         /* Tesla */
        S_LANCE_COUCH, S_LANCE_THRUST, S_LANCE_HIT, S_LANCE_CLASH,        /* Lance */
@@ -315,7 +315,7 @@ static void make_sounds(void) {
     }
     sounds[S_ANVIL_CLANG] = mksound(b, n);
 
-    /* --- Eventail --- */
+    /* --- SHOTGUN --- */
     /* tir : bruit passe-bas dont la coupure descend de 6000 a 300 Hz, coup grave, claquement */
     b = sbuf(0.5f, &n); lp = 0;
     for (int i = 0; i < n; i++) {

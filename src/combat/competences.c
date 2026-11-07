@@ -28,7 +28,7 @@ static void skill_mark(void) {                            /* MARQUE : tir sans d
     if (botMode) netlog("marque : %s", tp >= 0 ? pname(tp) : te >= 0 ? "drone" : "ratee");
     if (dmMode) net_fx_skill(SK_MARK, tp, muzzle(), end);
 }
-static int allin_ok(int w) { return w == WP_RAIL || w == WP_ROCKET || w == WP_SHOTGUN || w == WP_KINETIC; }
+static int allin_ok(int w) { return w == WP_RAIL || w == WP_ROCKET || w == WP_SHOTGUN || w == WP_KINETIC || w == WP_TESLA; }
 static float allin_half(int n) {                          /* ALL IN ONE : demi-angle de l'eventail (radians) */
     return fminf(ALLIN_SPREAD_BASE + ALLIN_SPREAD_PER * (n - 1), ALLIN_SPREAD_MAX) * PI / 180;
 }
@@ -38,6 +38,13 @@ static float allinSpan;                                   /* angle entre le prem
 static void skill_allin(void) {                           /* toute la munition de l'arme en main, en eventail regulier */
     int w = P.weapon, n = P.ammo[w];
     int blocked = P.switchT > 0 || P.shieldState == SHS_UP || tesla_stunned();   /* comme un tir normal */
+    if (w == WP_TESLA) {                                  /* Tesla : un eclair inevitable, toute la batterie (tesla.c) */
+        if (blocked) {
+            play(S_HIT, 0.5f, 0.45f);
+            snprintf(popText, sizeof popText, "ALL IN ONE : PAS MAINTENANT"); popT = 1.0f;
+        } else if (tesla_bolt()) { P.skillCh -= 1; skillUse[SK_ALLIN]++; }   /* sinon : message, la charge est gardee */
+        return;
+    }
     if (!allin_ok(w) || n < 2 || blocked) {
         play(S_HIT, 0.5f, 0.45f);
         snprintf(popText, sizeof popText, "%s", !allin_ok(w) ? "ALL IN ONE : ARME INCOMPATIBLE" :   /* 31 car. au plus */
@@ -58,7 +65,7 @@ static void skill_allin(void) {                           /* toute la munition d
         last = view_dir();
         fire_weapon();
     }
-    allinActive = 0; P.ricArmed = 0;                      /* RICOCHET : un seul armement pour tout l'eventail */
+    allinActive = 0;
     P.yaw = y0; P.pitch = p0;
     P.ammo[w] = 0; allinLast = n; allinSpan = acosf(clampf(vdot(first, last), -1, 1));
     P.fireCd = fmaxf(P.fireCd, wpCd[w]);                  /* l'arme est vide : pas de tir dans le meme tick */
@@ -90,9 +97,26 @@ static void skill_aim(void) {                             /* AIMANT : aimant de 
     if (botMode) netlog("competence : aimant (%.0f s)", AIM_T);
     if (dmMode) net_fx_skill(SK_AIM, -1, pcenter(), v3(0, 0, 0));   /* les autres voient l'activation */
 }
+static void skill_ricochet(void) {                        /* RICOCHET : la fenetre s'ouvre, tout ce que je tire rebondit RIC_DURATION s */
+    P.skillCh -= 1; P.ricT = RIC_DURATION; P.ricArmed = 1; skillUse[SK_RICOCHET]++;
+    play(S_PAD, 0.5f, 2.0f);
+    burst(pcenter(), v3(0.4f, 1, 0.7f), 26, 5, 0.4f, 0.1f);
+    snprintf(popText, sizeof popText, "RICOCHET !"); popT = 0.8f;
+    if (botMode) netlog("competence : ricochet ouvert (%.0f s)", RIC_DURATION);
+    if (dmMode) net_fx_skill(SK_RICOCHET, -1, pcenter(), v3(RIC_DURATION, 0, 0));   /* les autres voient l'ouverture */
+}
 static void skill_tick(float dt, int press, int held) {
     const SkillDef *d = &skillDef[P.skill];
-    if (!P.ricArmed && P.skillCh < d->max) P.skillCh = fminf((float)d->max, P.skillCh + dt / d->recharge);
+    if (P.ricT > 0) {                                     /* RICOCHET : fenetre ouverte (P.ricArmed la double pour le HUD, les bots, la boutique) */
+        P.ricT -= dt;
+        vgRicT = fmaxf(vgRicT, 0.3f);                     /* VAGUES : les touches de la fenetre reviennent au chemin RICOCHET */
+        if (P.ricT <= 0) {
+            P.ricT = 0;
+            if (!P.dead) { snprintf(popText, sizeof popText, "RICOCHET FINI"); popT = 0.8f; }
+        }
+    }
+    P.ricArmed = P.ricT > 0;
+    if (!P.ricArmed && P.skillCh < d->max) P.skillCh = fminf((float)d->max, P.skillCh + dt / d->recharge);   /* RICOCHET : la recharge repart a la fin */
     for (int i = 0; i < MAXP; i++) if (markP[i] > 0) { markP[i] -= dt; if (!np_target(i)) markP[i] = 0; }   /* mort : marque perdue */
     for (int i = 0; i < MAXE; i++) if (markE[i] > 0) { markE[i] -= dt; if (!E[i].alive) markE[i] = 0; }
     if (markedMeT > 0) markedMeT -= dt;
@@ -104,20 +128,14 @@ static void skill_tick(float dt, int press, int held) {
         if (botMode) netlog("competence : charge perdue (touche)");
     }
     lastHpSeen = P.hp;
-    if (P.dead) { P.chargeT = P.chargeHold = 0; P.aimT = 0; return; }
+    if (P.dead) { P.chargeT = P.chargeHold = 0; P.aimT = 0; P.ricT = 0; P.ricArmed = 0; return; }
     switch (P.skill) {
     case SK_COIN:  if (press && P.skillCh >= 1) { throw_coin(); skillUse[SK_COIN]++; } break;
     case SK_MARK:  if (press && P.skillCh >= 1) skill_mark(); break;
     case SK_ALLIN: if (press && P.skillCh >= 1) skill_allin(); break;
     case SK_DECOY: if (press && P.skillCh >= 1) skill_decoy(); break;
     case SK_AIM:   if (press && P.skillCh >= 1 && P.aimT <= 0) skill_aim(); break;
-    case SK_RICOCHET:
-        if (press && P.skillCh >= 1 && !P.ricArmed) {     /* la recharge ne repart qu'au tir */
-            P.skillCh -= 1; P.ricArmed = 1; skillUse[SK_RICOCHET]++;
-            play(S_PAD, 0.5f, 2.0f);
-            snprintf(popText, sizeof popText, "RICOCHET ARME"); popT = 0.8f;
-        }
-        break;
+    case SK_RICOCHET: if (press && P.skillCh >= 1 && !P.ricArmed) skill_ricochet(); break;   /* pas de 2e ouverture pendant la fenetre */
     case SK_CHARGE:
         if (held && P.skillCh >= 1 && P.chargeT <= 0) {
             P.chargeHold += dt;

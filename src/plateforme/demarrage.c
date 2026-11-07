@@ -454,7 +454,13 @@ static int velocity_main(const char *cmd) {
             SetLay L = settings_lay(winW * 0.5f);
             uiMX = (int)(winW * 0.5f - 100); uiMY = (int)(L.y0 + (L.compact ? 16.0f : 22.0f) + 10);
         }
-        if (strstr(shotPath, "loadout")) { loadoutOpen = 1; if (strstr(shotPath, "charge")) wantSkill = SK_CHARGE; }
+        if (strstr(shotPath, "loadout")) {
+            loadoutOpen = 1;
+            if (strstr(shotPath, "charge")) wantSkill = SK_CHARGE;
+            else if (strstr(shotPath, "mirage")) wantSkill = SK_DECOY;          /* descriptions longues du patch d'equilibrage */
+            else if (strstr(shotPath, "ricochet")) wantSkill = SK_RICOCHET;
+            else if (strstr(shotPath, "allin")) wantSkill = SK_ALLIN;
+        }
         if (strstr(shotPath, "heberger")) { hostOpen = 1; wantTeams = 2; hostBots = 1; }
         if (strstr(shotPath, "skinmenu")) { sunDmg = SUN_UNLOCK_DMG; skinOpen = 1; wantSkin = SKN_POUSSIN; skinPrevTeam = 1; nowT = 0.4; }
         if (strstr(shotPath, "challenge")) {              /* ecran CHALLENGE : classement factice de la course */
@@ -586,7 +592,7 @@ static int velocity_main(const char *cmd) {
             P.yaw = 1.2f; P.pitch = -0.1f; NP[1].hp = 45;
             killcam_start(1, W_RAIL); P.dead = 1; P.deathT = 0.9f;
         }
-        if (strstr(shotPath, "eventail")) {               /* Rival a l'Eventail : son tir recu (traceurs recalcules) */
+        if ((strstr(shotPath, "shotgun") || strstr(shotPath, "eventail"))) {               /* Rival au SHOTGUN : son tir recu (traceurs recalcules) */
             NP[1].st.weapon = WP_SHOTGUN; NP[1].st.flags = 0; NP[1].st.melee = 0;
             NetEvent e = ev_new(EV_SHOT);
             V3 o = v3(NP[1].disp.x, NP[1].disp.y + EYE_STAND, NP[1].disp.z), to = vnorm(vsub(v3(1.5f, 1.2f, 24), o));
@@ -730,14 +736,14 @@ static int velocity_main(const char *cmd) {
         shotStreak = 4; P.meleeT = 0.12f; P.vel = v3(0, 0, -14);   /* pour voir le HUD des deux axes */
         if (strstr(shotPath, "elan")) {                   /* Elan : un tir plein, puis la fenetre du dash-tir ouverte */
             P.loadout[1] = WP_KINETIC; P.weapon = WP_KINETIC; P.switchT = 0; P.fireCd = 0; P.meleeT = 0;
-            P.ammo[WP_KINETIC] = 5; P.ammoGauge[WP_KINETIC] = 30;
+            P.ammo[WP_KINETIC] = 3; P.ammoGauge[WP_KINETIC] = 30;   /* 3 sur 4 (plafond de l Elan) */
             E[0].alive = 1; E[0].type = EN_DRONE; E[0].hp = 300; E[0].pos = vadd(eye_pos(), vmul(view_dir(), 12));
             P.vel = v3(0, 0, -16); P.kinDashT = 1;
             fire_kinetic();
             P.fireCd = 0; P.kinT = 0; muzzleT = 0; P.vel = v3(0, 0, -16); P.kinDashT = 0.03f;
             impactT = 0; hitstop = 0;                     /* on veut voir le rayon, pas l'impact frame */
         }
-        if (strstr(shotPath, "eventail")) {               /* Eventail : un tir sur un drone, traceurs en vol, pompe, cercle */
+        if ((strstr(shotPath, "shotgun") || strstr(shotPath, "eventail"))) {               /* SHOTGUN : un tir sur un drone, traceurs en vol, pompe, cercle */
             hook_release(0);
             P.loadout[1] = WP_SHOTGUN; P.weapon = WP_SHOTGUN; P.switchT = 0; P.fireCd = 0; P.meleeT = 0;
             P.ammo[WP_SHOTGUN] = 4; P.ammoGauge[WP_SHOTGUN] = 60;
@@ -924,16 +930,19 @@ done:
                100 * dryT / fmaxf(botAliveT, 0.01f));
         netlog("competences : %s ; utilisations piece %d, marque %d, charge %d, ricochet %d, all in one %d, mirage %d, aimant %d ; "
                "touches bonifiees %d ; ricochets : %d tirs, %d rebonds, %d retours sur soi ; dernier all in one %d projectiles ; "
-               "tirs absorbes par un leurre adverse %d",
+               "tirs absorbes par un leurre adverse %d, renvoyes a son poseur (RICOCHET) %d, ricochets de piece detournes sur un leurre %d ; "
+               "roquettes redirigees par une piece %d ; tirs renvoyes par une piece adverse (PIECE contre RICOCHET) %d ; "
+               "eclairs de la Tesla (ALL IN ONE) %d ; rebonds de plombs %d",
                skillDef[P.skill].name, skillUse[SK_COIN], skillUse[SK_MARK], skillUse[SK_CHARGE], skillUse[SK_RICOCHET],
-               skillUse[SK_ALLIN], skillUse[SK_DECOY], skillUse[SK_AIM], skillBonus, ricStat[0], ricStat[1], ricStat[2], allinLast, decoyHits);
+               skillUse[SK_ALLIN], skillUse[SK_DECOY], skillUse[SK_AIM], skillBonus, ricStat[0], ricStat[1], ricStat[2], allinLast, decoyHits,
+               decoyReflects, decoyLured, rocketCoin, coinBacks, teslaBolts, sgPellRicSum);
         if (slamDives || slamWaves || slamParried || hitCount[W_SLAM])
             netlog("enclume : %d piques, ondes qui touchent %d / %d, |vy| moyen %.1f, degats moyens par onde %.1f, "
                    "immobilisations %d ; arbitre : touches %d, ondes parees %d, combos onde + rail %d",
                    slamDives, slamWaveHits, slamWaves, slamVySum / (slamWaves ? slamWaves : 1),
                    slamDmgSum / (slamWaves ? slamWaves : 1), slamStuns, hitCount[W_SLAM], slamParried, slamRailCombos);
         if (sgShots || hitCount[W_SHOTGUN])
-            netlog("eventail : %d tirs, plombs moyens %.1f, tirs qui comptent pour la chaine %.0f%%, shotgun jumps %d, "
+            netlog("shotgun : %d tirs, plombs moyens %.1f, tirs qui comptent pour la chaine %.0f%%, shotgun jumps %d, "
                    "pieces eclatees %d ; arbitre : touches %d",
                    sgShots, sgPelletSum / (float)(sgShots ? sgShots : 1), 100.0f * sgStreakShots / (sgShots ? sgShots : 1),
                    sgJumps, sgBurstSum, hitCount[W_SHOTGUN]);

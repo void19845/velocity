@@ -18,7 +18,7 @@ main.c                 table des matieres : inclut src/ dans l'ordre (seul fichi
 src/
   reglages/            tous les chiffres d'equilibrage (#define)
   joueur/              mouvement : bhop, slide, dash, wall-run, grappin
-  armes/               une arme = un fichier (enclume, lance, fleau, poings, egide, elan, eventail, tesla, scie, ventouse)
+  armes/               une arme = un fichier (enclume, lance, fleau, poings, egide, elan, shotgun, tesla, scie, ventouse)
   combat/              degats, loadout, melee, pieces et railgun, roquettes, projectiles
   perso/               skins des personnages
   graphismes/          lecture de graphismes/rendu.ini (ambiances, qualite)

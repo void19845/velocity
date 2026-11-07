@@ -62,12 +62,14 @@
 
 /* Pieces facon Marksman (Ultrakill) : on lance une piece, un tir de rail qui la touche ricoche
  * tout seul vers la cible la plus proche. Pense pour viser a pleine vitesse. */
-#define COIN_MAX        4
-#define COIN_RECHARGE   2.0f    /* secondes par piece */
+#define COIN_MAX        2       /* patch d'equilibrage : 2 charges (4 avant) ... */
+#define COIN_RECHARGE   5.0f    /* ... et 5 s par piece (2 s avant) : une piece se gagne, elle ne se jette plus a la chaine */
 #define COIN_RADIUS     0.9f    /* grosse zone de touche */
 #define COIN_MULT       1.5f    /* chaque ricochet multiplie les degats */
 #define COIN_GRAVITY    16.0f
 #define COIN_SEEK_RANGE 90.0f
+#define COIN_ROCKET_SPEED 70.0f /* roquette redirigee par une piece : vitesse du vol vers la cible (ROCKET_SPEED : 38) */
+#define COIN_ROCKET_CHAIN 3     /* ... pieces enchainees par la meme roquette au plus */
 
 /* Competences : l'emplacement de la piece (touche A_SKILL) recoit une competence au choix du LOADOUT
  * (docs/COMPETENCES_MARKSMAN.md). Charges et recharge par competence : skillDef. */
@@ -79,9 +81,25 @@ enum { SK_COIN, SK_MARK, SK_CHARGE, SK_RICOCHET, SK_ALLIN, SK_DECOY, SK_AIM, SK_
 #define CHARGE_WINDOW     2.0f    /* puis fenetre ouverte pour la prochaine touche */
 #define CHARGE_MULT       1.5f
 #define CHARGE_GRACE      0.05f   /* une fois declenchee, les autres touches du meme tir en profitent (perforation, plombs) */
-#define RIC_BOUNCES       3       /* RICOCHET : rebonds du prochain projectile */
-#define RIC_MAX_LEN       120.0f  /* portee totale d'un rail reflechi */
-#define RIC_ROCKET_SLOW   0.8f    /* vitesse gardee par une roquette a chaque rebond */
+/* RICOCHET (patch d'equilibrage) : pendant RIC_DURATION secondes, TOUT ce que tu tires rebondit sans limite de rebonds ni de
+ * portee, jusqu'a sortir de la carte (kill zone) ou toucher une cible. Les plafonds RIC_CAP_* ne sont que des garde-fous
+ * techniques (cout CPU, evenements reseau, traces a l'ecran) : une carte fermee ne laisse sinon jamais sortir un tir. */
+#define RIC_DURATION      6.0f    /* RICOCHET : duree de la fenetre (la recharge de skillDef ne repart qu'apres) */
+#define RIC_CAP_BOUNCES   24      /* garde-fou : rebonds au plus par rail / Elan (0 : aucun) */
+#define RIC_SEG_LEN       400.0f  /* longueur d'un segment : au-dela sans mur, le tir est sorti de la carte */
+#define RIC_HITS_MAX      1       /* un meme tir ne touche chaque cible qu'une fois, meme s'il la recroise apres un rebond */
+#define RIC_PELLET_CAP    6       /* garde-fou : rebonds au plus par plomb (10 plombs par tir) */
+#define RIC_ROCKET_CAP    40      /* garde-fou : rebonds au plus par roquette (ils s'arretent aussi sur une cible) */
+#define RIC_ROCKET_LIFE   15.0f   /* duree de vie d'une roquette qui rebondit (6 s sinon) */
+#define RIC_ROCKET_SLOW   1.0f    /* vitesse gardee par une roquette a chaque rebond (1 : aucune perte) */
+#define RIC_SAW_CAP       12      /* garde-fou : rebonds au plus pour la scie (SAW_FLY_MAX l'arrete aussi) */
+/* Triangle pierre-feuille-ciseaux, a sens unique (pas une synergie de loadout) : MIRAGE contre PIECE, PIECE contre RICOCHET, RICOCHET
+ * contre MIRAGE. Chaque fleche se coupe avec sa constante (0 = desactivee). */
+#define DECOY_COIN_LURE   1       /* MIRAGE => PIECE : le ricochet d'une piece (rail, Elan, roquette) vise le leurre adverse avant le joueur */
+#define COIN_VS_RIC       1       /* PIECE => RICOCHET (lecture par defaut, le proprietaire n'a rien precise) : un projectile en rebond
+                                     (fenetre RICOCHET ouverte) qui touche une piece ADVERSE repart vers son tireur au lieu de la voler */
+#define DECOY_RIC_ALWAYS  1       /* RICOCHET => MIRAGE : un tir sur le leurre adverse repart vers son poseur ; 1 = des que RICOCHET est
+                                     equipe, 0 = seulement pendant la fenetre */
 #define ALLIN_SPREAD_BASE 0.8f    /* ALL IN ONE : demi-angle de l'eventail (degres) */
 #define ALLIN_SPREAD_PER  0.7f    /* par munition au-dela de la premiere */
 #define ALLIN_SPREAD_MAX  6.0f
@@ -100,27 +118,40 @@ enum { SK_COIN, SK_MARK, SK_CHARGE, SK_RICOCHET, SK_ALLIN, SK_DECOY, SK_AIM, SK_
 #define KIN_CD            0.5f    /* recharge de l'Elan (divisee par streak_rate) */
 #define KIN_DMG_BASE      20.0f   /* degats a l'arret */
 #define KIN_DMG_PER_MS    5.0f    /* degats en plus par m/s de vitesse depensee */
-#define KIN_SPEED_CAP     15.0f   /* vitesse horizontale maximale convertie par tir */
+#define KIN_SPEED_CAP     15.0f   /* vitesse horizontale maximale convertie en degats par tir */
+#define KIN_BRAKE_ALL     1       /* 1 : le tir enleve TOUTE la vitesse horizontale du tireur (avant : seulement celle convertie, 15 m/s au
+                                     plus) ; 0 : l'ancien freinage */
+#define KIN_BRAKE_VERT    0       /* 1 : le tir enleve aussi la vitesse verticale (le tireur se fige en l'air) ; 0 : on finit son saut/sa chute
+                                     (choix par defaut : seule la vitesse horizontale sert a l'Elan) */
 #define KIN_KNOCK         3.0f    /* recul de la cible a l'arret (PvE ; moitie en PvP) */
 #define KIN_KNOCK_PER_MS  0.4f    /* recul en plus par m/s depensee : 3 -> 9 m/s */
 #define KIN_FULL          14.5f   /* au-dela : tir "plein" (hitstop, son et rayon max) */
 #define KIN_DASH_WINDOW   0.10f   /* dash-tir : le tir doit partir dans les 12 ticks apres le dash */
 #define KIN_DASH_FORGET   0.6f    /* jusque-la, hors fenetre, la vitesse du dash ne compte pas */
 
-/* Fusil a pompe "Eventail" : 10 plombs, plein jusqu'a 10 m, x0.3 a 30 m */
+/* Fusil a pompe "SHOTGUN" (ex-EVENTAIL) : 10 plombs, plein jusqu'a 10 m, x0.3 a 30 m */
 #define SG_PELLETS        10
 #define SG_HALF_ANGLE     0.0785f /* demi-angle du cone en radians (4.5 deg, cone total 9 deg) */
 #define SG_SLIDE_SPREAD   0.5f    /* en slide : dispersion divisee par 2 */
-#define SG_PELLET_DMG     8.0f    /* degats PvE par plomb */
+#define SG_PELLET_DMG     20.0f   /* degats PvE par plomb (8 avant : x2,5) : 200 a bout portant. En PvP : x PVP_SCALE puis plafond
+                                     PVP_HIT_CAP (60) par tir, inchange : la hausse etend surtout la portee du kill en 2 tirs */
 #define SG_NEAR           10.0f   /* degats pleins jusqu'ici */
 #define SG_FAR            30.0f   /* ... puis lineaire jusqu'a SG_FAR_MULT ici */
 #define SG_FAR_MULT       0.3f
 #define SG_RANGE          60.0f   /* portee max d'un plomb */
 #define SG_CD             0.95f   /* recharge (divisee par streak_rate) */
 #define SG_STREAK_MIN     3       /* plombs touches pour compter dans la chaine */
-#define SG_PELLET_KNOCK   0.6f    /* recul par plomb sur la cible */
-#define SG_RECOIL         7.0f    /* recul du tireur en l'air */
-#define SG_RECOIL_VMAX    9.0f    /* le recul ne pousse pas vy au-dela (sauf si deja plus) */
+#define SG_PELLET_KNOCK   1.0f    /* recul PvE par plomb sur un ennemi (0.6 avant) : ~10 m/s a bout portant, environ 5 m pour un drone */
+/* Recul : poussee forcee PROPORTIONNELLE A LA VITESSE ACTUELLE du tireur (sa vitesse 3D juste avant le tir) : SG_KNOCK_RATIO m/s de poussee
+ * par m/s de vitesse, dans le sens oppose au tir, pendant SG_KNOCK_T s, au sol comme en l'air. 50 m/s -> 50 m/s pendant 0,1 s = 5 m ;
+ * 20 m/s -> 2 m ; immobile -> rien ; AUCUN PLAFOND (choix du proprietaire). Un joueur touche recoit la meme dans le sens du tir, x la part
+ * de plombs qui l'ont touche. */
+#define SG_KNOCK_RATIO   1.0f     /* m/s de poussee par m/s de vitesse du tireur ("de meme vitesse") */
+#define SG_KNOCK_MIN     0.0f     /* plancher de la poussee (m/s) : 0 = proportionnelle pure, un tireur immobile ne recule pas */
+#define SG_KNOCK_MAX     0.0f     /* plafond de la poussee (m/s) : 0 = AUCUN plafond (choix du proprietaire) ; ex. 60 pour borner a 6 m */
+#define SG_KNOCK_T       0.10f    /* duree de la poussee (s) ; le tireur garde sa vitesse ensuite */
+#define SG_RECOIL         7.0f    /* residu de vitesse du tireur en l'air (le saut au recul : tir vers le bas) */
+#define SG_RECOIL_VMAX    9.0f    /* le residu ne pousse pas vy au-dela (sauf si deja plus) */
 #define SG_RECOIL_HCAP    16.0f   /* idem pour la vitesse horizontale */
 #define SG_COIN_RADIUS    0.55f   /* zone de touche d'une piece pour un plomb (rail : 0.9) */
 #define SG_BURST_RADIUS   3.0f    /* piece eclatee : souffle */
@@ -128,7 +159,7 @@ enum { SK_COIN, SK_MARK, SK_CHARGE, SK_RICOCHET, SK_ALLIN, SK_DECOY, SK_AIM, SK_
 #define SG_BURST_KNOCK    8.0f
 #define SG_BURST_CHAIN    3       /* une piece eclatee fait eclater les pieces voisines (profondeur max) */
 #define SG_TRACER_SPEED   260.0f  /* vitesse visuelle d'un traceur */
-#define MAXTR             64      /* traceurs de plombs */
+#define MAXTR             160     /* traceurs de plombs (RICOCHET : un par segment de plomb) */
 
 /* Axe corps a corps : degats et portee montent avec la vitesse */
 #define MELEE_CD          0.45f
@@ -274,7 +305,7 @@ enum { ANVIL_IDLE, ANVIL_DIVE, ANVIL_STUN };
 #define SAW_RECALL_SPEED 45.0f   /* rappel au grappin */
 #define SAW_HOME_MAX     2.5f    /* retour ou rappel plus long : rattrapee d'office */
 #define SAW_CATCH_R      1.5f    /* distance de ramassage / rattrapage */
-#define SAW_HOOK_R       0.6f    /* sphere que le crochet doit toucher */
+#define SAW_HOOK_R       1.2f    /* sphere que le crochet doit toucher pour rappeler la scie plantee (0,6 avant : hitbox x2) */
 #define SAW_RADIUS       0.35f   /* rayon du disque (rendu) */
 #define SAW_EMBED        0.12f   /* profondeur d'enfoncement dans la face */
 #define SAW_HIT_GROW     0.25f   /* AABB des joueurs agrandie */
@@ -320,6 +351,12 @@ enum { SAW_HOW_RETURN, SAW_HOW_FOOT, SAW_HOW_RECALL, SAW_HOW_LOST, SAW_HOW_PARRI
 #define TESLA_REFLECT_DMG  15.0f   /* PvP direct, ni multiplie ni plafonne */
 #define TESLA_PARRY_GRACE  0.25f   /* tolerance de l'hote : fenetre de cumul + latence */
 #define TESLA_LOCK_T       0.3f    /* victime : l'arc dessine finit sur moi apres un EV_HIT W_TESLA */
+/* ALL IN ONE avec la Tesla : un eclair inevitable (instantane, il s'accroche a la cible la plus proche du viseur, en vue) qui
+ * vide la batterie ; degats proportionnels a la batterie depensee, chaine comme l'arc (TESLA_CHAIN_N sauts a TESLA_CHAIN_MULT) */
+#define TESLA_BOLT_RANGE   45.0f   /* portee de l'eclair */
+#define TESLA_BOLT_CONE    0.985f  /* cosinus du demi-angle (~10 deg) autour du viseur ou il choisit sa cible */
+#define TESLA_BOLT_MIN     20      /* batterie minimale : en dessous, ALL IN ONE refuse */
+#define TESLA_BOLT_DMG     130.0f  /* degats PvE a pleine batterie (100) : x batterie / 100 ; PvP : x PVP_SCALE puis plafond 60 */
 #define ST_ZAP             0x80    /* NetPState.pad : arc Tesla actif */
 enum { TK_NONE, TK_MUZZLE, TK_HAND, TK_ENEMY, TK_PLAYER, TK_COIN, TK_POINT };   /* extremites d'un lien d'arc */
 /* --- fin Tesla --- */
@@ -510,8 +547,8 @@ typedef struct { const char *name; int start, max; float gauge; float r, g, b; }
 static const AmmoDef ammoDef[WP_COUNT] = {
     { "RAILGUN",   2,  2,   250, 0.40f, 0.85f, 1.00f },   /* tres haut degats : 2 tirs, tres lent */
     { "ROQUETTES", 4,  8,   50,  1.00f, 0.60f, 0.20f },   /* 1 coup d'epee = 1 roquette */
-    { "EVENTAIL",  3,  6,   100, 1.00f, 0.85f, 0.35f },
-    { "ELAN",      3,  6,   80,  0.55f, 1.00f, 0.55f },
+    { "SHOTGUN",   3,  6,   100, 1.00f, 0.85f, 0.35f },   /* ex-EVENTAIL */
+    { "ELAN",      4,  4,   80,  0.55f, 1.00f, 0.55f },   /* 4 munitions, au depart comme au plus (3 au depart et 6 au plus avant) */
     { "SCIE",      1,  1,   0,   0.90f, 0.90f, 0.95f },   /* objet unique : aucune jauge */
     { "VENTOUSE",  2,  3,   150, 1.00f, 0.35f, 0.35f },   /* 2 mines au depart (1 avant la retouche) */
     { "TESLA",     60, 100, 2.5f, 0.60f, 0.70f, 1.00f },  /* 1 point = 0,4 de batterie */
@@ -522,12 +559,12 @@ static unsigned char mkReady[MK_COUNT] = { 1, 1, 1, 1, 1, 1 };
 /* competences : nom, charges max, secondes par charge, couleur, description (LOADOUT) */
 typedef struct { const char *name; int max; float recharge; float r, g, b; const char *desc; } SkillDef;
 static const SkillDef skillDef[SK_COUNT] = {
-    { "PIECE",      COIN_MAX, COIN_RECHARGE, 1.00f, 0.82f, 0.30f, "lance une piece : le rail qui la touche ricoche (x1,5)" },
+    { "PIECE",      COIN_MAX, COIN_RECHARGE, 1.00f, 0.82f, 0.30f, "lance une piece : rail, elan ou roquette qui la touche ricoche (x1,5)" },
     { "MARQUE",     2, 6,  0.85f, 0.35f, 1.00f, "marque une cible 4 s, visible a travers les murs : tes touches x1,25" },
     { "CHARGE",     1, 8,  1.00f, 0.55f, 0.20f, "maintenir 0,6 s : ta prochaine touche dans les 2 s fait x1,5 (perdue si touche)" },
-    { "RICOCHET",   1, 15, 0.40f, 1.00f, 0.70f, "le prochain rail / elan / roquette rebondit 3 fois sur le decor" },
-    { "ALL IN ONE", 1, 20, 1.00f, 0.30f, 0.30f, "tire toute la munition de l'arme en main d'un coup, en eventail" },
-    { "MIRAGE",     2, 7,  0.40f, 0.85f, 1.00f, "leurre immobile 3 s : absorbe un tir adverse, ton rail y ricoche" },
+    { "RICOCHET",   1, 20, 0.40f, 1.00f, 0.70f, "6 s : tout ce que tu tires rebondit sans fin, jusqu'a sortir de la carte" },
+    { "ALL IN ONE", 1, 20, 1.00f, 0.30f, 0.30f, "toute la munition de l'arme en main d'un coup (Tesla : un eclair inevitable)" },
+    { "MIRAGE",     2, 7,  0.40f, 0.85f, 1.00f, "leurre immobile 3 s : absorbe un tir, ton rail y ricoche, attire les pieces adverses" },
     { "AIMANT",     1, AIM_RECHARGE, 1.00f, 0.95f, 0.45f, "4 s : le viseur est attire vers la cible proche du centre" },
 };
 static int wantSkill = SK_COIN;
@@ -562,6 +599,10 @@ static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, M
 #define VG_ROLL_DMG       20.0f   /* la boule qui roule sur toi */
 #define VG_WAVE_DMG       18.0f   /* onde de choc au sol */
 #define VG_LASER_DMG      14.0f   /* rayon de l'hexaedre */
+/* SENTINELLE (ennemi vert) : elle tire un laser parryable ou une orbe tres rapide, avec les degats de l'orbe du type (VG_ORB_DMG) */
+#define VG_SNIPER_LASER_P    0.5f    /* part des tirs au laser (le reste : orbe rapide) */
+#define VG_SNIPER_FAST_SPEED 110.0f  /* vitesse de l'orbe rapide (34 m/s avant) ; au dela de ~150 elle traverserait le joueur entre deux pas */
+#define VG_LASER_R           0.7f    /* le joueur est touche par le laser a moins de 0,7 m de la ligne */
 /* boss */
 #define VG_BOSS_PYRA_HP   2400.0f
 #define VG_BOSS_TESS_HP   3600.0f

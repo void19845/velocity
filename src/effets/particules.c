@@ -23,7 +23,7 @@ static void add_beam(V3 a, V3 b, V3 col, float life) {
     decal_at(b, vmul(col, 0.25f), 0.35f, 6, 0.4f);
 }
 
-/* Eventail : traceur de plomb, la tete avance a SG_TRACER_SPEED puis la ligne s'eteint en 0,12 s */
+/* SHOTGUN : traceur de plomb, la tete avance a SG_TRACER_SPEED puis la ligne s'eteint en 0,12 s */
 static void add_tracer(V3 a, V3 b, V3 col) {
     Tracer *r = &TR[trNext]; trNext = (trNext + 1) % MAXTR;
     r->a = a; r->b = b; r->col = col; r->t = 0;

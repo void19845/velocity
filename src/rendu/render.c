@@ -245,7 +245,7 @@ static void render(float alpha, float frameDt) {
     draw_weather(eye);                                    /* poussiere, pluie */
     draw_tesla_arcs();                                    /* Tesla : liens d'arc */
     draw_trails();                                        /* trainees de vitesse des joueurs */
-    for (int i = 0; i < MAXTR; i++) {                    /* Eventail : traceurs (tete de 2,5 m, puis trace qui s'eteint) */
+    for (int i = 0; i < MAXTR; i++) {                    /* SHOTGUN : traceurs (tete de 2,5 m, puis trace qui s'eteint) */
         Tracer *r = &TR[i];
         if (r->t >= r->life) continue;
         V3 dv = vsub(r->b, r->a);

@@ -175,7 +175,7 @@ static void game_tick(float dt) {
 
     P.fireCd -= dt; P.switchT -= dt;
     P.kinT -= dt;                                         /* Elan : decharge du viewmodel */
-    {                                                     /* Eventail : clac de la pompe a 35 % de la recharge */
+    {                                                     /* SHOTGUN : clac de la pompe a 35 % de la recharge */
         float pv = P.sgPumpT;
         P.sgPumpT -= dt; P.sgLastT -= dt;
         if (P.weapon == WP_SHOTGUN && !P.dead && pv > 0.65f * P.sgPumpMax && P.sgPumpT <= 0.65f * P.sgPumpMax)
@@ -219,7 +219,7 @@ static void fx_tick(float dt) {
         q->pos = vadd(q->pos, vmul(q->vel, dt));
     }
     for (int i = 0; i < MAXBM; i++) BM[i].life -= dt;
-    for (int i = 0; i < MAXTR; i++) TR[i].t += dt;       /* Eventail : traceurs */
+    for (int i = 0; i < MAXTR; i++) TR[i].t += dt;       /* SHOTGUN : traceurs */
     slam_vis_tick(dt);                                    /* Enclume : murs d'onde */
     tesla_fx_tick(dt);                                    /* Tesla : liens d'arc, arcs des autres */
     for (int i = 0; i < nb; i++)                         /* particules des jump pads */

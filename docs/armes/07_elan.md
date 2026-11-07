@@ -1,5 +1,8 @@
 # Fiche 07 : Convertisseur cinétique « Élan »
 
+> **Patch d'équilibrage (7 nov.)** — **4 munitions** au départ et au plus (3 et 6 avant) ; le tir enlève **toute** la vitesse horizontale du tireur
+> (`KIN_BRAKE_ALL`, avant : seulement les 15 m/s convertis, `vel.y` jamais touchée) et `kinPreDash` repart à 0. Les chiffres plus bas sont ceux d'avant.
+
 > Source : [`../IDEES_ARMES_CARTES.md`](../IDEES_ARMES_CARTES.md) § 1.5 (jauges), § 3.2 et § 6 (arme recommandée en premier).
 > Interfaces figées : [`PLAN.md`](PLAN.md) § 3. Prérequis : `00_infra_loadout_munitions.md` (loadout, `P.ammo[]` et `P.ammoGauge[]`, gain de points par la mêlée et les cellules, bascule à vide, `NET_VER` 4).
 > Identifiants : `WP_KINETIC 3`, `W_KINETIC 13`, effets réseau via `EV_RAIL`. Coût : **S**.

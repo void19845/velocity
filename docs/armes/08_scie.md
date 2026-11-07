@@ -1,5 +1,8 @@
 # Fiche 08 : Disque-boomerang « Scie »
 
+> **Patch d'équilibrage (7 nov.)** — la sphère que le crochet doit toucher pour rappeler la scie plantée passe de 0,6 à **1,2 m** (`SAW_HOOK_R`,
+> aussi utilisée par le viseur « GRAPPIN -> RAPPEL SCIE »). Pendant la fenêtre RICOCHET la scie rebondit sur le décor au lieu de se planter (12 rebonds au plus).
+
 > Source : [`../IDEES_ARMES_CARTES.md`](../IDEES_ARMES_CARTES.md) § 3.3 (version validée), § 1.2 et § 1.5. Interfaces figées : [`PLAN.md`](PLAN.md) § 3, conventions de la relecture croisée : `PLAN.md` § 4.
 > Identifiants : `WP_SAW 4`, `W_SAW 14`, `EV_SAW 16`, `PR_SAW 3`. Loadout, `P.ammo[]`, jauges de points et bascule « chargeur vide » : voir `00_infra_loadout_munitions.md` (non redéfinis ici).
 > Mise à jour du 27/10 : `SAW_REL_OFFSET` = 12 (3 touches contre une cible immobile) ; nouvelle mécanique **renvoi** (parer sa propre scie qui revient), dégâts du renvoi × 0,9 ; munitions en jauges de points, dont la Scie reste exclue.
@@ -113,7 +116,7 @@ L'état « en main » est porté par le joueur (`P.ammo[WP_SAW] == 1`, `P.sawIdx
 #define SAW_RECALL_SPEED 45.0f   /* rappel au grappin */
 #define SAW_HOME_MAX     2.5f    /* retour ou rappel plus long : rattrapee d'office */
 #define SAW_CATCH_R      1.5f    /* distance de ramassage / rattrapage */
-#define SAW_HOOK_R       0.6f    /* sphere que le crochet doit toucher */
+#define SAW_HOOK_R       1.2f    /* sphere que le crochet doit toucher (0.6f avant le patch d'equilibrage) */
 #define SAW_RADIUS       0.35f   /* rayon du disque (rendu, zone de touche) */
 #define SAW_EMBED        0.12f   /* profondeur d'enfoncement dans la face */
 #define SAW_HIT_GROW     0.25f   /* AABB des joueurs agrandie */

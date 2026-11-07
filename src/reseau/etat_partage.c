@@ -39,7 +39,7 @@ typedef struct {
     double recvT, lastHeard, lastParryT;
     float flashT;                                         /* flash blanc quand il est touche */                 /* lastParryT : derniere fois vu en fenetre de parry */
     unsigned char anvilPrevPad;                           /* Enclume : pad du tick precedent (debut d'un pique adverse) */
-    float sgFireT;                                        /* Eventail : recul visuel du fusil d'un joueur distant */
+    float sgFireT;                                        /* SHOTGUN : recul visuel du fusil d'un joueur distant */
     /* Tesla : hote = derniere decharge renvoyee vers ce tireur ; client = dernier EV_HIT W_TESLA de ce tireur sur moi
      * (verrou visuel) ; prochain recalcul de son arc ; son arc touche-t-il quelqu'un (hauteur du son) */
     double teslaReflT, teslaHitMeT;
@@ -156,7 +156,7 @@ static float markP[MAXP], markE[MAXE];                   /* cibles que j'ai marq
 static float markedMeT;                                   /* un adversaire m'a marque (HUD) */
 static int skillUse[SK_COUNT], skillBonus;                /* journal : utilisations, touches bonifiees */
 static float lastHpSeen = 100;                            /* CHARGE : PV du tick precedent (perdue si touche) */
-static int allinActive;                                   /* ALL IN ONE en cours : un seul armement de RICOCHET pour l'eventail */
+static int allinActive;                                   /* ALL IN ONE en cours (salve en train de partir) */
 static float skill_out(int player, int enemy, float dmg) {
     float m = 1;
     if (player >= 0 && player < MAXP && markP[player] > 0) m *= MARK_MULT;
@@ -165,11 +165,14 @@ static float skill_out(int player, int enemy, float dmg) {
     if (m > 1) skillBonus++;
     return dmg * m;
 }
-static int ric_take(void) {                               /* RICOCHET arme : rebonds du projectile tire maintenant */
-    if (!P.ricArmed) return 0;
-    if (!allinActive) P.ricArmed = 0;
-    return RIC_BOUNCES;
-}
+/* RICOCHET : la fenetre (P.ricT) reste ouverte pendant RIC_DURATION ; tout projectile tire a ce moment rebondit, sans limite hors
+ * garde-fous (RIC_CAP_*). Renvoie le nombre de rebonds permis au projectile tire maintenant (0 : fenetre fermee) */
+static int ric_take(void) { return P.ricT > 0 ? RIC_CAP_BOUNCES : 0; }
+static int ric_active(void) { return P.ricT > 0; }
+/* RICOCHET => MIRAGE : un tir qui touche le leurre adverse repart vers son poseur si j'ai RICOCHET (equipe, ou en fenetre) */
+static int ric_vs_decoy(void) { return P.skill == SK_RICOCHET && (DECOY_RIC_ALWAYS || P.ricT > 0); }
+/* PIECE => RICOCHET : mes tirs en rebond (fenetre ouverte) renvoyes par une piece adverse (COIN_VS_RIC) */
+static int coin_vs_ric(void) { return COIN_VS_RIC && P.ricT > 0; }
 /* --- fin Competences --- */
 
 static int botMode;                                       /* 1 = bot hote, 2 = bot client (tests reseau) */
@@ -213,6 +216,8 @@ static void net_fx_fist(V3 pos, V3 dir, float x, int sub);   /* Poings : EV_MELE
 static void net_fx_slam(V3 pos, float R, float hw, V3 dir, float vh, float vy);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
 static void net_fx_shot(V3 eye, V3 dir, float half, unsigned int seed);
+static void net_fx_ricochet(V3 o, V3 d, int n);           /* RICOCHET : trace d'un tir reflechi (EV_RAIL sous-type 2), n segments apres le 1er */
+static void net_fx_bolt(V3 a, V3 b);                      /* Tesla + ALL IN ONE : l'eclair (EV_SKILL SK_ALLIN, actor = 1) */
 /* Scie : definies apres les roquettes */
 static void net_fx_saw(int sub, Proj *p, int target, int actor);
 static int saw_hook_test(float *t);                       /* grappin : le crochet touche ma scie plantee ? */

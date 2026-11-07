@@ -2,7 +2,8 @@
    Morceau de main.c : inclus dans l'ordre, ne se compile pas seul (voir main.c). */
 
 /* --- Elan (convertisseur cinetique) ------------------------------------ */
-/* Le tir convertit la vitesse horizontale (15 m/s au plus) en degats, et le tireur la perd.
+/* Le tir convertit la vitesse horizontale (15 m/s au plus) en degats, et le tireur perd TOUTE sa vitesse horizontale (KIN_BRAKE_ALL ;
+ * avant le patch d'equilibrage il ne perdait que la vitesse convertie).
  * Dash-tir : dans les 0,10 s apres un dash, toute la vitesse compte ; ensuite et jusqu'a 0,6 s,
  * la vitesse ajoutee par le dash ne compte plus (on prend la vitesse d'avant le dash). */
 static int kin_in_window(void) { return P.kinDashT <= KIN_DASH_WINDOW + TICK * 0.5f; }   /* 12 ticks */
@@ -14,12 +15,14 @@ static float kin_vdep(void) {
 static float kin_dmg(float v) { return KIN_DMG_BASE + KIN_DMG_PER_MS * v; }
 static V3 kin_col(float e) { return vlerp(v3(0.45f, 0.45f, 0.55f), v3(1.0f, 0.3f, 0.9f), clampf(e, 0, 1)); }
 
-/* retire v a la norme horizontale, direction conservee, vel.y intact */
+/* le tir prend de la vitesse au tireur, vel.y intact. KIN_BRAKE_ALL : TOUTE la vitesse horizontale (le plafond KIN_SPEED_CAP ne limite plus
+ * que les degats) ; sinon v est retiree a la norme horizontale, direction conservee */
 static void kin_brake(float v) {
     float hs = hlen(P.vel);
     if (hs < 1e-4f) return;
-    float k = fmaxf(0, hs - v) / hs;
+    float k = KIN_BRAKE_ALL ? 0.0f : fmaxf(0, hs - v) / hs;
     P.vel.x *= k; P.vel.z *= k;
+    if (KIN_BRAKE_ALL && KIN_BRAKE_VERT) P.vel.y = 0;
 }
 
 /* rayon de l'Elan (local et evenement reseau) : trait gris -> magenta, spirale et etincelles selon l'energie */
@@ -52,7 +55,7 @@ static void fire_kinetic(void) {
     chain_begin();                                        /* chaine de tirs pleine : ce tir peut tuer */
     int hit = hitscan_shot(dmg, kn, kn * 0.5f, W_KINETIC, &end, &n);
     kin_brake(v);                                         /* le cout, touche ou non */
-    P.kinPreDash = fmaxf(0, P.kinPreDash - v);            /* la vitesse d'avant le dash est depensee */
+    P.kinPreDash = KIN_BRAKE_ALL ? 0 : fmaxf(0, P.kinPreDash - v);   /* la vitesse d'avant le dash est depensee (tout, si on freine tout) */
     shot_result(hit);
     if (botMode) netlog("tir elan : v=%.1f degats=%.0f %s%s%s", v, dmg, hit ? "touche" : "rate", shotHeads ? " (tete)" : "",
                         P.kinDashT < KIN_DASH_FORGET ? (dashShot ? " (dash-tir)" : " (dash trop tot)") : "");

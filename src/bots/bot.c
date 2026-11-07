@@ -95,11 +95,11 @@ static void bot_skill(float dt, int best, float bd, int see, float seeT, float a
         break;
     case SK_RICOCHET: {
         int gun = P.weapon == WP_RAIL || P.weapon == WP_ROCKET || P.weapon == WP_KINETIC;
-        if (!P.ricArmed) {                                /* armee si la cible est a couvert ou pres d'un mur */
-            if (best >= 0 && gun && wp_has_ammo(P.weapon) && bd < 45 && botT > next &&
-                (hiddenT > botReactT[botLevel] || bot_near_wall(np_center(best)))) {
+        if (!P.ricArmed) {                                /* ouvre la fenetre (6 s) quand une cible est engagee : vue, a couvert ou pres d'un mur */
+            if (best >= 0 && gun && wp_has_ammo(P.weapon) && bd < 50 && botT > next &&
+                (react || hiddenT > botReactT[botLevel] || bot_near_wall(np_center(best)))) {
                 botPress[A_SKILL] = 1; next = botT + 1;
-                netlog("competence : ricochet arme (%s %s)", pname(best), hiddenT > 0 ? "a couvert" : "pres d'un mur");
+                netlog("competence : ricochet vise %s (%s)", pname(best), react ? "engage" : hiddenT > 0 ? "a couvert" : "pres d'un mur");
             }
         } else if (best >= 0 && !see && bd < 40 && hiddenT > botReactT[botLevel] + 0.3f && P.weapon != WP_ROCKET && gun &&
                    wp_has_ammo(P.weapon) && P.fireCd <= 0 && P.switchT <= 0) {
@@ -120,7 +120,8 @@ static void bot_skill(float dt, int best, float bd, int see, float seeT, float a
         break;
     }
     case SK_ALLIN:                                        /* ALL IN ONE : de pres, au moins 3 munitions */
-        if (best >= 0 && react && bd > 4 && bd < 14 && allin_ok(P.weapon) && P.ammo[P.weapon] >= 3 && P.switchT <= 0 && botT > next) {
+        if (best >= 0 && react && bd > 4 && bd < (P.weapon == WP_TESLA ? 30 : 14) && allin_ok(P.weapon) &&
+            P.ammo[P.weapon] >= (P.weapon == WP_TESLA ? TESLA_BOLT_MIN : 3) && P.switchT <= 0 && botT > next) {   /* Tesla : l'eclair, jusqu'a 30 m */
             P.yaw = aimYaw + errY; P.pitch = aimPitch + errP;
             botPress[A_SKILL] = 1; next = botT + 1;
             netlog("competence : all in one sur %s (%.1f m, %d munitions)", pname(best), bd, P.ammo[P.weapon]);
@@ -710,12 +711,12 @@ static void bot_think(float dt) {
     if (pref == WP_SAW && (bd >= 30 || !see)) pref = pref == la ? lb : la;   /* Scie : seulement a moins de 30 m */
     if ((la == WP_SAW || lb == WP_SAW) && see && bd < 30 && wp_has_ammo(WP_SAW) && P.sawCd <= 0) pref = WP_SAW;
     if (!wp_has_ammo(pref)) pref = pref == la ? lb : la;
-    if (la == WP_SHOTGUN || lb == WP_SHOTGUN) {           /* Eventail : seulement de pres (3 touches jusqu'a ~11 m) */
+    if (la == WP_SHOTGUN || lb == WP_SHOTGUN) {           /* SHOTGUN : seulement de pres (3 touches jusqu'a ~11 m) */
         int o = la == WP_SHOTGUN ? lb : la;
         if (wp_has_ammo(WP_SHOTGUN) && (bd < 10 || !wp_has_ammo(o))) pref = WP_SHOTGUN;
         else if (wp_has_ammo(o)) pref = o;
     }
-    if (la == WP_TESLA || lb == WP_TESLA) {               /* Tesla : jusqu'a 20 m (pas a la place de l'Eventail tout pres) */
+    if (la == WP_TESLA || lb == WP_TESLA) {               /* Tesla : jusqu'a 20 m (pas a la place du SHOTGUN tout pres) */
         int o = la == WP_TESLA ? lb : la;
         if (wp_has_ammo(WP_TESLA) && bd < 20 && !(pref == WP_SHOTGUN && bd < 10)) pref = WP_TESLA;
         else if (pref == WP_TESLA && wp_has_ammo(o)) pref = o;
@@ -769,7 +770,7 @@ static void bot_think(float dt) {
     }
     if (!dry && !coinPlan && see && seeT > botReactT[botLevel] && bd < 55 && P.fireCd <= 0 && P.switchT <= 0 &&
         P.weapon != WP_KINETIC && P.weapon != WP_SAW && P.weapon != WP_TESLA &&   /* recale la visee (Elan, Scie, Tesla : leur regle) */
-        (P.weapon != WP_SHOTGUN || bd < (P.sliding ? 13.0f : 11.0f))) {   /* Eventail : au-dela, moins de 4 plombs */
+        (P.weapon != WP_SHOTGUN || bd < (P.sliding ? 13.0f : 11.0f))) {   /* SHOTGUN : au-dela, moins de 4 plombs */
         P.yaw = aimYaw + aimErrYaw; P.pitch = aimPitch + aimErrPitch; botHeld[A_FIRE] = 1;
     }
     {   /* --- Ventouse : lancer (anticipation grossiere de 0,4 s, visee relevee pour la gravite), detonation, contre-jeu --- */
@@ -878,11 +879,11 @@ static void bot_think(float dt) {
                                  (P.hook == HOOK_ATTACHED && !see && hookHoldT < 1.5f &&
                                   !(seek >= 0 && P.pos.y > PU[seek].pos.y - 1)));
     if (P.hookPlayer) P.yaw = aimYaw;
-    /* Eventail : au sol et rapide pres d'une cible, il glisse pour tirer en slide (dispersion / 2) */
+    /* SHOTGUN : au sol et rapide pres d'une cible, il glisse pour tirer en slide (dispersion / 2) */
     if (P.weapon == WP_SHOTGUN && best >= 0 && bd < 13 && (P.sliding || (P.grounded && hs > SLIDE_MIN))) {
         botHeld[A_CROUCH] = 1; botHeld[A_JUMP] = 0;
     }
-    /* Eventail : shotgun jump vers une recharge en hauteur (une fois par sejour en l'air, jamais les 2 dernieres cartouches) */
+    /* SHOTGUN : shotgun jump vers une recharge en hauteur (une fois par sejour en l'air, jamais les 2 dernieres cartouches) */
     static int sgJumpDone;
     if (P.grounded) sgJumpDone = 0;
     if (seekHigh && !sgJumpDone && !P.grounded && P.hook == HOOK_NONE && P.vel.y < 1 && P.fireCd <= 0 &&

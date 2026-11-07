@@ -16,7 +16,7 @@ Chaque fiche est rédigée en parallèle. Les choix d'interface qui touchent plu
 | `03_fleau.md` | Fléau à chaîne : traction, pièce frappée, parry à 6 m | M |
 | `04_impulsion.md` | Poings : combo de 3 coups, punch-jump | S |
 | `05_egide.md` | Bouclier : blocage frontal, jauge, parry parfait, réseau | L |
-| `06_eventail.md` | Fusil à pompe : plombs agrégés, recul, pièce qui éclate | S |
+| `06_shotgun.md` | Fusil à pompe (ex-Éventail) : plombs agrégés, recul, pièce qui éclate | S |
 | `07_elan.md` | Convertisseur cinétique : dégâts = vitesse dépensée | S |
 | `08_scie.md` | Scie : plantée si ratée, retour si touche, rappel au grappin sans déplacer le joueur | M |
 | `09_ventouse.md` | Mines collantes : colle, télécommande, parry pour décrocher | M |
@@ -121,7 +121,7 @@ L'Égide impose que chaque arme teste le bouclier avant d'infliger des dégâts 
 | [03 Fléau](03_fleau.md) | 357 | M | Traction chiffrée ; pièce frappée en `W_COIN` ; signature commune de `try_parry` |
 | [04 Impulsion](04_impulsion.md) | 420 | S | Punch-jump borné (au moins 11 m/s, plafond 20 m/s) ; tolérance de parry de 0,05 s |
 | [05 Égide](05_egide.md) | 406 | L (~4,75 j) | `shield_intercept` ; l'hôte fait autorité sur la jauge ; tableau de réaction à chaque arme |
-| [06 Éventail](06_eventail.md) | 391 | S | Motif de plombs déterministe ; recul plafonné ; éclat de pièce ; cône C (4,5° de chaque côté) : 56 / 37 / 8 PvP à 5 / 10 / 20 m |
+| [06 SHOTGUN (ex-Éventail)](06_shotgun.md) | 391 | S | Motif de plombs déterministe ; recul plafonné ; éclat de pièce ; cône C (4,5° de chaque côté) : 56 / 37 / 8 PvP à 5 / 10 / 20 m |
 | [07 Élan](07_elan.md) | 293 | S | `hitscan_shot` extrait de `fire_rail` ; risque du « dash-tir » double (120 PvP en 0,5 s) |
 | [08 Scie](08_scie.md) | 544 | M | 6 états ; rappel au grappin sans déplacer le joueur ; 3 touches contre une cible immobile ; renvoi par parry au retour (48 m/s, aide à la visée de 7°) |
 | [09 Ventouse](09_ventouse.md) | 406 | M (~14,5 h) | `A_DETONATE_ALL` et `A_DETONATE_ONE` ; table d'arbitrage `hostMine` ; mine-jump plus haut qu'un rocket jump (4,6 m contre 4,0 m) |

@@ -152,7 +152,7 @@ static void draw_remote_players(void) {
         glRotatef(n->st.pitch * 180 / PI, 1, 0, 0);
         { const AmmoDef *wd = &ammoDef[n->st.weapon < WP_COUNT ? n->st.weapon : WP_RAIL]; glColor3f(wd->r * 0.9f, wd->g * 0.9f, wd->b * 0.9f); }
         if (n->st.weapon == WP_KINETIC) glColor3f(0.95f, 0.3f, 0.85f);   /* Elan : magenta, comme son rayon */
-        if (n->st.weapon == WP_SHOTGUN) {                 /* Eventail : court, large, cuivre, recul au tir */
+        if (n->st.weapon == WP_SHOTGUN) {                 /* SHOTGUN : court, large, cuivre, recul au tir */
             glColor3f(0.85f, 0.5f, 0.22f);
             glTranslatef(0, 0, 0.15f * clampf(n->sgFireT / 0.12f, 0, 1));
             box_faces(v3(-0.08f, -0.07f, -0.55f), v3(0.08f, 0.07f, 0.05f));

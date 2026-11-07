@@ -135,7 +135,7 @@ static void draw_viewmodel(float aspect) {
         glColor3f(c.x * lit * 0.8f, c.y * lit * 0.8f, c.z * lit * 0.8f);
         box_faces(v3(-0.062f, 0.02f, -0.26f), v3(0.062f, 0.032f, 0.0f));
         glPopMatrix();
-    } else if (P.weapon == WP_SHOTGUN) {                  /* Eventail : carcasse brune, deux canons, pompe qui recule */
+    } else if (P.weapon == WP_SHOTGUN) {                  /* SHOTGUN : carcasse brune, deux canons, pompe qui recule */
         float k = P.sgPumpMax > 0 && P.sgPumpT > 0 ? 1 - P.sgPumpT / P.sgPumpMax : 1;
         float pz = 0.12f * sinf(PI * clampf((k - 0.35f) / 0.5f, 0, 1));
         glColor3f(0.30f, 0.24f, 0.20f);

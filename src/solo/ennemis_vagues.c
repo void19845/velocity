@@ -79,6 +79,25 @@ static void enemy_shoot(Enemy *e, V3 dir, float speed) {
     float dist = vlen(vsub(pcenter(), e->pos));
     play(S_ESHOT, clampf(1.2f - dist / 60, 0.15f, 0.8f), frange(0.9f, 1.1f));
 }
+/* SENTINELLE (l'ennemi vert) : a chaque tir elle choisit (e->phase, des le debut de la visee, pour que le rayon l'annonce) soit un LASER
+ * (phase 1), soit une orbe tres rapide (phase 0, VG_SNIPER_FAST_SPEED : 34 avant). Les degats restent ceux de l'orbe du type
+ * (VG_ORB_DMG : aucune inflation). Le laser est un trait instantane le long du cap fige ; s'il croise le joueur, une orbe-eclair part
+ * a 1,6 m de lui dans le sens du tir : tout se passe alors comme pour une orbe (parry de la melee = elle est renvoyee sur la
+ * sentinelle, Egide, mort), mais l'arrivee est instantanee : on l'esquive en quittant la ligne AVANT le claquement, ou on la pare. */
+static void sniper_fire(Enemy *e) {
+    V3 a = e->pos, d = e->aim;
+    if (e->phase != 1) { enemy_shoot(e, d, VG_SNIPER_FAST_SPEED); return; }
+    float len = ray_world(a, d, 150, 0);
+    V3 ap = vsub(pcenter(), a);
+    float t = clampf(vdot(ap, d), 0, len), dist = vlen(vsub(ap, vmul(d, t)));
+    add_beam(a, vadd(a, vmul(d, len)), v3(1, 0.4f, 0.45f), 0.3f);
+    add_light(vadd(a, vmul(d, len)), v3(1, 0.5f, 0.5f), 5, 0.25f);
+    play(S_RAIL, clampf(1.2f - vlen(ap) / 60, 0.15f, 0.8f), 1.4f);
+    if (!P.dead && dist < VG_LASER_R && vdot(ap, d) > 0 && vdot(ap, d) < len + VG_LASER_R) {
+        V3 at = vsub(pcenter(), vmul(d, 1.6f));           /* sur la ligne qui traverse le joueur : l'orbe-eclair ne le rate pas */
+        if (los(a, at)) spawn_proj(PR_ORB, at, vmul(d, VG_SNIPER_FAST_SPEED));
+    }
+}
 
 static void enemy_tick(float dt) {
     V3 pc = pcenter();
@@ -136,7 +155,7 @@ static void enemy_tick(float dt) {
                 continue;
             }
             if (frand() < 0.4f) add_part(e->pos, vmul(rand_dir(), 0.5f), v3(1, 0.5f, 0.1f), 0.35f, 0.12f, 0);
-        } else if (e->type == EN_SNIPER) {                /* SENTINELLE : se poste loin, vise 1,4 s (rayon visible), tire vite */
+        } else if (e->type == EN_SNIPER) {                /* SENTINELLE : se poste loin, vise 1,4 s (rayon visible), laser ou orbe tres rapide */
             e->stT -= dt;
             if (e->st == 0) {
                 float a = e->home.x + e->t * 0.05f;
@@ -145,14 +164,17 @@ static void enemy_tick(float dt) {
                 perch.y = clampf(perch.y, md->enemyMinY, md->enemyMaxY + 6);
                 V3 tv = vsub(perch, e->pos);
                 e->vel = vlerp(e->vel, vmul(vnorm(tv), 9 * clampf(vlen(tv) / 5, 0, 1)), fminf(1, dt * 2));
-                if (e->stT <= 0 && !P.dead && dist < 90 && los(e->pos, tgt)) { e->st = 1; e->stT = 1.4f; e->aim = dir; }
+                if (e->stT <= 0 && !P.dead && dist < 90 && los(e->pos, tgt)) {
+                    e->st = 1; e->stT = 1.4f; e->aim = dir;
+                    e->phase = frand() < VG_SNIPER_LASER_P ? 1 : 0;   /* ce tir : laser (1) ou orbe rapide (0), annonce par le rayon */
+                }
                 else if (e->stT <= 0) e->stT = 0.5f;
             } else {
                 e->vel = vmul(e->vel, expf(-dt * 6));
                 if (e->stT > (e->elite ? 0.12f : 0.35f)) e->aim = vnorm(vlerp(e->aim, dir, fminf(1, dt * 6)));   /* fige avant le tir */
                 if (!los(e->pos, tgt) && e->stT > 0.35f) { e->st = 0; e->stT = 1.0f; }
                 else if (e->stT <= 0) {
-                    enemy_shoot(e, e->aim, 34);
+                    sniper_fire(e);                       /* laser parryable ou orbe tres rapide (plus l'orbe a 34 m/s) */
                     e->st = 0; e->stT = frange(2.0f, 3.2f);
                 }
             }
