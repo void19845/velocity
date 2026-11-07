@@ -445,7 +445,7 @@ chaque compétence en contre une autre, chaque flèche se coupe par sa constante
   copies des autres joueurs rebondissent pareil (`EV_ROCKET.sub` = rebonds restants) et sont recalées par `EV_ROCKET_END`.
 - **Roquette × pièce**, **PIÈCE ⇒ RICOCHET** : voir « Pièces et ricochet ».
 
-#### SHOTGUN, Élan, Tesla, scie : ce que change le patch d'équilibrage (fiches : `docs/armes/`)
+#### SHOTGUN, Élan, Tesla, scie, Yoyo : ce que change le patch d'équilibrage (fiches : `docs/armes/`)
 
 - **SHOTGUN** (ex-Éventail, `src/armes/shotgun.c`, fiche `06_shotgun.md`) : `SG_PELLET_DMG` 20 ; le tireur reçoit une **poussée forcée**
   (`push_start(v, t)`, `P.pushV` / `P.pushT`, appliquée dans `player_tick` comme un déplacement en plus : collisions respectées, `P.vel`
@@ -457,6 +457,14 @@ chaque compétence en contre une autre, chaque flèche se coupe par sa constante
 - **Élan** (`elan.c`) : 4 munitions (`ammoDef`), `kin_brake` enlève toute la vitesse horizontale du tireur (`KIN_BRAKE_ALL`).
 - **Tesla** (`tesla.c`) : `tesla_bolt`, l'éclair d'ALL IN ONE (voir « Compétences »).
 - **Scie** (`scie.c`) : `SAW_HOOK_R` 1,2 m pour `saw_hook_test` (crochet) et le viseur ; avec RICOCHET elle rebondit (`saw_tick`).
+- **Yoyo** (fléau, `fleau.c`, fiche `03_fleau.md`) : **plus aucune traction de la cible**. `flail_swing` envoie un recul nul : `damage_enemy(i, dmg,
+  (0, 0, 0))` pour les drones et ennemis des VAGUES (les boss ne reculaient déjà pas), `hit_player(..., (0, 0, 0), W_FLAIL, ...)` en PvP
+  (`EV_HIT.f[1..3] = 0`, rien à appliquer chez la victime ; le trait de chaîne reste, le « zip de câble » `S_HOOK` a disparu). Supprimés :
+  `FLAIL_PULL`, `FLAIL_PULL_UP`, `FLAIL_DRONE_STOP`, le combo fléau → rail (`flail_combo_check`, « RAPPEL + RAIL », `FLAIL_COMBO_T`,
+  `P.flailLastT` / `P.flailLastTgt`, journal `combos fleau -> rail`) et l'enchaînement du bot (`bot.c`). Inchangés : arc de 140°, 6 m
+  (+ 0,05 m par m/s), 18 + 1,5 × v_rel, recharges, parry à 6 m (renvoi ×0,8), pièce frappée, points de jauge. **Seule traction restante** :
+  le *lanceur* dont le fléau est paré est tiré vers le pareur (`flail_parried`, `FLAIL_PARRIED_PULL` 16 + `FLAIL_PARRIED_UP` 4 ; mettre
+  `FLAIL_PARRIED_PULL` à 0 pour la retirer aussi). `NET_VER` inchangé (21) : ni paquet ni événement ne changent, seule la valeur du recul.
 
 #### Dégâts et mort
 

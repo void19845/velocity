@@ -53,11 +53,10 @@ typedef struct {
     int lanceState, lanceHitWho;
     float lanceT, lanceVc, lanceHitT;
     /* --- Fleau : animation restante de la chaine, point ou elle s'est accrochee (premiere cible), cibles touchees
-     * par le dernier coup (0 = chaine libre), garde anti double traction apres un parry, derniere cible LAN touchee
-     * (id + 1) et temps restant de la fenetre du combo fleau -> rail --- */
-    float flailT, flailParriedT, flailLastT;
+     * par le dernier coup (0 = chaine libre) et garde anti double traction du lanceur apres un parry --- */
+    float flailT, flailParriedT;
     V3 flailHitPos;
-    int flailHitN, flailLastTgt;
+    int flailHitN;
     /* --- Poings : coups donnes dans le combo (0..3), coup anime (1..3, rendu et NetPState.melee), punch-jump disponible,
      * points de jauge deja donnes par le combo (0..50), joueur touche par le dernier uppercut + 1 (bot : rail) ;
      * temps depuis le dernier coup, appui memorise, temps en l'air, garde (arme a distance abaissee), fenetre

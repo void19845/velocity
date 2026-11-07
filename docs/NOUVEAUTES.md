@@ -584,6 +584,31 @@ technique est dans `docs/CODE.md` (§3.4, §3.5, §5, `NET_VER` 21) et `docs/COM
   (fenêtre, plafond, une touche par cible, roquette, plombs, scie, réseau), « mirage => piece », « ricochet => mirage »,
   « piece => ricochet », « tesla all in one », « roquette x piece », « scie hitbox du crochet », « sentinelle ».
 
+## 37. Le Yoyo ne tire plus la cible
+
+Demandé par le propriétaire (« retire la traction du Yoyo »). Détail technique : `docs/CODE.md` (« Yoyo », dans le patch d'équilibrage) et
+la fiche `docs/armes/03_fleau.md`.
+
+- **Plus de traction** : une touche du Yoyo (fléau, `MK_FLAIL`) inflige ses dégâts **sans déplacer la cible**, ni en PvP (le recul envoyé dans
+  `EV_HIT` est nul) ni sur les drones, kamikazes et autres ennemis du mode VAGUES (`damage_enemy(..., (0, 0, 0))` ; les boss ne reculaient
+  déjà pas). Avant : 12 m/s vers le lanceur + 3 vers le haut en PvP, drone ramené et arrêté à 2,5 m.
+- **Gardé tel quel** : arc de 140°, portée 6 m (+ 0,05 m par m/s), dégâts 18 + 1,5 × v_rel (PvP × 0,7 plafonné à 60), recharges (0,6 s ;
+  0,9 s dans le vide), parry à distance (6 m, renvoi ×0,8), pièce frappée (45 m/s, 40 PvE / 28 PvP), points de jauge, dash rendu.
+- **Supprimé avec la traction** : `FLAIL_PULL` (12), `FLAIL_PULL_UP` (3), `FLAIL_DRONE_STOP` (2,5), `FLAIL_COMBO_T` (1,0) ; le combo fléau → rail
+  (popup « RAPPEL + RAIL », `flail_combo_check`, `P.flailLastT` / `P.flailLastTgt`, ligne de journal `combos fleau -> rail`) et l'enchaînement
+  du bot ; le « zip de câble » (`S_HOOK`) que la victime entendait.
+- **Gardé volontairement (à confirmer)** : un fléau *paré* tire encore le **lanceur** vers le pareur (`FLAIL_PARRIED_PULL` 16 +
+  `FLAIL_PARRIED_UP` 4, « CHAINE RETOURNEE ») : c'est la pénalité du parry, pas la traction de la cible. `FLAIL_PARRIED_PULL` à 0 la retire aussi.
+- Boutique VAGUES : l'effet ATTRAIT (« une touche tire l'ennemi vers toi », premier du chemin YOYO de `src/solo/ameliorations.c`) est un achat
+  indépendant du Yoyo de base ; il n'est pas touché ici (l'arbre de la boutique est réécrit à part).
+- Réseau : `NET_VER` inchangé (**21**) ; ni paquet ni événement ne changent, seule la valeur du recul de `EV_HIT` (arme `W_FLAIL`).
+- Le Yoyo perd son rôle de lanceur de combos : il reste une mêlée de zone à 6 m. Aucune valeur de dégâts ni de portée n'est modifiée pour compenser.
+- Tests (`--test`) réécrits : « fleau drone a 5.5 m » (vitesse 0, position inchangée), « fleau PvP » (recul `(0, 0, 0)`), « bot fleau » (le bot
+  frappe, aucun recul, plus de combo) ; « fleau pare » (le lanceur est tiré vers le pareur) inchangé.
+- Mesure (2 matchs bot contre bot de 90 s par version, `--loadout 0,1,3,0`, tableau dans `docs/armes/03_fleau.md` § 11) : 7 et 7 kills avant, 8 et 6
+  après ; coups de Yoyo qui touchent 4 et 6 avant, 3 et 6 après ; l'ancien combo fléau → rail n'avait servi que 2 fois en 2 matchs. Les TTK (2 à 10 s)
+  sont du bruit à ce nombre de matchs : rien ne s'emballe ni ne cale, la perte se jouera surtout en partie humaine.
+
 ## Vérifications faites
 
 - Compilation macOS sans avertissement ; tous les tests `--test` conformes, y compris ceux d'`origin/dev` (stéréo,

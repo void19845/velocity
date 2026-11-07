@@ -95,8 +95,8 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     tesla_reset();                                        /* Tesla : ni arc, ni cumuls, ni etourdissement */
     P.lanceState = LS_IDLE; P.lanceT = P.lanceVc = 0;     /* Lance : levee, prete */
     P.lanceHitT = 10; P.lanceHitWho = 0; P.meleeCd = 0;
-    P.flailT = P.flailParriedT = P.flailLastT = 0;      /* Fleau : chaine au repos */
-    P.flailHitN = P.flailLastTgt = 0;
+    P.flailT = P.flailParriedT = 0;                     /* Fleau : chaine au repos */
+    P.flailHitN = 0;
     P.fistStep = P.fistAnim = P.fistPts = P.fistUpTgt = 0;   /* Poings : combo au repos, punch-jump disponible */
     P.fistT = 10; P.fistBuf = P.fistGuard = P.fistUpT = 0; P.fistPJ = 1;
     P.shieldState = SHS_DOWN; P.shieldGauge = SHIELD_GAUGE_MAX;   /* Egide : bouclier baisse, jauge pleine, fenetre parfaite armee */

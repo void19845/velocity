@@ -58,7 +58,7 @@ Règle générale : un coup **direct** (hitscan, mêlée, projectile) frontal es
 | Impact de grappin `W_HOOK` | `attaquant → porteur` | 100 % si le bouclier est levé **à l'impact** | l'accroche arrache le bouclier 1 s (§ 7), donc souvent l'impact passe |
 | Enclume `W_SLAM` (sol / onde) | `attaquant → porteur` / — | coup au sol 100 % ; **onde de choc non bloquée** (elle passe sous le bouclier) | Enclume = contre doux du bouclier, comme la roquette au sol |
 | Lance `W_LANCE` | `attaquant → porteur` | 100 % (joute et estoc) | désarçonnement à moitié : la cible reçoit 30 % de la vitesse du lancier au lieu de 60 %, le lancier garde 50 % et sa lance se relève (recharge 1,0 s) |
-| Fléau `W_FLAIL` | `attaquant → porteur` | dégâts 100 % ; **traction à 50 %** | pièce frappée : projectile, `dir` = sa vitesse, 100 % |
+| Fléau `W_FLAIL` | `attaquant → porteur` | dégâts 100 % ; ~~traction à 50 %~~ (le fléau ne tire plus la cible : recul nul) | pièce frappée : projectile, `dir` = sa vitesse, 100 % |
 | Poings `W_FIST` | `attaquant → porteur` | 100 % par coup | combo complet ≈ 91 PvP = 3/4 de la jauge ; le punch-jump n'est pas concerné |
 | Éventail `W_SHOTGUN` | direction du tir | 100 % de l'agrégat ; un seul événement par cible et par tir | pièce qui éclate = souffle → 50 % ; parfait → renvoi de l'agrégat (≤ 60) |
 | Élan `W_KINETIC` | direction du tir | 100 % | parfait → renvoi comme le rail (≤ 60) ; l'Élan a sacrifié sa vitesse pour rien |

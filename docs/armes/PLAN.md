@@ -13,7 +13,7 @@ Chaque fiche est rédigée en parallèle. Les choix d'interface qui touchent plu
 | `00_infra_loadout_munitions.md` | Loadout (1 mêlée + 2 distance), munitions par arme, cellules génériques, recharge par la mêlée, roquettes limitées, `NET_VER` 4 | S |
 | `01_enclume.md` | Marteau-pilon : coup au sol, piqué, onde de choc | M |
 | `02_lance.md` | Lance de joute : lance couchée, estoc, choc de joute | M |
-| `03_fleau.md` | Fléau à chaîne : traction, pièce frappée, parry à 6 m | M |
+| `03_fleau.md` | Fléau à chaîne (Yoyo) : arc à 6 m sans traction (retirée au patch d'équilibrage), pièce frappée, parry à 6 m | M |
 | `04_impulsion.md` | Poings : combo de 3 coups, punch-jump | S |
 | `05_egide.md` | Bouclier : blocage frontal, jauge, parry parfait, réseau | L |
 | `06_shotgun.md` | Fusil à pompe (ex-Éventail) : plombs agrégés, recul, pièce qui éclate | S |
@@ -118,7 +118,7 @@ L'Égide impose que chaque arme teste le bouclier avant d'infliger des dégâts 
 | [00 Infra : loadout et munitions](00_infra_loadout_munitions.md) | 526 | S (~7 h) | Écran de loadout, jauges de points (`ammo_points`), cellules de 100 et 150 ; les armes non codées sont grisées, donc l'infra peut sortir seule |
 | [01 Enclume](01_enclume.md) | 372 | M | Hauteur minimale de 1,2 m pour le piqué (anti-bhop) ; un saut simple (1,47 m) n'esquive pas une onde réglée à 1,5 m |
 | [02 Lance](02_lance.md) | 390 | M | L'estoc part à l'appui, la lance se couche à 0,15 s ; elle touche avant l'impact du grappin ; le choc de joute est arbitré par l'hôte |
-| [03 Fléau](03_fleau.md) | 357 | M | Traction chiffrée ; pièce frappée en `W_COIN` ; signature commune de `try_parry` |
+| [03 Fléau](03_fleau.md) | 357 | M | Traction chiffrée (retirée depuis) ; pièce frappée en `W_COIN` ; signature commune de `try_parry` |
 | [04 Impulsion](04_impulsion.md) | 420 | S | Punch-jump borné (au moins 11 m/s, plafond 20 m/s) ; tolérance de parry de 0,05 s |
 | [05 Égide](05_egide.md) | 406 | L (~4,75 j) | `shield_intercept` ; l'hôte fait autorité sur la jauge ; tableau de réaction à chaque arme |
 | [06 SHOTGUN (ex-Éventail)](06_shotgun.md) | 391 | S | Motif de plombs déterministe ; recul plafonné ; éclat de pièce ; cône C (4,5° de chaque côté) : 56 / 37 / 8 PvP à 5 / 10 / 20 m |

@@ -2196,14 +2196,18 @@ static void run_tests(const char *path) {
     /* --- fin Ventouse --- */
 
     /* --- Fleau (solo) : couloir degage x = -20, joueur en (-20, 0, 40), vue vers -z --- */
-    {   /* 1. degats et traction d'un drone a 5,5 m : il s'arrete vers 2,5 m (minimum : son orbite le ramene ensuite) */
+    {   /* 1. degats d'un drone a 5,5 m, AUCUNE traction : sa vitesse n'est pas modifiee par le coup (avant le patch : 6 m/s
+         * vers le joueur, le drone venait a 2,5 m) et sa position ne change pas pendant le coup */
         flail_test_reset(v3(-20, 0, 40));
         Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 34.5f), EN_DRONE);
+        V3 p0 = e->pos;
         flail_swing();
-        float hp = e->hp, vz = e->vel.z, dmin = 1e9f;
-        for (int i = 0; i < 60; i++) { enemy_tick(TICK); dmin = fminf(dmin, vlen(vsub(e->pos, eye_pos()))); }
+        float hp = e->hp, v = vlen(e->vel), vz = e->vel.z, moved = vlen(vsub(e->pos, p0));
+        for (int i = 0; i < 60; i++) enemy_tick(TICK);
+        float dEnd = vlen(vsub(e->pos, eye_pos()));
         hitstop = 0;
-        fprintf(f, "fleau drone a 5.5 m : PV %.0f, traction vel.z %.1f, distance min %.2f (attendu 82, 6.0, < 3.5)\n", hp, vz, dmin);
+        fprintf(f, "fleau drone a 5.5 m : PV %.0f, vitesse apres le coup %.2f (vel.z %.2f), deplacement %.2f, distance apres 0.5 s %.2f "
+                   "(attendu 82, 0.00 (0.00), 0.00, > 4.0 : plus de traction ni d'arret a 2,5 m)\n", hp, v, vz, moved, dEnd);
     }
     {   /* 2. a 20 m/s : portee 7 m (drone a 7,6 m, rayon 0,9), 18 + 1,5 x 20 = 48, dash +1 */
         flail_test_reset(v3(-20, 0, 40));
@@ -2292,17 +2296,18 @@ static void run_tests(const char *path) {
         memset(PR, 0, sizeof PR);
     }
     /* --- Fleau en LAN simule (je suis l'hote) --- */
-    {   /* 9. touche : 18 x 0,7 = 12,6 ; recul negatif (traction) de 12 m/s + 3 vers le haut */
+    {   /* 9. touche : 18 x 0,7 = 12,6 ; recul NUL (avant le patch : traction de 12 m/s + 3 vers le haut, (0, 3, 12)) */
         flail_test_reset(v3(-20, 0, 40));
         lance_test_lan(v3(-20, 0, 35));
         flail_swing();
         hitstop = 0;
         const NetEvent *h = flail_test_last_hit();
         V3 kn = h ? fv(h->f + 1) : v3(0, 0, 0);
-        fprintf(f, "fleau PvP : PV cible %.1f, arme %d, recul (%.1f, %.1f, %.1f) (attendu 87.4, %d, (0.0, 3.0, 12.0))\n",
+        fprintf(f, "fleau PvP : PV cible %.1f, arme %d, recul (%.1f, %.1f, %.1f) (attendu 87.4, %d, (0.0, 0.0, 0.0) : cible non tiree)\n",
                 NP[1].hp, h ? h->sub : -1, kn.x, kn.y, kn.z, W_FLAIL);
     }
-    {   /* 10. la cible pare : pas de degats, le lanceur est tire vers elle, fleau bloque 1 s ; deux pareurs : une seule traction */
+    {   /* 10. la cible pare : pas de degats, le LANCEUR est tire vers elle (seule traction restante), fleau bloque 1 s ;
+         * deux pareurs : une seule traction */
         flail_test_reset(v3(-20, 0, 40));
         lance_test_lan(v3(-20, 0, 35));
         NP[1].lastParryT = nowT;
@@ -2321,20 +2326,23 @@ static void run_tests(const char *path) {
         fprintf(f, "fleau pare : PV cible %.0f, fleaux pares +%d, vel attaquant (y %.1f, z %.1f), recharge %.2f ; deux pareurs : |v| %.1f "
                    "(attendu 100, +1, (4.0, -16.0), 1.00 ; 16.5)\n", hp1, fp, vy, vz, cd, vlen(P.vel));
     }
-    {   /* 11. bot au Fleau : cible a 5 m, le coup puis le rail dans les 0,3 s (combo fleau -> tir) */
+    {   /* 11. bot au Fleau : cible a 5 m, armes a distance vides -> il frappe a la chaine, la cible n'est pas tiree et aucun
+         * combo fleau -> rail n'existe plus (avant le patch : le coup puis le rail dans les 0,3 s, "RAPPEL + RAIL") */
         flail_test_reset(v3(-20, 0, 40));
         lance_test_lan(v3(-20, 0, 35));
         P.dashCharge = 0.2f;                              /* ni cross-up ni dash */
-        P.fireCd = 0.05f;                                 /* le tir part apres le coup de fleau, pas dans le meme tick */
-        int h0 = hitCount[W_FLAIL], c0 = flailCombos, i = 0;
-        for (; i < 120 && flailCombos == c0; i++) {
+        P.ammo[P.loadout[0]] = P.ammo[P.loadout[1]] = 0;  /* seule la melee est possible */
+        int h0 = hitCount[W_FLAIL], i = 0;
+        for (; i < 120 && hitCount[W_FLAIL] == h0; i++) {
             nowT += TICK;
             bot_think(TICK);
             game_tick(TICK);
         }
         hitstop = 0;
-        fprintf(f, "bot fleau : touches fleau %d, combos fleau -> rail %d en %.2f s, PV cible %.1f (attendu 1, 1, < 0.35, < 30)\n",
-                hitCount[W_FLAIL] - h0, flailCombos - c0, i * TICK, NP[1].hp);
+        const NetEvent *h = flail_test_last_hit();
+        V3 kn = h ? fv(h->f + 1) : v3(9, 9, 9);
+        fprintf(f, "bot fleau : touches fleau %d en %.2f s, PV cible %.1f, recul envoye (%.1f, %.1f, %.1f) (attendu 1, < 0.35, 86 a 87.4 selon v_rel, (0.0, 0.0, 0.0))\n",
+                hitCount[W_FLAIL] - h0, i * TICK, NP[1].hp, kn.x, kn.y, kn.z);
         memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
         reset_game();
         dmMode = 0;

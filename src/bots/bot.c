@@ -568,18 +568,6 @@ static void bot_think(float dt) {
         aimErrPitch = offY / d + 0.002f * cosf(botT * 5.1f);
     }
 
-    /* --- Fleau : combo fleau -> tir. Moins de 0,3 s apres une touche, la cible vole vers nous (parabole connue) :
-     * on la tire, sans erreur de visee supplementaire, avant toute autre manoeuvre (le dash rendu lancerait un cross-up) --- */
-    if (P.meleeKind == MK_FLAIL && P.flailLastT > FLAIL_COMBO_T - 0.3f && P.flailLastTgt > 0 && np_target(P.flailLastTgt - 1)) {
-        V3 eye = eye_pos(), c = np_center(P.flailLastTgt - 1), d = vsub(c, eye);
-        if ((P.loadout[0] == WP_RAIL || P.loadout[1] == WP_RAIL) && wp_has_ammo(WP_RAIL)) P.weapon = WP_RAIL;
-        if (P.weapon != WP_SAW && wp_has_ammo(P.weapon) && los(eye, c)) {
-            P.yaw = atan2f(d.x, -d.z); P.pitch = asinf(clampf(d.y / fmaxf(vlen(d), 0.01f), -1, 1));
-            if (P.fireCd <= 0 && P.switchT <= 0) botHeld[A_FIRE] = 1;
-            return;
-        }
-    }                                                     /* --- fin Fleau --- */
-
     /* --- Poings : apres un uppercut qui touche, la cible suit une trajectoire balistique : tir immediat (rail de
      * preference). Puis punch-jump vers une cible plus haute : en chute, accroupi (l'oeil descend), coup vers le sol --- */
     if (P.meleeKind == MK_FIST && P.fistUpT > 0 && P.fistUpTgt > 0 && np_target(P.fistUpTgt - 1)) {
@@ -915,7 +903,7 @@ static void bot_think(float dt) {
                 P.yaw = aimYaw; botPress[A_MELEE] = 1;   /* estoc au contact (tap) */
             }
         }
-    } else if (P.meleeKind == MK_FLAIL) {                 /* --- Fleau --- : attirer la cible de loin, puis la tirer */
+    } else if (P.meleeKind == MK_FLAIL) {                 /* --- Fleau --- : arc a 6 m (aucune traction), piece frappee vers la cible */
         static int fcPlan;                                /* piece lancee, frappee au fleau 0,3 s plus tard */
         static float fcT, fcNext;
         if (best >= 0 && P.meleeCd <= 0 && bd < flail_range(rel_speed(np_vel(best))) + 0.3f && (see || bd < 2.5f)) {
@@ -933,7 +921,7 @@ static void bot_think(float dt) {
                 if (best >= 0) { P.yaw = aimYaw; P.pitch = aimPitch; }
                 botPress[A_MELEE] = 1; fcPlan = 0;
             }
-        }                                                 /* (le combo fleau -> tir est plus haut, avant le cross-up) */
+        }
         /* --- fin Fleau --- */
     } else if (P.meleeKind == MK_FIST) {                  /* --- Poings --- : au contact, appui a chaque tick (le tampon enchaine) */
         if (best >= 0 && bd < fist_range(rel_speed(np_vel(best))) + 0.3f && P.meleeCd <= FIST_BUFFER && (see || bd < 2.5f)) {

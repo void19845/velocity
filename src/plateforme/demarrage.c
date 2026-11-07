@@ -982,9 +982,9 @@ done:
                    hitCount[W_MINE], mineHostBooms, mineHostTorn, mineCancels, mineHitsIgnored);
         if (flailSwings || hitCount[W_FLAIL])             /* --- Fleau --- */
             netlog("fleau (moi) : %d coups, %d qui touchent (%.1f cible(s) par coup, v_rel moyen %.1f), pieces frappees %d "
-                   "(%d touchent), combos fleau -> rail %d",
+                   "(%d touchent)",
                    flailSwings, flailHitSwings, flailTargets / (float)(flailHitSwings ? flailHitSwings : 1),
-                   flailRelSum / (flailTargets ? flailTargets : 1), flailCoins, flailCoinHits, flailCombos);
+                   flailRelSum / (flailTargets ? flailTargets : 1), flailCoins, flailCoinHits);
         if (netMode == NET_HOST && (hitCount[W_FLAIL] || flailHostParried))
             netlog("fleau (arbitre) : touches %d, fleaux pares %d", hitCount[W_FLAIL], flailHostParried);
         if (fistPunches || hitCount[W_FIST])              /* --- Poings --- */

@@ -2,15 +2,22 @@
 
 > Source : [`../IDEES_ARMES_CARTES.md`](../IDEES_ARMES_CARTES.md) § 2.3 (validé), § 1.2 et § 1.5. Interfaces : [`PLAN.md`](PLAN.md) § 3.
 > Loadout, `P.meleeKind`, `P.ammo[]`, `ammo_points` (jauges, fiche 00), `W_COUNT`, `NET_VER` 4 : voir `00_infra_loadout_munitions.md` (non redéfinis ici).
-> Identifiants : `MK_FLAIL 3`, `W_FLAIL 9`, `EV_COIN` sous-type 2 (pièce frappée). Rien n'est implémenté.
+> Identifiants : `MK_FLAIL 3`, `W_FLAIL 9`, `EV_COIN` sous-type 2 (pièce frappée). Implémenté dans `src/armes/fleau.c`.
+>
+> **Mise à jour (patch d'équilibrage, 7 novembre 2026) : le Yoyo ne tire plus la cible.** Le coup garde son arc de 140°, sa portée de 6 m
+> (+ 0,05 m par m/s), ses dégâts, son parry à distance (renvoi ×0,8), la pièce frappée, les points de jauge et les recharges ; mais la cible
+> touchée (joueur, drone, ennemi des VAGUES) **ne bouge plus** : le recul envoyé est nul. Ont disparu avec la traction : `FLAIL_PULL`,
+> `FLAIL_PULL_UP`, `FLAIL_DRONE_STOP`, le combo fléau → rail (« RAPPEL + RAIL », `FLAIL_COMBO_T`, `flailLastT`, `flailLastTgt`, `flailCombos`)
+> et l'enchaînement du bot. Reste **une seule traction** : celle du *lanceur dont le fléau est paré* (`FLAIL_PARRIED_PULL`, § 5), réglable
+> (0 = aucune). Les passages ci-dessous qui décrivent la traction de la cible sont marqués « avant le patch » ou barrés.
 
 ---
 
 ## 1. Résumé validé
 
-- **Rôle** : *« viens ici ! »*. Mêlée **de contrôle**, longue portée, faibles dégâts, qui **tire la cible vers soi**. Lanceur de combos, pas une arme qui tue. Remplace l'épée dans le loadout (on n'a **qu'une** mêlée : le combo naturel est fléau → arme à distance).
+- **Rôle** : mêlée **à longue portée**, faibles dégâts, qui ne déplace pas la cible (avant le patch : *« viens ici ! »*, mêlée de contrôle qui tirait la cible vers soi). Pas une arme qui tue : elle remplit les jauges de munitions et frappe les pièces. Remplace l'épée dans le loadout (on n'a **qu'une** mêlée).
 - **Coup** : portée `6 + 0,05 × v_rel` m, arc horizontal de 140° (demi-angle 70°, cos 0,34), recharge 0,6 s, dégâts `18 + 1,5 × v_rel`. Touche **toutes** les cibles dans l'arc.
-- **Traction** : recul négatif de 12 m/s vers le lanceur + 3 m/s vers le haut, appliqué par la victime dans `apply_event` (`EV_HIT`), comme tout recul aujourd'hui.
+- **Aucune traction** (patch d'équilibrage) : le recul envoyé dans `EV_HIT` est nul (`f[1..3] = 0`), la cible reste où elle est. Avant le patch : recul négatif de 12 m/s vers le lanceur + 3 m/s vers le haut, appliqué par la victime dans `apply_event`.
 - **Pièce frappée** : le fléau qui touche une de **tes** pièces la frappe : elle part à 45 m/s vers la cible visible la plus proche (aide `PARRY_AIM_COS`), 40 PvE / 28 PvP. Un rail qui la touche en vol déclenche le ricochet ×1,5 normal.
 - **Parry** : fenêtre 0,10 s, portée de parry des projectiles étendue à 6 m, renvoi ×0,8 en vitesse. **Fléau paré** : la chaîne s'enroule, le lanceur est tiré vers le pareur.
 - **Munitions** (§ 1.5) : un coup qui touche rend +1 à l'arme à distance en main, un kill +3, un parry +1.
@@ -33,28 +40,26 @@
 1. `reach = dist(œil, centre) − rayon_cible ≤ 6 + 0,05 × rel`.
 2. **Arc horizontal** : `dot(hnorm(d), hfwd) ≥ 0,34`, où `hfwd = (sin yaw, 0, −cos yaw)`. Au contact (`reach < 0,8 m`) on touche toujours, comme l'épée.
 3. **Tranche verticale** : `|asin(d.y / |d|) − P.pitch| ≤ FLAIL_VSLAB` (0,6 rad ≈ 34°). Sans elle, l'arc toucherait un drone 6 m au-dessus de la tête.
-4. **Ligne de vue : la chaîne ne traverse pas le décor.** `los(œil, centre) || los(œil, centre + 0,6 m en y)` (deux rayons, l'un suffit, pour ne pas rater une cible dont seule la tête dépasse d'un muret). La traction, elle, ne teste aucun chemin : la victime résout ses collisions dans son propre `player_tick`.
-
+4. **Ligne de vue : la chaîne ne traverse pas le décor.** `los(œil, centre) || los(œil, centre + 0,6 m en y)` (deux rayons, l'un suffit, pour ne pas rater une cible dont seule la tête dépasse d'un muret).
 **Plusieurs cibles** : chaque cible de l'arc reçoit **un** `net_hit` (ou `damage_enemy`) par coup, ce qui respecte la règle d'agrégation. Le dash (+1) et `melee_hit_points(meleePts[P.meleeKind])` ne sont donnés **qu'une fois par coup**, quel que soit le nombre de cibles. Au plus **une pièce** frappée par coup (la plus proche de l'axe de visée) : quatre pièces frappées d'un coup feraient 4 × 28 PvP sur une même cible, ce qui contourne le plafond.
 
-**Traction, ce que donnent les chiffres** :
-- *Victime au sol* : `vy = 3` décolle (`apply_event` met `grounded = 0` car `f[2] > 2`), temps de vol `2 × 3 / 24 = 0,25 s` → 3 m parcourus, puis friction (taux 6/s) → `12 / 6 = 2` m. **≈ 5 m** au total : une cible à 6 m finit à environ 1 m du lanceur.
-- *Victime en l'air* : pas de friction, `AIR_CAP` minuscule : elle garde ses 12 m/s, traverse 6 m en 0,5 s et **dépasse** le lanceur si elle ne corrige pas. C'est voulu (additionner les vitesses), mais voir Questions ouvertes.
-- *Drone (solo)* : `enemy_tick` ramène `e->vel` vers sa vitesse voulue avec `vlerp(..., dt × 2)` : un recul `v0` se dissipe en un déplacement ≈ `v0 / 2`. 12 m/s → 6 m, soit un drone collé au joueur. On règle donc `v0 = min(12, 2 × (dist − 2,5))` pour qu'il s'arrête **à 2,5 m**, et en 3D (vers l'œil), puisque les drones volent.
-- *Kamikaze (solo)* : l'attirer revient à se le faire exploser dessus (18 PV). Comme l'épée, le fléau qui le touche le fait **exploser au bout de la chaîne** (`damage_enemy(i, 9999, ...)`), mais **sans** `parry_feedback` (à 6 m, ce serait un soin gratuit).
+**Pas de traction** (depuis le patch d'équilibrage) :
+- *Joueur touché* : `EV_HIT` avec un recul nul ; la victime ne décolle pas (`grounded` intact) et garde sa vitesse. (Avant le patch : `vy = 3` décollait la victime, puis friction : ≈ 5 m de traction au sol, 12 m/s conservés en l'air.)
+- *Drone et ennemis des VAGUES* : `damage_enemy(i, flail_dmg(rel), (0, 0, 0))` ; l'ennemi garde sa vitesse et sa trajectoire (un boss ne reculait déjà jamais). Avant le patch : `v0 = min(12, 2 × (dist − 2,5))` vers l'œil, le drone s'arrêtait à 2,5 m.
+- *Kamikaze (solo)* : le fléau qui le touche le fait **exploser au bout de la chaîne** (`damage_enemy(i, 9999, (0, 0, 0))`), mais **sans** `parry_feedback` (à 6 m, ce serait un soin gratuit).
 
 **Cas limites** :
 - *Mort* : `flail_swing` n'est pas appelé si `P.dead`. Une pièce déjà frappée continue son vol et peut toucher (comme une roquette tirée avant la mort).
 - *Respawn* (`EV_RESPAWN`, `reset_game`) : `flailT = 0`, `flailHitN = 0`, `flailParriedT = 0`.
 - *Changement d'arme* : sans objet, la mêlée ne change qu'au spawn (loadout).
 - *Hitstop* : `game_tick` sort tôt ; la touche et les reculs sont déjà appliqués, l'animation reprend après.
-- *Fin de match* : l'hôte ignore les dégâts (`matchOver`), mais la victime applique quand même le recul à la réception de `EV_HIT` (relayé par l'hôte avant arbitrage). Comportement identique aux armes existantes, sans gravité.
+- *Fin de match* : l'hôte ignore les dégâts (`matchOver`).
 - *Double parry* : si deux victimes d'un même coup parent, l'attaquant reçoit deux `EV_MELEE_PARRY` ; il n'applique que la première traction dans une fenêtre de 0,2 s (`P.flailParriedT`).
 
 ## 3. Constantes
 
 ```c
-/* Fleau a chaine : controle a longue portee, attire la cible */
+/* Fleau a chaine (Yoyo) : arc a longue portee, SANS traction depuis le patch d'equilibrage */
 #define FLAIL_RANGE         6.0f    /* portee de base */
 #define FLAIL_RANGE_PER_MS  0.05f   /* +0.05 m par m/s de vitesse relative */
 #define FLAIL_ARC_COS       0.34f   /* cos du demi-angle horizontal (70 deg, arc de 140) */
@@ -63,14 +68,12 @@
 #define FLAIL_WHIFF_CD      0.9f    /* coup dans le vide */
 #define FLAIL_DMG           18.0f
 #define FLAIL_DMG_PER_MS    1.5f
-#define FLAIL_PULL          12.0f   /* traction vers le lanceur (recul negatif) */
-#define FLAIL_PULL_UP       3.0f
-#define FLAIL_DRONE_STOP    2.5f    /* un drone attire s'arrete a cette distance */
+/* (supprimes par le patch : FLAIL_PULL 12, FLAIL_PULL_UP 3, FLAIL_DRONE_STOP 2.5, FLAIL_COMBO_T 1.0) */
 #define FLAIL_ANIM          0.30f   /* duree de l'animation de la chaine */
 #define FLAIL_PARRY_WINDOW  0.10f
 #define FLAIL_PARRY_RANGE   6.0f    /* portee de parry des projectiles */
 #define FLAIL_PARRY_SPEED   0.8f    /* renvoi plus lent */
-#define FLAIL_PARRIED_PULL  16.0f   /* fleau pare : le lanceur est tire vers le pareur */
+#define FLAIL_PARRIED_PULL  16.0f   /* fleau pare : le lanceur est tire vers le pareur (0 = plus de traction du tout) */
 #define FLAIL_PARRIED_UP    4.0f
 #define FLAIL_COIN_SPEED    45.0f   /* piece frappee */
 #define FLAIL_COIN_DMG      40.0f   /* x PVP_SCALE = 28 en PvP */
@@ -86,9 +89,8 @@
 float flailT;          /* animation restante de la chaine (0..FLAIL_ANIM) */
 V3    flailHitPos;     /* point ou la chaine s'est accrochee (premiere cible touchee) */
 int   flailHitN;       /* cibles touchees par le dernier coup (0 = chaine libre) */
-float flailParriedT;   /* garde anti double traction apres un parry */
-int   flailLastTgt;    /* derniere cible LAN touchee (id + 1), pour le combo fleau -> rail */
-float flailLastT;      /* temps restant de la fenetre de combo (1,0 s) */
+float flailParriedT;   /* garde anti double traction du LANCEUR apres un parry */
+/* (supprimes par le patch : flailLastTgt, flailLastT, le combo fleau -> rail) */
 /* Coin */
 int   flailStruck;     /* 1 = frappee au fleau : vol droit, sans gravite */
 ```
@@ -122,20 +124,14 @@ static void flail_swing(void) {
     for (i in E vivants) {
         float rel = rel_speed(E[i].vel);
         if (!flail_in_arc(eye, E[i].pos, enemy_radius(E[i].type), rel)) continue;
-        V3 to = vsub(eye, E[i].pos); float dist = vlen(to);
-        if (E[i].type == EN_RUSHER) damage_enemy(i, 9999, vmul(to, -10 / dist));  /* explose au bout */
-        else {
-            float v0 = fminf(FLAIL_PULL, 2 * fmaxf(0, dist - FLAIL_DRONE_STOP));
-            damage_enemy(i, flail_dmg(rel), vmul(to, v0 / dist));             /* 3D, vers l'oeil */
-        }
+        if (E[i].type == EN_RUSHER) damage_enemy(i, 9999, v3(0, 0, 0));       /* explose au bout */
+        else damage_enemy(i, flail_dmg(rel), v3(0, 0, 0));                    /* aucune traction : recul nul */
         flail_mark_hit(E[i].pos); hits++;
     }
     for (i in joueurs, np_target(i)) {
         float rel = rel_speed(np_vel(i)); V3 c = np_center(i);
         if (!flail_in_arc(eye, c, 0.5f, rel)) continue;
-        V3 h = vnorm(v3(eye.x - c.x, 0, eye.z - c.z));
-        net_hit(i, flail_dmg(rel) * PVP_SCALE, vadd(vmul(h, FLAIL_PULL), v3(0, FLAIL_PULL_UP, 0)), W_FLAIL);
-        P.flailLastTgt = i + 1; P.flailLastT = 1.0f;
+        net_hit(i, flail_dmg(rel) * PVP_SCALE, v3(0, 0, 0), W_FLAIL);        /* recul nul : la cible n'est pas tiree */
         flail_mark_hit(c); hits++;
     }
     flail_strike_coin(eye, sp);                       /* au plus une piece, ne compte pas comme touche */
@@ -208,11 +204,11 @@ if (P.parryWin > 0) {
     P.parryWin -= dt;
     if (P.parryWin <= 0 && !P.swingLanded) P.meleeCd = fmaxf(P.meleeCd, melee_whiff_cd() - melee_parry_window());
 }
-P.flailT -= dt; P.flailLastT -= dt; P.flailParriedT -= dt;
+P.flailT -= dt; P.flailParriedT -= dt;
 ```
 
 **`apply_event`** :
-- `EV_HIT`, `sub == W_FLAIL` : la victime applique le recul (code existant, rien à changer). En plus, **pour tous** : `add_beam(main de l'attaquant, centre de la cible, acier, 0,25 s)` : la chaîne tendue (l'attaquant est `ev->from`, `pcenter()` si c'est moi).
+- `EV_HIT`, `sub == W_FLAIL` : le recul est nul, la victime n'a rien à appliquer. **Pour tous** : `add_beam(main de l'attaquant, centre de la cible, acier, 0,25 s)` : la chaîne tendue sur la victime, sans la tirer (l'attaquant est `ev->from`, `pcenter()` si c'est moi). Le « zip de câble » (`S_HOOK` à hauteur 0,7 chez la victime) a disparu avec la traction.
 - `EV_COIN`, `sub == 2` : chercher la pièce par `netId` (sinon la créer avec `owner = from`), puis `flailStruck = 1`, `pos = a`, `vel = b`, `life = FLAIL_COIN_LIFE`. Chez les autres, elle est purement visuelle (seul le lanceur teste les cibles), mais reste touchable par leur rail.
 - `EV_MELEE_PARRY` avec arme parée `W_FLAIL` (voir § 6), côté attaquant :
 
@@ -234,8 +230,8 @@ Chiffres : 16 m/s + 4 vers le haut → 0,33 s de vol (5,3 m) puis ≈ 2,7 m de g
 
 | Quoi | Qui calcule | Événement |
 |---|---|---|
-| Touche du fléau (dégâts + vecteur de traction) | lanceur, sur `NP[i].disp` | `EV_HIT`, `sub = W_FLAIL`, `f[0]` dégâts PvP, `f[1..3]` recul négatif |
-| Traction | victime, à la réception (`apply_event`) | — |
+| Touche du fléau (dégâts, recul nul) | lanceur, sur `NP[i].disp` | `EV_HIT`, `sub = W_FLAIL`, `f[0]` dégâts PvP, `f[1..3]` = 0 (avant le patch : recul négatif de traction) |
+| Traction du lanceur paré | lanceur, à la réception de `EV_MELEE_PARRY` (`flail_parried`) | — |
 | Animation de la chaîne | chacun, depuis `NetPState.melee` + `yaw`/`pitch` + `pad & 0x0F` | `EV_MELEE` (`net_fx_melee`) pour le son et l'arc |
 | Pièce frappée (départ) | lanceur | `EV_COIN` `sub = 2`, `netId`, `f[0..2]` pos, `f[3..5]` vitesse |
 | Pièce frappée (touche) | lanceur | `EV_HIT` `W_COIN`, puis `EV_COIN` `sub = 1` |
@@ -244,16 +240,16 @@ Chiffres : 16 m/s + 4 vers le haut → 0,33 s de vol (5,3 m) puis ≈ 2,7 m de g
 
 **Arbitrage de l'hôte** : `W_FLAIL` entre dans la liste des coups parables (PLAN § 3). Le test reste purement temporel (`nowT − NP[v].lastParryT < MELEE_PARRY_GRACE`) : la portée de 6 m est assurée par le lanceur. Le **choc** (`clash`) reste réservé à `W_MELEE` : deux fléaux lancés l'un vers l'autre dans la même fenêtre sont **tous deux parés**, et les deux lanceurs sont tirés l'un vers l'autre (« chaînes croisées »), sans code de plus. Pour que l'attaquant sache *quelle* arme a été parée, l'hôte écrit l'arme dans `EV_MELEE_PARRY.f[0]` (`(float)ev->sub`) ; `sub` garde son sens (choc) et le code existant ne change pas. Statistiques : `meleeParries` compte aussi les fléaux parés, `hitCount[W_FLAIL]`.
 
-**Latence** : à 6 m, l'écart dû au lissage de `disp` (≤ 0,1 s d'extrapolation) est négligeable devant la portée. Le recul est un **vecteur** calculé par le lanceur : si la victime a bougé de 1 à 2 m entre-temps, elle est tirée dans la direction d'alors (erreur angulaire < 15°). La pièce frappée est vue chez les autres avec un retard de ~50 ms (≈ 2 m à 45 m/s) ; on n'extrapole pas (pas d'estimation de latence dans `NetEvent`). Course possible entre la touche de la pièce (lanceur) et un rail adverse dessus : les deux effets peuvent avoir lieu, comme aujourd'hui pour les pièces (l'hôte n'arbitre pas les pièces).
+**Latence** : à 6 m, l'écart dû au lissage de `disp` (≤ 0,1 s d'extrapolation) est négligeable devant la portée. La pièce frappée est vue chez les autres avec un retard de ~50 ms (≈ 2 m à 45 m/s) ; on n'extrapole pas (pas d'estimation de latence dans `NetEvent`). Course possible entre la touche de la pièce (lanceur) et un rail adverse dessus : les deux effets peuvent avoir lieu, comme aujourd'hui pour les pièces (l'hôte n'arbitre pas les pièces).
 
 ## 7. Interactions
 
 - **Parry (le porteur du fléau pare)** : orbes et roquettes à 6 m (au lieu de 3,9 m), renvoi à 28,8 m/s, `parry_feedback` complet, des points de jauge (`melee_parry_points`, infra). Un kamikaze n'est pas « paré » par le fléau (pas de soin), il explose simplement.
 - **Pièces** : enchaînement « pièce → fléau » : la pièce lancée (`P.vel + 9 f + 6 y`) est à ~3 m devant et 1 m plus haut après 0,3 s, avec `rel ≈ 9` → portée 6,45 m : bien dans l'arc. Les pièces **adverses** sont ignorées par le fléau (voir Questions).
-- **Rail** : *fléau → rail* : la cible tirée suit une parabole connue (vy 3 puis gravité) ; *pièce frappée → rail dans la pièce* = ricochet ×1,5 au moment choisi. Bonus visuel seulement : un `EV_HIT W_RAIL` sur `flailLastTgt` pendant `flailLastT` affiche « RAPPEL + RAIL » et un `impact_frame` de 0,06 s (aucun bonus de dégâts).
-- **Roquettes** : tirer la cible puis viser ses pieds pendant les 0,25 s de vol.
-- **Grappin** : grappin sur un joueur + fléau à l'arrivée = deux tractions opposées qui s'additionnent (vitesses relatives fortes → dégâts 18 + 1,5 × 30 = 63 PvE / 44 PvP).
-- **Vide** (cartes Puits, Canyon, plan de mort à venir) : en l'air au-dessus du vide, on décroche la cible de son rebord. Il faudra que l'hôte attribue la chute au dernier attaquant (`lastHitBy` < 3 s) : à prévoir avec l'infrastructure de cartes, pas ici.
+- **Rail** : *pièce frappée → rail dans la pièce* = ricochet ×1,5 au moment choisi. Le combo visuel *fléau → rail* (« RAPPEL + RAIL », `impact_frame` de 0,06 s) a été **supprimé** avec la traction : il n'existait que pour fêter la cible tirée (aucun bonus de dégâts).
+- **Roquettes** : plus de cible ramenée à viser aux pieds (avant le patch : tirer la cible puis viser ses pieds pendant les 0,25 s de vol).
+- **Grappin** : grappin sur un joueur + fléau à l'arrivée : la vitesse relative élevée allonge la portée et augmente les dégâts (18 + 1,5 × 30 = 63 PvE / 44 PvP) ; le fléau ne s'additionne plus à une traction.
+- **Vide** (cartes Puits, Canyon, plan de mort à venir) : le fléau ne déplace plus la cible, il ne la fait donc plus tomber dans le vide (avant le patch : traction en l'air au-dessus du vide).
 - **Munitions** : +1 par coup qui touche (pas par cible), rien pour la pièce frappée ni pour sa touche (c'est une pièce, pas la mêlée).
 
 ## 8. Rendu et son
@@ -286,22 +282,22 @@ Position de la tête, avec `k = 1 − flailT / FLAIL_ANIM` : extension `ext = k 
 - `S_FLAIL_SWING` (0,35 s) : souffle (bruit filtré passe-bas dont la coupure monte de 300 à 1800 Hz, enveloppe 0,02 s puis `exp(−t × 7)`) + **cliquetis** : toutes les 1/45 s, une impulsion de bruit `exp(−τ × 900)` d'amplitude aléatoire 0,3 à 0,6, enveloppe globale `exp(−t × 6)`.
 - `S_FLAIL_HIT` (0,4 s) : choc métallique inharmonique (`sin` 820 + 1230 + 1960 Hz, `exp(−t × 10)`) + coup sourd 70 Hz `exp(−t × 18)` + bruit `exp(−t × 60)`. Joué à 0,6 de hauteur pour « CHAINE RETOURNEE ».
 - `S_FLAIL_COIN` (0,3 s) : « ting » 2600 + 3900 Hz `exp(−t × 14)` + souffle descendant court.
-- La traction de la victime réutilise `S_HOOK` à hauteur 0,7 (zip de câble), joué dans `apply_event` quand `t == myId`.
+- Plus de son de traction chez la victime (avant le patch : `S_HOOK` à hauteur 0,7, « zip de câble », joué dans `apply_event` quand `t == myId`).
 
 ## 9. Bots
 
 Dans `bot_think`, si `P.meleeKind == MK_FLAIL` :
 - **Attaque** : à la place du test `bd < melee_range(...) + 0,5`, frapper si `see && bd > 2,5 && bd < flail_range(rel) + 0,3` et `P.meleeCd <= 0` (`P.yaw = aimYaw`, `botPress[A_MELEE] = 1`).
-- **Suite** : si `P.flailLastT > 0.7f` (moins de 0,3 s après une touche), tirer sur la cible (`botHeld[A_FIRE]`, visée sans erreur supplémentaire) : combo fléau → rail.
+- **Suite** : *supprimée avec la traction* (avant le patch : moins de 0,3 s après une touche, le bot tirait sur la cible tirée vers lui, combo fléau → rail).
 - **Pièce frappée** : variante du `coinPlan` : à moins de 25 m, lancer une pièce puis frapper au fléau 0,3 s plus tard au lieu de tirer dedans.
 - **Défense** : la détection « adversaire qui lance sa mêlée » passe de 5 m à 7 m quand `(NP[i].st.pad & 0x0F) == MK_FLAIL`.
-- **Journal** (`netlog`) : `fleau : %d cible(s), v_rel %.1f, traction vers %s`, `piece frappee -> %s`, `combo fleau -> rail`.
+- **Journal** (`netlog`) : `fleau : %d cible(s), v_rel %.1f, premiere : %s`, `piece frappee -> %s` (ni « traction vers », ni `combo fleau -> rail` depuis le patch).
 
 ## 10. Tests (`run_tests`)
 
 Dans le couloir dégagé (x = −20, joueur en `(−20, 0, 40)`, `yaw = 0` regarde vers −z), `P.meleeKind = MK_FLAIL` :
 
-1. **Dégâts et traction d'un drone** : drone à `(−20, 1.6, 34.5)`, `flail_swing()` → PV 82, `vel.z > 0` (vers le joueur) ; sur 60 `enemy_tick(TICK)`, distance **minimale** à l'œil < 3,5 m (attendu ≈ 2,5 ; on mesure le minimum car l'orbite du drone le ramène ensuite à 13 m).
+1. **Dégâts d'un drone, sans traction** : drone à `(−20, 1.6, 34.5)`, `flail_swing()` → PV 82, vitesse du drone 0 et position inchangée juste après le coup ; après 60 `enemy_tick(TICK)`, distance à l'œil > 4 m (mesuré 5,05 m). Avant le patch : `vel.z = 6` vers le joueur et distance **minimale** < 3,5 m (≈ 2,5).
 2. **À 20 m/s** : `P.vel = (0, 0, −20)`, drone à 7,6 m (portée 7 m + rayon 0,9) → PV 52, dash +1.
 3. **Arc** : drones à 0°, ±60° et 80° à 5 m → 3 touchés, celui à 80° intact.
 4. **Ligne de vue** : boîte ajoutée temporairement entre le joueur et un drone à 5 m (`addbox`, puis `nb--`) → intact ; `P.swingLanded == 0`, puis recharge de raté ≈ 0,8 s après 0,1 s.
@@ -309,8 +305,9 @@ Dans le couloir dégagé (x = −20, joueur en `(−20, 0, 40)`, `yaw = 0` regar
 6. **Pièce frappée** : pièce à moi en `(−20, 2.5, 37)`, drone à `(−20, 2, 15)` → `flailStruck = 1`, vitesse 45 ; 90 `coin_tick` (22 m en ~0,46 s) → drone à 60 PV, pièce morte.
 7. **Pièce frappée + rail** : même départ, puis `fire_rail()` visant la pièce après 3 ticks → `lastChain = 1`, drone mort (150).
 8. **Parry à 6 m** : orbe à 5,5 m devant → renvoyée (`PR_PARRIED`), vitesse 28,8 ; avec l'épée, même position → pas renvoyée.
-9. **LAN simulé, touche** (`netMode = NET_HOST`, `NP[1]` à `(−20, 0, 35)`) : PV de `NP[1]` = 87,4 (18 × 0,7) ; dernier événement de `outq` : `f[1..3] ≈ (0, 3, 12)`.
-10. **LAN simulé, fléau paré** : `NP[1].lastParryT = nowT`, `EV_HIT W_FLAIL` de 0 vers 1 → `NP[1].hp = 100`, `P.vel.z ≈ −16` (vers `NP[1]`), `P.meleeCd ≥ 1`.
+9. **LAN simulé, touche** (`netMode = NET_HOST`, `NP[1]` à `(−20, 0, 35)`) : PV de `NP[1]` = 87,4 (18 × 0,7) ; dernier événement de `outq` : `f[1..3] = (0, 0, 0)` (avant le patch : `(0, 3, 12)`).
+10. **LAN simulé, fléau paré** : `NP[1].lastParryT = nowT`, `EV_HIT W_FLAIL` de 0 vers 1 → `NP[1].hp = 100`, `P.vel.z ≈ −16` (le *lanceur* est tiré vers `NP[1]`), `P.meleeCd ≥ 1` ; deux pareurs : une seule traction (|v| 16,5).
+11. **Bot au fléau** (armes à distance vides) : cible à 5 m → 1 touche en moins de 0,35 s, PV de la cible 86 à 87,4 selon `v_rel`, recul envoyé `(0, 0, 0)`. (Avant le patch : le coup puis le rail dans les 0,3 s, « combo fléau → rail ».)
 
 ## 11. Équilibrage
 
@@ -323,16 +320,30 @@ Dans le couloir dégagé (x = −20, joueur en `(−20, 0, 40)`, `yaw = 0` regar
 | 40 | 8,0 m | 78 | 54,6 | **2** (voir Questions) |
 | Pièce frappée | — | 40 | 28 | 4 |
 
-Plafond de 60 atteint seulement à `v_rel ≈ 45 m/s`. DPS PvP à v_rel 20 : 33,6 / 0,6 s = 56/s (épée plafonnée : 60 / 0,45 s = 133/s). Combo type : fléau (23) + rail (60) + fléau (23) = 106 → kill en ~1,5 s.
+Plafond de 60 atteint seulement à `v_rel ≈ 45 m/s`. DPS PvP à v_rel 20 : 33,6 / 0,6 s = 56/s (épée plafonnée : 60 / 0,45 s = 133/s). Enchaînement type : fléau (23) + rail (60) + fléau (23) = 106 → kill en ~1,5 s (sans traction, la cible doit être encore à portée du fléau entre les deux coups).
 
-À mesurer dans le journal du bot : touches de fléau par minute, `v_rel` moyen à la touche, nombre de cibles par coup, distance moyenne de traction (position de la victime 0,5 s après), taux de combos fléau → rail (< 1 s), fléaux parés (`meleeParries` filtré par arme), `ttkSum/ttkN` avec et sans fléau dans le loadout.
+Sans traction, le fléau perd son rôle de « lanceur de combos » : il reste une mêlée de zone à 6 m (arc de 140°), avec pièce frappée et parry à distance. Le patch d'équilibrage ne compense pas cette perte (aucune valeur de dégâts ou de portée modifiée) ; à surveiller dans les matchs bot.
+
+**Mesure Yoyo** (patch « plus de traction ») : deux matchs bot contre bot de 90 s par version, réseau réel sur la machine, Yoyo des deux côtés
+(`--loadout 0,1,3,0`, rail + roquette + Yoyo, compétence PIÈCE ; « avant » = le commit précédent, « après » = sans traction).
+
+| Version | Kills (match 1 / 2) | TTK moyen | Coups de Yoyo | Coups qui touchent | Touches arbitrées | Pièces frappées (qui touchent) | Combos fléau → rail |
+|---|---|---|---|---|---|---|---|
+| avant (traction) | 7 / 7 | 9,94 / 4,48 s | 13 / 14 | 4 / 6 | 4 / 6 | 5 (2) / 4 (1) | 0 / 2 |
+| après (sans traction) | 8 / 6 | 4,51 / 1,98 s | 17 / 16 | 3 / 6 | 3 / 6 | 8 (3) / 6 (1) | — (supprimé) |
+
+Deux matchs par version : **les écarts de TTK (2 à 10 s) sont du bruit**, rien ne s'emballe ni ne cale. À retenir : les bots frappent aussi souvent et
+touchent autant (3 à 6 coups qui touchent contre 4 à 6), les 6 à 8 kills par match sont les mêmes, et l'ancien combo fléau → rail n'avait servi que
+2 fois en 2 matchs. La perte réelle (le Yoyo ne ramène plus la cible dans la ligne de mire) se jouera surtout en partie humaine.
+
+À mesurer dans le journal du bot : touches de fléau par minute, `v_rel` moyen à la touche, nombre de cibles par coup, fléaux parés (`meleeParries` filtré par arme), `ttkSum/ttkN` avec et sans fléau dans le loadout.
 
 ## 12. Étapes d'implémentation
 
 Prérequis : infra (loadout, `meleeKind`, `ammo_points` (jauges, fiche 00), `W_COUNT`, `NET_VER` 4).
 
 1. Constantes, champs `Player`/`Coin`, remises à zéro, aiguillage dans `melee()`, `pack_state` normalisé (0,5 h).
-2. `flail_swing` solo (arc, tranche, ligne de vue, traction des drones, kamikaze) + tests 1 à 5 (1,5 h).
+2. `flail_swing` solo (arc, tranche, ligne de vue, kamikaze ; la traction des drones a été retirée par le patch) + tests 1 à 5 (1,5 h).
 3. `try_parry(range, speedMult)`, fenêtre et raté par type de mêlée dans `game_tick` + test 8 (0,5 h).
 4. PvP : `net_hit W_FLAIL`, `W_FLAIL` parable, `f[0]` de `EV_MELEE_PARRY`, traction de l'attaquant paré + tests 9 et 10 (1 h).
 5. Pièce frappée : `flail_strike_coin`, branche de `coin_tick`, `EV_COIN` sous-type 2 + tests 6 et 7 (2 h).
@@ -344,9 +355,9 @@ Total ≈ 9,5 h : coût **M** (≈ 5 h sans la pièce frappée ni le bot).
 ## 13. Questions ouvertes
 
 1. **Plafond de vitesse relative** : au-delà de `v_rel ≈ 37 m/s` (grappin sur joueur, voies à contresens), le fléau passe à 2 touches et sort de son rôle. Plafonner `v_rel` à 25 m/s (max 55,5 PvE / 38,9 PvP, 3 touches) ?
-2. **Traction en PvP** : 12 m/s fixes font dépasser le lanceur à une victime en l'air. Garder (vitesses additionnées, fun) ou passer à `min(12, 2,4 × (dist − 1,5))` comme pour les drones ?
-3. **Grappin de la victime** : le fléau doit-il casser le grappin de la cible (`hook_release`) ? Sinon la corde, qui ne se rallonge jamais, annule une partie de la traction.
-4. **Kamikaze** : explosion au bout de la chaîne sans soin (proposé), ou simple dégât + recul *positif* ?
+2. ~~**Traction en PvP**~~ : sans objet, la traction de la cible a été retirée (patch d'équilibrage).
+3. ~~**Grappin de la victime**~~ : sans objet (plus de traction à annuler).
+4. **Kamikaze** : explosion au bout de la chaîne sans soin (retenu, recul nul), ou simple dégât + recul *positif* ?
 5. **Recharge de raté** 0,9 s (comme l'épée en absolu, ×1,5 au lieu de ×2 en relatif) : à valider.
 6. **Pièce frappée parable ?** Proposé : non en v1 ; le contre-jeu est l'esquive (trajectoire droite et visible) ou le rail qui la vole. Sinon il faudrait un événement « pièce renvoyée ».
 7. **Arme parée dans `EV_MELEE_PARRY`** : `f[0]` proposé ; à harmoniser avec les autres fiches de mêlée (ou figer dans PLAN § 3).

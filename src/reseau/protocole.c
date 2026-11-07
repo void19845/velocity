@@ -267,7 +267,6 @@ static NetEvent ev_new(int kind) {
 static void net_hit(int target, float dmg, V3 knock, int weapon) {
     if (target != myId) dmg = skill_out(target, -1, dmg);   /* Competences : MARQUE, CHARGE */
     if (target != myId && target < MAXP) dmg_number(np_center(target), fminf(dmg, PVP_HIT_CAP));
-    flail_combo_check(target, weapon);                    /* Fleau : combo fleau -> rail (visuel) */
     NetEvent e = ev_new(EV_HIT);
     e.target = (unsigned char)target; e.sub = (unsigned char)weapon;
     e.f[0] = dmg; vf(&e.f[1], knock);
@@ -440,7 +439,6 @@ static int hit_emit(int i, float dmg, V3 knock, int w, V3 dir, int blast, unsign
         dmg_number_k(np_center(i), one || (flags & HF_HEAD) ? dmg : fminf(dmg, PVP_HIT_CAP),
                      one ? DN_ONESHOT : (flags & HF_HEAD) ? DN_HEAD : DN_NORMAL);
     }
-    flail_combo_check(i, w);                              /* Fleau : combo fleau -> rail (visuel) */
     NetEvent e = ev_new(EV_HIT);
     e.target = (unsigned char)i; e.sub = (unsigned char)w; e.netId = netId; e.pad[0] = (unsigned char)flags;
     e.f[0] = dmg; vf(&e.f[1], knock); e.f[4] = f4; e.f[5] = f5; e.f[6] = f6;
@@ -835,10 +833,9 @@ static void apply_event(const NetEvent *ev) {
             if (ev->pad[0] & HF_HEAD) burst(np_head(t), v3(1, 0.85f, 0.3f), 16, 7, 0.35f, 0.08f);   /* tete : eclat dore */
             NP[t].flashT = 0.12f;
         }
-        if (ev->sub == W_FLAIL && ev->from < MAXP && t < MAXP) {   /* --- Fleau : la chaine tendue, la victime est tiree --- */
+        if (ev->sub == W_FLAIL && ev->from < MAXP && t < MAXP) {   /* --- Fleau : la chaine tendue sur la victime (elle n'est pas tiree) --- */
             V3 ha = ev->from == myId ? pcenter() : np_center(ev->from), ct = t == myId ? pcenter() : np_center(t);
             add_beam(vadd(ha, v3(0, 0.3f, 0)), ct, v3(0.55f, 0.57f, 0.62f), 0.25f);
-            if (t == myId && ev->from != myId) play(S_HOOK, 0.6f, 0.7f);   /* zip de cable */
         }                                                 /* --- fin Fleau --- */
         break;
     }
@@ -1111,7 +1108,7 @@ static void apply_event(const NetEvent *ev) {
                 P.anvilState = ANVIL_IDLE; P.anvilStunT = 0;
                 P.vel = vadd(v3(P.vel.x, 0, P.vel.z), vadd(vmul(vnorm(vsub(pa, pd)), 6), v3(0, SLAM_PARRIED_UP, 0)));
                 P.meleeCd = fmaxf(P.meleeCd, MELEE_PARRIED_CD);
-            } else if ((int)ev->f[0] == W_FLAIL) {        /* Fleau : la chaine s'enroule, tire vers le pareur */
+            } else if ((int)ev->f[0] == W_FLAIL) {        /* Fleau : la chaine s'enroule, le lanceur est tire vers le pareur */
                 flail_parried(pd, pa);
             } else {
                 int lance = (int)ev->f[0] == W_LANCE;     /* Lance paree : indisponible 1,5 s, relevee */

@@ -132,12 +132,13 @@ Toutes gardent la touche de mêlée actuelle et la règle « un coup qui touche 
 
 ### 2.3 Fléau à chaîne « Fléau »
 
-- **Fantasme / rôle** : *« viens ici ! »*. Mêlée **de contrôle** à longue portée, faible dégât, qui déplace la cible.
-- **Mécanique** : portée `6 + 0,05 × v_rel` m, arc horizontal de 140° (cos 0,34), recharge 0,6 s. Dégâts `18 + 1,5 × v_rel`. La cible est **tirée vers toi** : recul négatif de 12 m/s + 3 vers le haut. `net_hit` le permet déjà, puisque la victime applique le vecteur reçu.
+- **Patch d'équilibrage (novembre 2026) : la traction est retirée.** Le Yoyo ne tire plus la cible (joueur, drone, ennemi des VAGUES) ; le combo fléau → rail a disparu avec elle. Sont barrés ci-dessous les passages qui en dépendaient. Reste une seule traction : celle du lanceur dont le fléau est paré.
+- **Fantasme / rôle** : mêlée à longue portée, faible dégât, ~~*« viens ici ! »*, mêlée de contrôle qui déplace la cible~~.
+- **Mécanique** : portée `6 + 0,05 × v_rel` m, arc horizontal de 140° (cos 0,34), recharge 0,6 s. Dégâts `18 + 1,5 × v_rel`. ~~La cible est tirée vers toi : recul négatif de 12 m/s + 3 vers le haut.~~ Le recul envoyé est nul.
   - **Pièces** : le fléau qui touche une de tes pièces la **frappe**. Elle part à 45 m/s vers la cible visible la plus proche (aide à la visée `PARRY_AIM_COS`) et fait 40 PvE / 28 PvP. Si un rail la touche en vol, le ricochet ×1,5 normal s'applique.
-- **Chiffres de départ** : v_rel = 0 → 18 PvE / 12,6 PvP ; v_rel = 20 → 48 / 33,6. Il faut environ 4 touches pour tuer : c'est un **lanceur de combos**, pas une arme qui tue.
-- **Synergie mouvement** : tirer quelqu'un vers soi pendant qu'on fonce **additionne les vitesses**. Combos fléau → rail (la cible suit une trajectoire balistique prévisible) ou fléau → roquette. Au-dessus du vide (cartes Puits et Canyon), on peut faire tomber quelqu'un.
-- **Contre-jeu** : faibles dégâts, et ramener l'adversaire vers soi le met aussi à **sa** portée de mêlée.
+- **Chiffres de départ** : v_rel = 0 → 18 PvE / 12,6 PvP ; v_rel = 20 → 48 / 33,6. Il faut environ 4 touches pour tuer : pas une arme qui tue (~~c'est un lanceur de combos~~, plus depuis le patch).
+- **Synergie mouvement** : ~~tirer quelqu'un vers soi pendant qu'on fonce additionne les vitesses ; combos fléau → rail ou fléau → roquette ; faire tomber quelqu'un au-dessus du vide~~ (retiré avec la traction). Reste la vitesse relative, qui allonge la portée et augmente les dégâts.
+- **Contre-jeu** : faibles dégâts (~~et ramener l'adversaire vers soi le met aussi à sa portée de mêlée~~, sans objet depuis le patch).
 - **Parry** : fenêtre de 0,10 s, mais **portée de parry étendue à 6 m** avec un renvoi plus lent (×0,8). Fléau paré : la chaîne s'enroule et c'est le lanceur qui est tiré vers le pareur, droit dans son épée.
 - **Coût : M** (S sans les pièces). Fonctions : `melee`, `try_parry` (portée et vitesse en paramètres), `coin_tick` (état « frappée »), `net_fx_coin` (sous-type 2), `host_handle` (`W_FLAIL` parable).
 

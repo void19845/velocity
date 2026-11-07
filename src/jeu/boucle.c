@@ -169,7 +169,7 @@ static void game_tick(float dt) {
         float sag, spd = vlen(P.vel);
         add_part(flail_my_head(eye_pos(), &sag), v3(0, 0, 0), spd > 15 ? v3(1, 0.7f, 0.3f) : v3(0.75f, 0.78f, 0.85f), 0.15f, 0.07f, 0);
     }
-    P.flailT -= dt; P.flailLastT -= dt; P.flailParriedT -= dt;   /* --- fin Fleau --- */
+    P.flailT -= dt; P.flailParriedT -= dt;                /* --- fin Fleau --- */
     anvil_remote_tick();
     lance_remote_tick();                                  /* Lance : son des lances couchees adverses */
 

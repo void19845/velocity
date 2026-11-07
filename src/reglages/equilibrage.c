@@ -417,7 +417,8 @@ enum { MS_NONE, MS_FLY, MS_WORLD, MS_ENEMY, MS_PLAYER };
 enum { MINE_EV_THROW, MINE_EV_WORLD, MINE_EV_PLAYER, MINE_EV_BOOM, MINE_EV_TORN, MINE_EV_CANCEL };   /* EV_MINE.sub */
 enum { MX_REMOTE, MX_FUSE, MX_THIRD, MX_SHOT, MX_FLY, MX_PROX, MX_COUNT };   /* origine des explosions (journal) */
 /* --- fin Ventouse --- */
-/* --- Fleau a chaine : controle a longue portee, attire la cible vers soi (lanceur de combos) --- */
+/* --- Fleau a chaine (Yoyo) : arc de 140 degres a longue portee, SANS traction (la cible touchee ne bouge pas ; plus de
+ * FLAIL_PULL / FLAIL_PULL_UP / FLAIL_DRONE_STOP ni de combo fleau -> rail). Seul le lanceur pare est encore tire --- */
 #define FLAIL_RANGE         6.0f    /* portee de base */
 #define FLAIL_RANGE_PER_MS  0.05f   /* +0.05 m par m/s de vitesse relative */
 #define FLAIL_ARC_COS       0.34f   /* cos du demi-angle horizontal (70 deg, arc de 140) */
@@ -426,21 +427,17 @@ enum { MX_REMOTE, MX_FUSE, MX_THIRD, MX_SHOT, MX_FLY, MX_PROX, MX_COUNT };   /* 
 #define FLAIL_WHIFF_CD      0.9f    /* coup dans le vide */
 #define FLAIL_DMG           18.0f
 #define FLAIL_DMG_PER_MS    1.5f
-#define FLAIL_PULL          12.0f   /* traction vers le lanceur (recul negatif) */
-#define FLAIL_PULL_UP       3.0f
-#define FLAIL_DRONE_STOP    2.5f    /* un drone attire s'arrete a cette distance */
 #define FLAIL_ANIM          0.30f   /* duree de l'animation de la chaine */
 #define FLAIL_PARRY_WINDOW  0.10f
 #define FLAIL_PARRY_RANGE   6.0f    /* portee de parry des projectiles */
 #define FLAIL_PARRY_SPEED   0.8f    /* renvoi plus lent */
-#define FLAIL_PARRIED_PULL  16.0f   /* fleau pare : le lanceur est tire vers le pareur */
+#define FLAIL_PARRIED_PULL  16.0f   /* fleau pare : le lanceur est tire vers le pareur (0 = plus de traction du tout) */
 #define FLAIL_PARRIED_UP    4.0f
 #define FLAIL_COIN_SPEED    45.0f   /* piece frappee */
 #define FLAIL_COIN_DMG      40.0f   /* x PVP_SCALE = 28 en PvP */
 #define FLAIL_COIN_LIFE     1.5f    /* 67 m de vol */
 #define FLAIL_COIN_SEEK     60.0f   /* portee de recherche de cible */
 #define FLAIL_COIN_HIT_R    0.4f    /* marge de touche de la piece frappee */
-#define FLAIL_COMBO_T       1.0f    /* fenetre du combo fleau -> rail (visuel seulement) */
 /* --- fin Fleau --- */
 /* --- Poings a impulsion : combo de 3 coups (le 3e est un uppercut), punch-jump sur le decor --- */
 #define FIST_GAP            0.22f   /* entre deux coups du combo */

@@ -2,11 +2,12 @@
    Morceau de main.c : inclus dans l'ordre, ne se compile pas seul (voir main.c). */
 
 /* --- Fleau ------------------------------------------------------------- */
-/* Fleau a chaine : coup en arc horizontal de 140 degres, 6 m (+0,05 m par m/s relatif), sur toutes les cibles de l'arc.
- * Faibles degats, mais la cible est tiree vers soi : c'est un lanceur de combos (fleau -> rail). La touche est
- * instantanee comme l'epee, la chaine ne traverse pas le decor. Une de mes pieces dans l'arc est frappee vers la cible
- * visible la plus proche. Parry a 6 m, renvoi x0,8. Fleau pare : la chaine s'enroule, le lanceur est tire vers le pareur. */
-static int flailSwings, flailHitSwings, flailTargets, flailCoins, flailCoinHits, flailCombos;   /* journal du bot */
+/* Fleau a chaine (Yoyo) : coup en arc horizontal de 140 degres, 6 m (+0,05 m par m/s relatif), sur toutes les cibles de
+ * l'arc. Faibles degats et AUCUNE traction : la cible touchee ne bouge pas (le Yoyo ne l'attire plus vers soi, ni en PvP
+ * ni sur les drones et ennemis des VAGUES). La touche est instantanee comme l'epee, la chaine ne traverse pas le decor.
+ * Une de mes pieces dans l'arc est frappee vers la cible visible la plus proche. Parry a 6 m, renvoi x0,8. Fleau pare :
+ * la chaine s'enroule et le LANCEUR est tire vers le pareur (seule traction restante, FLAIL_PARRIED_PULL). */
+static int flailSwings, flailHitSwings, flailTargets, flailCoins, flailCoinHits;   /* journal du bot */
 static float flailRelSum;
 
 static float flail_range(float rel) { return FLAIL_RANGE + rel * FLAIL_RANGE_PER_MS; }
@@ -114,15 +115,6 @@ static int flail_coin_hit(Coin *c, V3 dir, float len) {
     return 1;
 }
 
-/* combo fleau -> rail (bonus visuel seulement) : appele par net_hit */
-static void flail_combo_check(int target, int weapon) {
-    if (weapon != W_RAIL || P.flailLastT <= 0 || P.flailLastTgt != target + 1) return;
-    P.flailLastT = 0; flailCombos++;
-    snprintf(popText, sizeof popText, "RAPPEL + RAIL"); popT = 1.0f;
-    impact_frame(np_center(target), 0.06f);
-    if (botMode) netlog("combo fleau -> rail");
-}
-
 /* tete de la chaine : k = avancement du coup (0..1), depuis la main `hand`. Accrochee (hooked) : droit sur la cible
  * et retour avec elle, chaine tendue. Sinon extension (0 -> 0,4), balayage de +70 a -70 degres (0,1 -> 0,7), retour
  * (0,73 -> 1). *sag = mou de la chaine */
@@ -158,13 +150,11 @@ static void flail_swing(void) {
         if (!e->alive) continue;
         float rel = rel_speed(e->vel);
         if (!flail_in_arc(eye, e->pos, enemy_radius(e->type), rel, 1)) continue;
-        V3 to = vsub(eye, e->pos), at = e->pos;
-        float dist = fmaxf(vlen(to), 0.01f);
+        V3 at = e->pos;
         if (!hits) { rel0 = rel; first = e->type == EN_RUSHER ? "kamikaze" : "drone"; }
-        if (e->type == EN_RUSHER) damage_enemy(i, 9999, vmul(to, -10 / dist));   /* explose au bout de la chaine, sans soin de parry */
-        else {                                            /* traction 3D vers l'oeil, bornee : le drone s'arrete a 2,5 m */
-            float v0 = fminf(FLAIL_PULL, 2 * fmaxf(0, dist - FLAIL_DRONE_STOP));
-            damage_enemy(i, flail_dmg(rel), vmul(to, v0 / dist));
+        if (e->type == EN_RUSHER) damage_enemy(i, 9999, v3(0, 0, 0));   /* explose au bout de la chaine, sans soin de parry */
+        else {                                            /* aucune traction : recul nul, l'ennemi reste ou il est */
+            damage_enemy(i, flail_dmg(rel), v3(0, 0, 0));
             if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
         }
         flail_mark_hit(at); flailRelSum += rel;
@@ -175,7 +165,7 @@ static void flail_swing(void) {
         float rel = rel_speed(np_vel(i));
         V3 c = np_center(i);
         if (!flail_in_arc(eye, c, 0.5f, rel, 1)) continue;
-        if (shield_faces(i, vnorm(vsub(c, eye)), SHB_DIRECT)) {   /* Egide : bloque (traction / 2 par l'hote), ni dash ni points */
+        if (shield_faces(i, vnorm(vsub(c, eye)), SHB_DIRECT)) {   /* Egide : bloque, ni dash ni points */
             tgt[nt] = i; trel[nt++] = rel;
             flail_mark_hit(c); parried++;
             continue;
@@ -206,19 +196,16 @@ static void flail_swing(void) {
         hitMarker = 0.18f; shake += 0.1f;
         hitstop = fmaxf(hitstop, 0.03f);                  /* court : la chaine tire, elle ne cogne pas */
         play(S_FLAIL_HIT, 0.8f, frange(0.9f, 1.1f));
-        if (botMode) netlog("fleau : %d cible(s), v_rel %.1f, traction vers %s", hits, rel0, first);
+        if (botMode) netlog("fleau : %d cible(s), v_rel %.1f, premiere : %s", hits, rel0, first);
     }
-    for (int k = 0; k < nt; k++) {
+    for (int k = 0; k < nt; k++) {                        /* PvP : degats seuls, recul nul (la cible n'est pas tiree) */
         int i = tgt[k];
-        V3 c = np_center(i), h = vnorm(v3(eye.x - c.x, 0, eye.z - c.z));
-        P.flailLastTgt = i + 1; P.flailLastT = FLAIL_COMBO_T;
-        if (!hit_player(i, flail_dmg(trel[k]) * PVP_SCALE, vadd(vmul(h, FLAIL_PULL), v3(0, FLAIL_PULL_UP, 0)), W_FLAIL,
-                        vnorm(vsub(c, eye)))) P.flailLastT = 0;   /* Egide : bloque, pas de combo fleau -> rail */
+        hit_player(i, flail_dmg(trel[k]) * PVP_SCALE, v3(0, 0, 0), W_FLAIL, vnorm(vsub(np_center(i), eye)));
     }
 }
 
 /* mon fleau a ete pare (EV_MELEE_PARRY, arme W_FLAIL) : la chaine s'enroule, je suis tire vers le pareur (une seule
- * traction par coup, meme si deux victimes parent) */
+ * traction par coup, meme si deux victimes parent). C'est la seule traction du Yoyo : celle du lanceur pare */
 static void flail_parried(V3 pd, V3 pa) {
     if (P.flailParriedT <= 0) {
         V3 h = vnorm(v3(pd.x - pa.x, 0, pd.z - pa.z));
@@ -226,7 +213,6 @@ static void flail_parried(V3 pd, V3 pa) {
         P.flailParriedT = 0.2f;
         play(S_FLAIL_HIT, 0.8f, 0.6f);
     }
-    P.flailLastT = 0;                                     /* plus de combo fleau -> rail */
     P.meleeCd = fmaxf(P.meleeCd, MELEE_PARRIED_CD);
 }
 /* --- fin Fleau --- */
