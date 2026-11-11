@@ -30,11 +30,26 @@ static void skill_mark(void) {                            /* MARQUE : tir sans d
 }
 static int allin_ok(int w) { return w == WP_RAIL || w == WP_ROCKET || w == WP_SHOTGUN || w == WP_KINETIC || w == WP_TESLA; }
 static float allin_half(int n) {                          /* ALL IN ONE : demi-angle de l'eventail (radians) */
-    return fminf(ALLIN_SPREAD_BASE + ALLIN_SPREAD_PER * (n - 1), ALLIN_SPREAD_MAX) * PI / 180;
+    return cp_half_deg(fminf(ALLIN_SPREAD_BASE + ALLIN_SPREAD_PER * (n - 1), ALLIN_SPREAD_MAX)) * PI / 180;
 }
 static void fire_weapon(void);
 static int allinLast;                                     /* projectiles du dernier ALL IN ONE (tests, journal) */
 static float allinSpan;                                   /* angle entre le premier et le dernier projectile (radians) */
+static void allin_volley(int w, int n) {                  /* n tirs de l'arme w en eventail regulier (n >= 2), munition posee a chaque tir */
+    float half = allin_half(n), gap = 2 * half / (n - 1), y0 = P.yaw, p0 = P.pitch;
+    float jit = (frand() - 0.5f) * gap * 0.5f;            /* decalage commun d'au plus la moitie de l'ecart */
+    V3 first = view_dir(), last = first;
+    for (int k = 0; k < n; k++) {
+        P.yaw = y0 + (-half + gap * k + jit) / fmaxf(cosf(p0), 0.3f);
+        P.pitch = p0;
+        P.ammo[w] = n - k;
+        if (!k) first = view_dir();
+        last = view_dir();
+        fire_weapon();
+    }
+    P.yaw = y0; P.pitch = p0;
+    allinSpan = acosf(clampf(vdot(first, last), -1, 1));
+}
 static void skill_allin(void) {                           /* toute la munition de l'arme en main, en eventail regulier */
     int w = P.weapon, n = P.ammo[w];
     int blocked = P.switchT > 0 || P.shieldState == SHS_UP || tesla_stunned();   /* comme un tir normal */
@@ -53,22 +68,14 @@ static void skill_allin(void) {                           /* toute la munition d
         return;
     }
     P.skillCh -= 1; skillUse[SK_ALLIN]++;
-    float half = allin_half(n), gap = 2 * half / (n - 1), y0 = P.yaw, p0 = P.pitch;
-    float jit = (frand() - 0.5f) * gap * 0.5f;            /* decalage commun d'au plus la moitie de l'ecart */
-    V3 first = view_dir(), last = first;
+    n += cp_allin_extra(w, n);                            /* VAGUES : munition comptee en plus, salve complete */
+    cp_salve_begin(w, n);
     allinActive = 1;
-    for (int k = 0; k < n; k++) {
-        P.yaw = y0 + (-half + gap * k + jit) / fmaxf(cosf(p0), 0.3f);
-        P.pitch = p0;
-        P.ammo[w] = n - k;
-        if (!k) first = view_dir();
-        last = view_dir();
-        fire_weapon();
-    }
+    allin_volley(w, n);
     allinActive = 0;
-    P.yaw = y0; P.pitch = p0;
-    P.ammo[w] = 0; allinLast = n; allinSpan = acosf(clampf(vdot(first, last), -1, 1));
-    P.fireCd = fmaxf(P.fireCd, wpCd[w]);                  /* l'arme est vide : pas de tir dans le meme tick */
+    P.ammo[w] = cp_salve_refund(w); allinLast = n;        /* VAGUES : jauge rendue (0 sans boutique) */
+    P.fireCd = fmaxf(P.fireCd, cp_salve_cd(wpCd[w]));     /* l'arme est vide : pas de tir dans le meme tick */
+    cp_salve_end(w, n);
     shake += 0.2f; P.recoil = 2;
     snprintf(popText, sizeof popText, "ALL IN ONE x%d", n); popT = 1.0f;
     if (botMode) netlog("all in one : %d projectiles (%s)", n, ammoDef[w].name);
@@ -116,7 +123,8 @@ static void skill_tick(float dt, int press, int held) {
         }
     }
     P.ricArmed = P.ricT > 0;
-    if (!P.ricArmed && P.skillCh < d->max) P.skillCh = fminf((float)d->max, P.skillCh + dt / d->recharge);   /* RICOCHET : la recharge repart a la fin */
+    int cmax = cp_max(P.skill, d->max);                  /* VAGUES : charges et recharge de la boutique */
+    if (!P.ricArmed && P.skillCh < cmax) P.skillCh = fminf((float)cmax, P.skillCh + dt / cp_recharge(P.skill, d->recharge));   /* RICOCHET : la recharge repart a la fin */
     for (int i = 0; i < MAXP; i++) if (markP[i] > 0) { markP[i] -= dt; if (!np_target(i)) markP[i] = 0; }   /* mort : marque perdue */
     for (int i = 0; i < MAXE; i++) if (markE[i] > 0) { markE[i] -= dt; if (!E[i].alive) markE[i] = 0; }
     if (markedMeT > 0) markedMeT -= dt;

@@ -903,12 +903,15 @@ static void bot_think(float dt) {
                 P.yaw = aimYaw; botPress[A_MELEE] = 1;   /* estoc au contact (tap) */
             }
         }
-    } else if (P.meleeKind == MK_FLAIL) {                 /* --- Fleau --- : arc a 6 m (aucune traction), piece frappee vers la cible */
+    } else if (P.meleeKind == MK_FLAIL) {                 /* --- Fleau --- : arc a 6 m, parfois appui long (traction), piece frappee vers la cible */
         static int fcPlan;                                /* piece lancee, frappee au fleau 0,3 s plus tard */
-        static float fcT, fcNext;
-        if (best >= 0 && P.meleeCd <= 0 && bd < flail_range(rel_speed(np_vel(best))) + 0.3f && (see || bd < 2.5f)) {
+        static float fcT, fcNext, fcHold;                 /* fcHold : temps restant de l'appui long en cours */
+        int fcPress = 0;
+        if (best >= 0 && P.meleeCd <= 0 && P.flailPullN == 0 && fcHold <= 0 && bd < flail_range(rel_speed(np_vel(best))) + 0.3f &&
+            (see || bd < 2.5f)) {
             P.yaw = aimYaw; P.pitch = aimPitch;           /* au contact aussi : c'est la seule melee (jauges) */
-            botPress[A_MELEE] = 1;
+            botPress[A_MELEE] = 1; fcPress = 1;
+            if (bd > FLAIL_PULL_STOP + 1.5f && frand() < 0.5f) fcHold = 0.9f;   /* une fois sur deux a distance : il tient la touche (traction) */
         } else if (!fcPlan && !coinPlan && P.skill == SK_COIN && best >= 0 && see && bd > 8 && bd < 25 && P.skillCh >= 1 &&
                    P.meleeCd <= 0 && botT > fcNext) {
             P.yaw = aimYaw; P.pitch = aimPitch;
@@ -921,6 +924,10 @@ static void bot_think(float dt) {
                 if (best >= 0) { P.yaw = aimYaw; P.pitch = aimPitch; }
                 botPress[A_MELEE] = 1; fcPlan = 0;
             }
+        }
+        if (fcHold > 0) {                                 /* appui long en cours : la touche reste tenue tant que la chaine tire (0,9 s au plus) */
+            botHeld[A_MELEE] = 1; fcHold -= dt;
+            if (!fcPress && P.flailPullN == 0 && P.flailArm <= 0) fcHold = 0;   /* rien d'accroche, ou la traction est finie */
         }
         /* --- fin Fleau --- */
     } else if (P.meleeKind == MK_FIST) {                  /* --- Poings --- : au contact, appui a chaque tick (le tampon enchaine) */

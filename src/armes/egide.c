@@ -25,7 +25,7 @@ static void shield_bash(int ram) {
             melee_parry_points(PTS_PARRY);
         } else {
             damage_enemy(i, base + SHIELD_BASH_PER_MS * rel, vmul(f, SHIELD_BASH_KNOCK));
-            if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
+            if (!e->alive) { if (!vagOn) P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }   /* VAGUES : pas de soin sur kill */
         }
         hits++;
     }

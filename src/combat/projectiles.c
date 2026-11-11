@@ -9,7 +9,8 @@ static void rocket_coin(Proj *p, int ci) {
     Coin *c = &CO[ci];
     V3 o = c->pos;
     int stolen = c->owner != myId;
-    c->alive = 0;
+    int keep = vagOn && roq_coin(p, ci);                  /* VAGUES : FEU D'ARTIFICE, la piece n'est pas consommee */
+    if (!keep) c->alive = 0;
     if (dmMode) net_fx_coin(1, c->netId, o, v3(0, 0, 0));
     for (int k = 0; k < 20; k++) add_part(o, vmul(rand_dir(), 6), v3(1, 0.85f, 0.3f), 0.35f, 0.1f, 0);
     play(S_PARRY, 0.55f, 1.5f + 0.15f * p->coinHits);
@@ -26,12 +27,13 @@ static void rocket_coin(Proj *p, int ci) {
         return;
     }
     p->coinHits++; rocketCoin++;
-    p->mult *= stolen ? 1.0f : COIN_MULT;
+    p->mult *= stolen ? 1.0f : cp_coin_mult(p->coinHits - 1);
+    if (!stolen) cp_coin_rocket(o);                       /* VAGUES : piece explosive */
     int te, tp, dc;
     if (coin_seek(o, &te, &tp, &dc)) {
         V3 at = te >= 0 ? E[te].pos : tp >= 0 ? np_center(tp) : CO[dc].pos;
         p->seekKind = te >= 0 ? 1 : tp >= 0 ? 2 : 3; p->seekIdx = te >= 0 ? te : tp >= 0 ? tp : dc;
-        p->pos = o; p->vel = vmul(vnorm(vsub(at, o)), COIN_ROCKET_SPEED);
+        p->pos = o; p->vel = vmul(vnorm(vsub(at, o)), roq_seek_speed(p));
         p->life = fmaxf(p->life, 4.0f);
         add_beam(o, at, v3(1, 0.85f, 0.3f), 0.5f);
         if (dmMode && p->netId) net_fx_parry(p->netId, p->pos, p->vel, p->mult, 0);   /* la copie des autres suit le nouveau cap */
@@ -64,7 +66,7 @@ static void proj_tick(float dt) {
                     continue;
                 }
             }
-            if (ok) p->vel = vmul(vnorm(vsub(tg, p->pos)), COIN_ROCKET_SPEED);
+            if (ok) p->vel = vmul(vnorm(vsub(tg, p->pos)), roq_seek_speed(p));
             else p->seekKind = 0;
         }
         if (vagOn) {                                      /* VAGUES : a quel chemin de la boutique reviennent ses touches */
@@ -72,6 +74,7 @@ static void proj_tick(float dt) {
             vgSrc = p->kind == PR_ROCKET ? WP_ROCKET : p->kind == PR_SAW ? WP_SAW : p->kind == PR_MINE ? WP_MINE :
                     p->kind == PR_PARRIED ? (p->mineState ? WP_MINE : WP_COUNT + P.meleeKind) : -1;
         }
+        if (vagOn && p->kind == PR_ROCKET) roq_tick_proj(p, dt);   /* VAGUES : boutique des Roquettes (vitesse, trajectoire) */
         if (p->kind == PR_SAW) { saw_tick(p, dt); continue; }   /* Scie : sa propre machine a etats */
         if (p->kind == PR_MINE) { mine_tick(p, dt); continue; } /* Ventouse */
         p->life -= dt;
@@ -84,7 +87,7 @@ static void proj_tick(float dt) {
             int mine = !dmMode || p->owner == myId;       /* seul le tireur calcule les degats */
             for (int j = 0; j < MAXE; j++) {
                 float te;
-                if (E[j].alive && ray_sphere(p->pos, dir, E[j].pos, enemy_radius(E[j].type) + 0.2f, t, &te)) { t = te; hitEnemy = j; }
+                if (E[j].alive && ray_sphere(p->pos, dir, E[j].pos, enemy_radius(E[j].type) + roq_hitpad(p), t, &te)) { t = te; hitEnemy = j; }
             }
             for (int j = 0; dmMode && j < MAXP; j++) {    /* LAN : collision avec les joueurs */
                 V3 mn, mx; float te;
@@ -100,7 +103,7 @@ static void proj_tick(float dt) {
                 int hitCoin = -1;
                 for (int j = 0; j < MAXCOIN; j++) {
                     float tc;
-                    if (CO[j].alive && !CO[j].decoy && ray_sphere(p->pos, dir, CO[j].pos, COIN_RADIUS, t, &tc)) { t = tc; hitCoin = j; }
+                    if (CO[j].alive && !CO[j].decoy && p->roqCoinLast != j + 1 && ray_sphere(p->pos, dir, CO[j].pos, COIN_RADIUS, t, &tc)) { t = tc; hitCoin = j; }
                 }
                 if (hitCoin >= 0) { rocket_coin(p, hitCoin); continue; }
             }
@@ -114,6 +117,7 @@ static void proj_tick(float dt) {
                 if (mine) ricStat[1]++;
                 continue;
             }
+            if (vagOn && p->kind == PR_ROCKET && hitEnemy < 0 && hitPlayer < 0 && roq_prox(p)) { t = 0; n = v3(0, 0, 0); }   /* VAGUES : fusee de proximite */
             if (t < len || p->life <= 0) {
                 V3 c = vadd(vadd(p->pos, vmul(dir, t)), vmul(n, 0.15f));
                 p->alive = 0;
@@ -137,7 +141,7 @@ static void proj_tick(float dt) {
                     float mult = streak_mult() * p->mult;   /* p->mult : x1,5 par piece traversee (ROQUETTE x PIECE) */
                     int hits = hitEnemy >= 0 || hitPlayer >= 0;
                     if (hitEnemy >= 0) damage_enemy(hitEnemy, 40 * mult, vmul(dir, 6));
-                    hits += explode(c, ROCKET_RADIUS, ROCKET_DMG * mult, 1);
+                    hits += vagOn ? roq_explode(p, c, hitEnemy, mult) : explode(c, ROCKET_RADIUS, ROCKET_DMG * mult, 1);
                     /* un rocket jump qui ne touche personne ne casse pas la chaine */
                     if (hits || vlen(vsub(c, pcenter())) > ROCKET_RADIUS + 1) shot_result(hits);
                 }

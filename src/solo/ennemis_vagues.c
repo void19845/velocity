@@ -8,7 +8,7 @@
 /* ------------------------------------------------------------------ */
 /* PV de base par type (les boss ont les leurs, src/solo/boss.c). Les PV montent un peu en fin de partie
  * (vgHpMul, VG_HP_MAX) ; les degats, eux, ne montent jamais (VG_*_DMG). */
-static const float enemyHp[EN_COUNT] = { 100, 50, 80, 25, 300, VG_BOSS_PYRA_HP, VG_BOSS_TESS_HP, VG_BOSS_BOULE_HP, VG_BOSS_HEXA_HP };
+static const float enemyHp[EN_COUNT] = { 100, 50, 80, 25, 300, 40, 150, 220, VG_BOSS_PYRA_HP, VG_BOSS_TESS_HP, VG_BOSS_BOULE_HP, VG_BOSS_HEXA_HP };
 static float vgHpMul = 1, vgEliteP;                       /* fixes par src/solo/vagues.c au debut de chaque vague */
 static void boss_tick(int i, float dt);                   /* src/solo/boss.c */
 static int vg_lure(V3 *at);                               /* src/solo/ameliorations.c : leurre MIRAGE qui attire (APPAT) */
@@ -99,8 +99,57 @@ static void sniper_fire(Enemy *e) {
     }
 }
 
+/* BOMBE : explosion de VG_BOMBE_R m (degats fixes, Egide de face = bloque) ; elle meurt. Tuee pendant le tic, elle n'explose pas. */
+static void bombe_explode(int i) {
+    Enemy *e = &E[i];
+    V3 c = e->pos, pc = pcenter();
+    fx_explosion(c, VG_BOMBE_R);
+    burst(c, v3(1, 0.3f, 0.75f), 80, 14, 0.6f, 0.25f);
+    play(S_EXPLO, 0.9f * atten(c), 0.8f);
+    shake += fmaxf(0, 0.5f - vlen(vsub(pc, c)) * 0.02f);
+    if (!P.dead && vlen(vsub(pc, c)) < VG_BOMBE_R) enemy_contact(vnorm(vsub(pc, c)), VG_BOMBE_DMG, 12);
+    kill_enemy(i, 0);
+}
+/* MORTIER : orbes a pulsation (lentes, detonent au contact, sur le decor ou d'elles-memes au bout de VG_MORTIER_LIFE) */
+typedef struct { V3 pos, vel; float t; int on; } MortOrb;
+#define MAXMB 8
+static MortOrb MB[MAXMB];
+static void mortar_boom(MortOrb *m) {
+    m->on = 0;
+    V3 pc = pcenter();
+    fx_explosion(m->pos, VG_MORTIER_R);
+    burst(m->pos, v3(0.75f, 0.3f, 1), 100, 16, 0.7f, 0.3f);
+    play(S_EXPLO, 1.0f * atten(m->pos), 0.6f);
+    shake += fmaxf(0, 0.6f - vlen(vsub(pc, m->pos)) * 0.02f);
+    if (!P.dead && vlen(vsub(pc, m->pos)) < VG_MORTIER_R) enemy_contact(vnorm(vsub(pc, m->pos)), VG_MORTIER_DMG, 12);
+}
+static void mortar_fire(Enemy *e, V3 dir) {
+    for (int k = 0; k < MAXMB; k++) if (!MB[k].on) {
+        MB[k] = (MortOrb){ vadd(e->pos, vmul(dir, enemy_radius(e->type) + 0.4f)), vmul(dir, VG_MORTIER_SPEED), VG_MORTIER_LIFE, 1 };
+        play(S_ESHOT, clampf(1.2f - vlen(vsub(pcenter(), e->pos)) / 60, 0.2f, 0.9f), 0.5f);
+        return;
+    }
+}
+static void mortar_tick(float dt) {
+    V3 pc = pcenter();
+    for (int k = 0; k < MAXMB; k++) {
+        MortOrb *m = &MB[k];
+        if (!m->on) continue;
+        m->t -= dt;
+        V3 step = vmul(m->vel, dt);
+        float len = vlen(step);
+        if (m->t <= 0 || (!P.dead && vlen(vsub(pc, m->pos)) < 1.4f) || (len > 1e-4f && ray_world(m->pos, vmul(step, 1.0f / len), len, 0) < len)) {
+            mortar_boom(m);
+            continue;
+        }
+        m->pos = vadd(m->pos, step);
+        if (frand() < 0.6f) add_part(m->pos, vmul(rand_dir(), 0.8f), v3(0.75f, 0.3f, 1), 0.4f, 0.15f, 0);
+    }
+}
+
 static void enemy_tick(float dt) {
     V3 pc = pcenter();
+    mortar_tick(dt);
     for (int i = 0; i < MAXE; i++) {
         Enemy *e = &E[i];
         if (!e->alive) continue;
@@ -196,6 +245,48 @@ static void enemy_tick(float dt) {
                 enemy_contact(d, VG_SWARM_DMG, 4);
                 e->vel = vmul(d, -14); e->fireT = 1.0f; e->st = 0; e->stT = 2;
             }
+        } else if (e->type == EN_BOMBE) {                 /* BOMBE : fonce, s'arrete a ~8 m, tique VG_BOMBE_FUSE s, explose (zone de 5 m) */
+            if (e->st == 0) {
+                e->vel = vlerp(e->vel, vmul(dir, VG_BOMBE_SPEED), fminf(1, dt * 4));
+                if (!P.dead && dist < VG_BOMBE_STOP) { e->st = 1; e->stT = VG_BOMBE_FUSE; e->fireT = 0; }
+            } else {
+                e->stT -= dt; e->fireT -= dt;
+                e->vel = vlerp(e->vel, e->elite ? vmul(dir, 5.0f) : v3(0, 0, 0), fminf(1, dt * 6));   /* elite : continue de ramper vers toi */
+                if (e->fireT <= 0) {
+                    float k = clampf(e->stT / VG_BOMBE_FUSE, 0, 1);
+                    play(S_MINE_BEEP, 0.7f * atten(e->pos), 1.0f + (1 - k));
+                    e->fireT = 0.08f + 0.35f * k;           /* le tic accelere */
+                }
+                if (e->stT <= 0) { bombe_explode(i); continue; }
+            }
+        } else if (e->type == EN_CARRE) {                 /* CARRE : mini tesseract, flotte a 16 m, protege les autres tant qu'il vit */
+            float ang = e->t * 0.25f + i * 2.3f;
+            V3 target = vadd(tgt, v3(cosf(ang) * 16, 7 + sinf(e->t * 0.5f + i) * 2, sinf(ang) * 16));
+            V3 tv = vsub(target, e->pos);
+            e->vel = vlerp(e->vel, vmul(vnorm(tv), 6.0f * clampf(vlen(tv) / 4, 0, 1)), fminf(1, dt * 2));
+        } else if (e->type == EN_MORTIER) {               /* MORTIER : se poste a ~26 m, charge 0,9 s, lance une orbe lente a grosse zone */
+            e->stT -= dt;
+            if (e->st == 0) {
+                float a = e->home.x + e->t * 0.04f;
+                V3 perch = vadd(tgt, v3(cosf(a) * 26, 11 + 2 * sinf(e->t * 0.4f), sinf(a) * 26));
+                const MapDef *md = &maps[curMap];
+                perch.y = clampf(perch.y, md->enemyMinY, md->enemyMaxY + 6);
+                V3 tv = vsub(perch, e->pos);
+                e->vel = vlerp(e->vel, vmul(vnorm(tv), 7 * clampf(vlen(tv) / 5, 0, 1)), fminf(1, dt * 2));
+                if (e->stT <= 0 && !P.dead && dist < 80 && los(e->pos, tgt)) { e->st = 1; e->stT = 0.9f; e->aim = dir; }
+                else if (e->stT <= 0) e->stT = 0.5f;
+            } else {
+                e->vel = vmul(e->vel, expf(-dt * 6));
+                if (e->stT > 0.25f) e->aim = vnorm(vlerp(e->aim, dir, fminf(1, dt * 5)));
+                if (e->stT <= 0) {
+                    mortar_fire(e, e->aim);
+                    if (e->elite) {                       /* elite : deux orbes en V */
+                        V3 side = vnorm(vcross(e->aim, v3(0, 1, 0)));
+                        mortar_fire(e, vnorm(vadd(e->aim, vmul(side, 0.16f))));
+                    }
+                    e->st = 0; e->stT = VG_MORTIER_T * (e->elite ? 0.7f : 1.0f);
+                }
+            }
         } else if (e->type == EN_BASTION) {               /* BASTION : marche, bouclier de face, salve de 3 orbes lentes */
             float want = atan2f(tgt.x - e->pos.x, tgt.z - e->pos.z), dy = want - e->yaw;
             while (dy > PI) dy -= 2 * PI;
@@ -251,7 +342,7 @@ static void reset_game(void) {
     memset(CO, 0, sizeof CO);
     memset(markP, 0, sizeof markP); memset(markE, 0, sizeof markE); markedMeT = 0; lastHpSeen = 100;
     for (int i = 0; i < npu; i++) PU[i].t = PU[i].pending = 0;
-    memset(E, 0, sizeof E); memset(PR, 0, sizeof PR); memset(PA, 0, sizeof PA); memset(BM, 0, sizeof BM);
+    memset(E, 0, sizeof E); memset(PR, 0, sizeof PR); memset(PA, 0, sizeof PA); memset(BM, 0, sizeof BM); memset(MB, 0, sizeof MB);
     memset(TR, 0, sizeof TR);
     wave = 0; toSpawn = 0; waveDelay = 1.5f; spawnT = 0;
     score = kills = combo = 0; gameTime = 0; hitMarker = comboT = msgT = popT = shake = 0;

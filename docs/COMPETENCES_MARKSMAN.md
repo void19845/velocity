@@ -182,7 +182,7 @@ tir » ou sur « le prochain coup », avec une regle par famille. Une case vide 
 | Competence | Armes de tir | Melee | Ignore |
 |---|---|---|---|
 | **PIECE** | rail et kinetic ricochent (x1,5) ; **roquette : redirigee vers l'ennemi le plus proche (x1,5, patch)** ; shotgun, tesla la touchent | yoyo frappe la piece ; epee et lance la renvoient (parry de projectile) | poings, egide |
-| **MARQUE** | tout tir qui touche une cible marquee : +25 % (rail, shotgun, kinetic) ou souffle +20 % (roquette, mine) ; tesla propage la marque | tout coup de melee sur une marquee : +25 % ; yoyo : rien de plus (il ne tire plus la cible, patch d'equilibrage) ; egide : le coup de bouclier la marque | scie (traverse, voir §4) |
+| **MARQUE** | tout tir qui touche une cible marquee : +25 % (rail, shotgun, kinetic) ou souffle +20 % (roquette, mine) ; tesla propage la marque | tout coup de melee sur une marquee : +25 % ; yoyo : rien de plus (l'appui court ne tire pas la cible ; l'appui long la tire de nouveau, sans bonus de marque) ; egide : le coup de bouclier la marque | scie (traverse, voir §4) |
 | **CHARGE** | le prochain tir : x1,5 et perce ; scie : traverse sans s'arreter ; mine : rayon x1,3 | le prochain coup : x1,5, portee +20 % | — |
 | **RICOCHET** | fenetre de 6 s : rail, kinetic, plombs du shotgun, roquette et scie rebondissent a l'infini (garde-fous techniques) ; mine et tesla : non (la mine colle, l'arc n'est pas un projectile) | — (rien a faire rebondir) | les 6 armes de melee |
 | **ALL IN ONE** | vide la munition de l'arme de tir en main en eventail (rail, roquette, shotgun, kinetic ; mines posees en ligne ; **tesla : un eclair inevitable**) | — | scie (1 seule), melee |

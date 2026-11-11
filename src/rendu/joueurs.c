@@ -204,12 +204,13 @@ static void draw_remote_players(void) {
             }
             glPopMatrix();
         } else if ((n->st.pad & 15) == MK_FLAIL) {        /* Fleau : manche a la main gauche ; au repos, tete pendue */
+            int out = n->st.melee || flail_pulling(i);    /* coup ou traction en cours : la chaine est dans le monde (draw_flails) */
             glPushMatrix();
             glTranslatef(-0.4f, h - 0.6f, -0.1f);
-            glRotatef(n->st.melee ? n->st.pitch * 180 / PI - 60 : -20, 1, 0, 0);
+            glRotatef(out ? n->st.pitch * 180 / PI - 60 : -20, 1, 0, 0);
             glColor3f(0.36f, 0.26f, 0.17f);
             box_faces(v3(-0.03f, -0.03f, -0.35f), v3(0.03f, 0.03f, 0.02f));
-            if (!n->st.melee) {                           /* pendant le coup, la chaine est dans le monde (draw_flails) */
+            if (!out) {                                   /* pendant le coup, la chaine est dans le monde (draw_flails) */
                 glColor3f(0.30f, 0.31f, 0.35f);
                 box_faces(v3(-0.012f, -0.32f, -0.36f), v3(0.012f, 0, -0.33f));
                 flail_head_model(v3(0, -0.38f, -0.345f), 0.08f);

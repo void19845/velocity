@@ -573,6 +573,10 @@ static int velocity_main(const char *cmd) {
             NP[1].st.yaw = atan2f(6.5f, -7.0f);
             NP[2].st.pad = MK_FLAIL; NP[2].st.melee = 0;
             P.meleeKind = MK_FLAIL;                       /* et mon fleau au repos */
+            if (strstr(shotPath, "traction")) {           /* appui long : Rival tient la chaine tendue sur Ninja (bail EV_FLAIL), plus de balayage */
+                NP[1].st.melee = 0; NP[1].st.yaw = atan2f(NP[2].disp.x - NP[1].disp.x, NP[1].disp.z - NP[2].disp.z);
+                flailLinkBy[2] = 2; flailLinkT[2] = 100;
+            }
         }
         if (strstr(shotPath, "poings")) {                 /* Poings : Rival en plein uppercut vers moi, Ninja au repos */
             NP[1].st.pad = MK_FIST; NP[1].st.melee = (2 << 6) | 30; NP[1].st.flags = 0;
@@ -806,6 +810,12 @@ static int velocity_main(const char *cmd) {
             flail_swing();
             P.flailT = FLAIL_ANIM * (strstr(shotPath, "vide") ? 0.5f : 0.7f);
             hitstop = 0; impactT = 0; P.meleeT = 0;
+            if (strstr(shotPath, "traction")) {           /* appui long : deux drones accroches, deja a moitie ramenes, chaines tendues */
+                E[1].alive = 1; E[1].type = EN_DRONE; E[1].hp = 100; E[1].pos = v3(-22, 1.5f, 36); E[1].fireT = 10;
+                flail_hook_start();
+                E[0].pos = v3(-19.6f, 1.7f, 37.4f); E[1].pos = v3(-21.6f, 1.5f, 37.9f);
+                P.flailT = 0; P.flailHitN = 0; P.flailArm = 0;
+            }
         }
         if (strstr(shotPath, "poings")) {                 /* Poings : direct droit (ou uppercut : "upper") sur un drone, mur proche */
             hook_release(0);
@@ -985,8 +995,15 @@ done:
                    "(%d touchent)",
                    flailSwings, flailHitSwings, flailTargets / (float)(flailHitSwings ? flailHitSwings : 1),
                    flailRelSum / (flailTargets ? flailTargets : 1), flailCoins, flailCoinHits);
+        if (flailPulls || flailSnaps)                     /* Yoyo : traction (appui long) */
+            netlog("fleau traction (moi) : %d tractions (%.1f s tenues au total), %d cibles accrochees (dont %d joueurs), "
+                   "chaines arrachees (victime) %d", flailPulls, flailPullTime, flailPullTgt, flailPullPl, flailSnaps);
         if (netMode == NET_HOST && (hitCount[W_FLAIL] || flailHostParried))
             netlog("fleau (arbitre) : touches %d, fleaux pares %d", hitCount[W_FLAIL], flailHostParried);
+        if (netMode == NET_HOST && (flailHostStarts || flailHostDenied || flailHostBreaks))
+            netlog("fleau traction (arbitre) : accroches %d (dont %d a moitie, Egide), rafraichissements %d, refuses %d, "
+                   "chaines rompues par la victime %d", flailHostStarts, flailHostHalved, flailHostPulls, flailHostDenied,
+                   flailHostBreaks);
         if (fistPunches || hitCount[W_FIST])              /* --- Poings --- */
             netlog("poings (moi) : %d coups, %d touchent (v_rel moyen %.1f), %.2f touche(s) par combo, combos complets %d / "
                    "commences %d, casses %d, uppercuts qui touchent %d (puis tir %d), punch-jumps %d (%.1f par minute)",

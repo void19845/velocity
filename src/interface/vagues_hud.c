@@ -2,7 +2,7 @@
    Morceau de main.c : inclus dans l'ordre, ne se compile pas seul (voir main.c). */
 
 static int vgShopBack = VGM_NONE;                         /* ecran a rouvrir quand on ferme la boutique */
-static int vgShopHover = -1;                              /* etape survolee (chemin * 5 + etape) : description */
+static int vgShopHover = -1;                              /* offre survolee */
 
 static void vg_time_text(char *buf, size_t n, float t) {  /* m:ss.cc */
     if (t < 0) t = 0;
@@ -57,56 +57,113 @@ static void vg_draw_boss_bar(float cx) {
     if (vgHintT > 0) text_c(0, cx, y + 76, vgHint, 1, 0.9f, 0.6f, clampf(vgHintT, 0, 1));
 }
 
-/* boutique : les 4 chemins du loadout (2 armes, melee, competence), 5 etapes chacun */
+/* texte a la ligne dans une largeur donnee (police 0), renvoie le y suivant */
+static float shop_wrap(float x, float y, float w, const char *s, float r, float g, float b, float a) {
+    char line[160];
+    int maxc = (int)(w / fontW[0]);
+    if (maxc < 8) maxc = 8;
+    if (maxc > 150) maxc = 150;
+    while (*s) {
+        int len = (int)strlen(s);
+        if (len > maxc) { len = maxc; while (len > 0 && s[len] != ' ') len--; if (len == 0) len = maxc; }
+        memcpy(line, s, len); line[len] = 0;
+        text(0, x, y, line, r, g, b, a);
+        y += 19; s += len;
+        while (*s == ' ') s++;
+    }
+    return y;
+}
+
+/* boutique : 3 offres tirees selon la rarete (+ la fusion garantie), relance payante, resume des etapes achetees */
 static void vg_draw_shop(float cx, float cy) {
-    char buf[128];
+    char buf[160];
     rect(0, 0, (float)winW, (float)winH, 0.02f, 0.02f, 0.06f, 0.86f);
-    int paths[4] = { P.loadout[0], P.loadout[1], UP_MELEE(P.meleeKind), UP_SKILL(P.skill) };
-    float colW = fminf(300.0f, (winW - 60.0f) / 4 - 12), rowH = winH < 760 ? 50.0f : 60.0f;
-    float total = 4 * colW + 3 * 12, x0 = cx - total * 0.5f, top = fmaxf(16, cy - (150 + 6 * rowH) * 0.5f);
+    float top = fmaxf(12, cy - 300);
     snprintf(buf, sizeof buf, "BOUTIQUE  -  %d CREDITS", vgCredits);
     text_c(2, cx, top + 44, buf, 1, 0.85f, 0.3f, 1);
-    text_c(0, cx, top + 74, "aucun achat n'augmente une stat : chaque etape ajoute un comportement a cette arme",
+    text_c(0, cx, top + 74, "chaque etape modifie une stat de ton loadout ; acheter une offre rafraichit les offres",
            0.7f, 0.75f, 0.85f, 1);
-    int hover = -1;
-    for (int c = 0; c < 4; c++) {
-        int u = paths[c];
-        float x = x0 + c * (colW + 12), y = top + 100;
-        V3 hc = u < WP_COUNT ? v3(ammoDef[u].r, ammoDef[u].g, ammoDef[u].b) : u < WP_COUNT + MK_COUNT ? v3(0.9f, 0.9f, 1) :
-                v3(skillDef[u - WP_COUNT - MK_COUNT].r, skillDef[u - WP_COUNT - MK_COUNT].g, skillDef[u - WP_COUNT - MK_COUNT].b);
-        rect(x, y, colW, 34, 0.06f, 0.07f, 0.12f, 0.95f);
-        rect(x, y + 31, colW, 3, hc.x, hc.y, hc.z, 1);
-        snprintf(buf, sizeof buf, "%s  %d/5", up_name(u), vgLvl[u]);
-        text_c(1, x + colW * 0.5f, y + 24, buf, hc.x, hc.y, hc.z, 1);
-        y += 44;
-        for (int k = 0; k < 5; k++) {
-            int fx = upPath[u].fx[k], own = k < vgLvl[u], next = k == vgLvl[u], can = next && vgCredits >= upPrice[k];
-            int hv = uiMX >= x && uiMX < x + colW && uiMY >= y && uiMY < y + rowH - 6;
-            if (hv) hover = u * 5 + k;
-            float bg = hv && can ? 0.28f : 0.1f;
-            rect(x, y, colW, rowH - 6, own ? 0.08f : bg * 0.5f, own ? 0.2f : bg, own ? 0.12f : bg * 1.4f, 0.95f);
-            if (own) rect(x, y, 4, rowH - 6, 0.3f, 1, 0.5f, 1);
-            else if (next) rect(x, y, 4, rowH - 6, can ? 1.0f : 0.6f, can ? 0.85f : 0.3f, 0.3f, 1);
-            snprintf(buf, sizeof buf, "%d. %s", k + 1, fxDef[fx].name);
-            float a = own || next ? 1.0f : 0.45f;
-            text(0, x + 12, y + rowH * 0.42f, buf, a, a, a, 1);
-            if (own) snprintf(buf, sizeof buf, "ACQUIS");
-            else if (next) snprintf(buf, sizeof buf, "%d credits", upPrice[k]);
-            else snprintf(buf, sizeof buf, "etape %d d'abord", k);
-            text(0, x + 12, y + rowH * 0.42f + 19, buf, own ? 0.4f : next ? (can ? 1.0f : 1.0f) : 0.5f,
-                 own ? 1.0f : next ? (can ? 0.85f : 0.4f) : 0.5f, own ? 0.55f : next ? (can ? 0.35f : 0.35f) : 0.55f, 1);
-            if (hv && uiClick && can) { uiClick = 0; up_buy(u); play(S_PAD, 0.6f, 2.0f); }
-            y += rowH;
+    if (shSig != sh_loadout_sig()) sh_roll();              /* loadout change (respawn, changement d'arme) : nouvelles offres */
+    int n = shSwapOpen ? 0 : shNOff;
+    float cw = fminf(290.0f, (winW - 60.0f) / 4 - 12), ch = 210, total = (n > 0 ? n : 1) * cw + ((n > 0 ? n : 1) - 1) * 12;
+    float x0 = cx - total * 0.5f, y0 = top + 100;
+    vgShopHover = -1;
+    if (n == 0 && !shSwapOpen) text_c(1, cx, y0 + 80, "aucune offre pour ce loadout (effets a venir)", 0.7f, 0.7f, 0.8f, 1);
+    if (shSwapOpen) {                                     /* CHANGER D'ARME : un choix par emplacement, paye a l'achat */
+        snprintf(buf, sizeof buf, "CHANGER D'ARME  -  %d CREDITS", SH_SWAP_PRICE);
+        text_c(1, cx, y0 + 14, buf, 1, 0.85f, 0.3f, 1);
+        text_c(0, cx, y0 + 38, "les etapes achetees sont gardees ; une fusion s'eteint si une de ses armes part, et revient avec elle", 0.7f, 0.75f, 0.85f, 1);
+        static const char *slotName[4] = { "ARME 1", "ARME 2", "MELEE", "COMPETENCE" };
+        static const int wps[3] = { WP_RAIL, WP_ROCKET, WP_SHOTGUN }, mks[2] = { MK_LANCE, MK_FIST }, sks[2] = { SK_COIN, SK_ALLIN };
+        float bw = 150, sx = cx - 3 * (bw + 10) * 0.5f - 100, ry = y0 + 56;
+        for (int sl = 0; sl < 4; sl++, ry += 38) {
+            text(1, sx, ry + 24, slotName[sl], 0.5f, 0.9f, 1.0f, 1);
+            int cnt = sl < 2 ? 3 : 2;
+            for (int k = 0; k < cnt; k++) {
+                int v = sl < 2 ? wps[k] : sl == 2 ? mks[k] : sks[k];
+                int cur = sl < 2 ? (P.loadout[0] == v || P.loadout[1] == v) : sl == 2 ? P.meleeKind == v : P.skill == v;
+                const char *nm = sl < 2 ? ammoDef[v].name : sl == 2 ? meleeNames[v] : skillDef[v].name;
+                int ok = !cur && vgCredits >= SH_SWAP_PRICE;
+                if (sel_button(sx + 175 + k * (bw + 10), ry, bw, 32, nm, cur, ok || cur, v3(1, 0.85f, 0.4f)) && ok) { sh_swap(sl, v); play(S_PAD, 0.6f, 1.2f); }
+            }
         }
     }
-    if (hover >= 0) vgShopHover = hover;
-    float by = top + 100 + 44 + 5 * rowH + 6;
-    if (vgShopHover >= 0) {
-        int u = vgShopHover / 5, k = vgShopHover % 5, fx = upPath[u].fx[k];
-        snprintf(buf, sizeof buf, "%s (%s) : %s", fxDef[fx].name, up_name(u), fxDef[fx].desc);
-        text_c(0, cx, by + 6, buf, 1, 0.95f, 0.8f, 1);
+    for (int k = 0; k < n; k++) {
+        const ShOffer *o = &shOff[k];
+        float x = x0 + k * (cw + 12);
+        int can = vgCredits >= o->price;
+        int hv = uiMX >= x && uiMX < x + cw && uiMY >= y0 && uiMY < y0 + ch;
+        if (hv) vgShopHover = k;
+        int u = shSeedUp[o->seed];
+        V3 hc = u < WP_COUNT ? v3(ammoDef[u].r, ammoDef[u].g, ammoDef[u].b) : u < WP_COUNT + MK_COUNT ? v3(0.9f, 0.9f, 1) :
+                v3(skillDef[u - WP_COUNT - MK_COUNT].r, skillDef[u - WP_COUNT - MK_COUNT].g, skillDef[u - WP_COUNT - MK_COUNT].b);
+        float bg = hv && can ? 0.2f : 0.08f;
+        rect(x, y0, cw, ch, bg * 0.6f, bg, bg * 1.5f, 0.95f);
+        if (o->type == SO_FUSION) rect(x - 3, y0 - 3, cw + 6, 3, 0.75f, 0.4f, 1, 1);
+        rect(x, y0, cw, 4, hc.x, hc.y, hc.z, 1);
+        const char *name, *desc, *rar;
+        char dbuf[240], rbuf[24];
+        if (o->type == SO_UP) {                           /* amelioration de niveau d'une etape possedee : NIV n+1, niveau courant affiche */
+            const ShStep *st = &shSteps[o->seed][o->step];
+            snprintf(rbuf, sizeof rbuf, "NIV %d", o->br);
+            snprintf(dbuf, sizeof dbuf, "niveau actuel %d sur %d : +20 %% d'effet. %s", o->br - 1, sh_max_lvl(o->seed, o->step), st->desc);
+            name = st->name; desc = dbuf; rar = rbuf;
+        } else if (o->type == SO_STEP) { name = shSteps[o->seed][o->step].name; desc = shSteps[o->seed][o->step].desc; rar = shRarity[shSteps[o->seed][o->step].depth - 1]; }
+        else if (o->type == SO_CAP) {
+            name = shBr[o->br].capName; desc = shBr[o->br].capDesc; rar = "CAPSTONE";
+            snprintf(buf, sizeof buf, "%s (avec %s)", name, up_name(shSeedUp[shBr[o->br].partner]));
+        } else { name = shFu[o->br].name; desc = shFu[o->br].desc; rar = hy_of_fusion(o->br) >= 0 ? "FUSION + FORME" : "FUSION"; }
+        text(0, x + 12, y0 + 26, up_name(u), hc.x, hc.y, hc.z, 1);
+        text(0, x + cw - 12 - fontW[0] * (float)strlen(rar), y0 + 26, rar, 0.7f, 0.75f, 0.9f, 1);
+        text(1, x + 12, y0 + 56, name, 1, 1, 1, 1);
+        shop_wrap(x + 12, y0 + 82, cw - 24, desc, 0.82f, 0.85f, 0.95f, 1);
+        snprintf(buf, sizeof buf, "%d credits", o->price);
+        text(1, x + 12, y0 + ch - 14, buf, can ? 1.0f : 0.8f, can ? 0.85f : 0.35f, can ? 0.3f : 0.3f, 1);
+        if (hv && uiClick && can) { uiClick = 0; up_buy(k); play(S_PAD, 0.6f, 2.0f); break; }
     }
-    if (button(cx - 160, by + 22, 320, 48, vgShopBack == VGM_SELECT ? "RETOUR AU CHOIX" : "RETOUR AU JEU")) {
+    float y = y0 + ch + 18;
+    snprintf(buf, sizeof buf, "RELANCER  (%d)", sh_reroll_price());
+    if (button(cx - 310, y, 300, 44, buf) && sh_reroll()) play(S_PAD, 0.5f, 1.4f);
+    snprintf(buf, sizeof buf, shSwapOpen ? "FERMER LE CHANGEMENT" : "CHANGER D'ARME  (%d)", SH_SWAP_PRICE);
+    if (button(cx + 10, y, 300, 44, buf)) shSwapOpen = !shSwapOpen;
+    y += 62;
+    for (int s = 0; s < SH_N; s++) {                      /* resume : etapes achetees des graines du loadout */
+        if (!sh_on(s)) continue;
+        int c = 0;
+        int lv = 0;
+        for (int k = 0; k < 20; k++) { c += sh_owns(s, k); lv += sh_lvl(s, k); }
+        int caps = 0;
+        for (int b = 0; b < SH_NBR; b++) caps += shBr[b].seed == s && shCap[b];
+        snprintf(buf, sizeof buf, "%s : %d etape%s (niveaux %d), %d capstone%s", up_name(shSeedUp[s]), c, c > 1 ? "s" : "", lv, caps, caps > 1 ? "s" : "");
+        text_c(0, cx, y, buf, 0.7f, 0.78f, 0.9f, 1);
+        y += 20;
+    }
+    if (shFusion >= 0) { snprintf(buf, sizeof buf, "FUSION : %s  (NIV %d, effet %d %%)", shFu[shFusion].name, sh_fusion_lvl(), (int)(sh_fusion_scale() * 100 + 0.5f)); text_c(0, cx, y, buf, 0.8f, 0.5f, 1, 1); y += 20; }
+    if (hy_of_fusion(shFusion) >= 0) {                    /* forme fusionnee : arme hybride, jauge et touche (boutique_hybrides.c) */
+        snprintf(buf, sizeof buf, "FORME FUSIONNEE : %s  (jauge pleine : [%s], %.0f s)", shHy[hy_of_fusion(shFusion)].name, bind_text(A_FUSION), HY_TIME);
+        text_c(0, cx, y, buf, 1.0f, 0.65f, 0.95f, 1); y += 20;
+    }
+    if (button(cx - 160, y + 10, 320, 48, vgShopBack == VGM_SELECT ? "RETOUR AU CHOIX" : "RETOUR AU JEU")) {
         if (vgShopBack == VGM_SELECT) vgMenu = VGM_SELECT;
         else vg_menu_close();
         vgShopBack = VGM_NONE;
@@ -222,6 +279,7 @@ static void vg_draw_hud(float cx, float cy) {
             rect(x, 128, w * f, 8, 0.3f, 1, 0.5f, 0.95f);
         }
     }
+    if (vgMenu == VGM_NONE && !P.dead) hy_draw_hud(cx, cy);   /* jauge de fusion, arme hybride (boutique_hybrides.c) */
     if (vgMenu == VGM_SHOP) vg_draw_shop(cx, cy);
     else if (vgMenu == VGM_SELECT) vg_draw_select(cx, cy);
     else if (vgMenu == VGM_WIN) vg_draw_win(cx, cy);

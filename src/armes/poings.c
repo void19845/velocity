@@ -17,8 +17,8 @@ static float fist_dmg(float rel, int up) { return up ? FIST_UP_DMG + rel * FIST_
 
 /* fin normale du combo (delai depasse, ou fenetre du 3e coup finie) : un combo qui n'a rien touche ni pare coute 0,6 s */
 static void fist_combo_end(void) {
-    if (!P.swingLanded) P.meleeCd = fmaxf(P.meleeCd, 0) + FIST_WHIFF_CD;
-    if (P.fistStep == 3) fistFullCombos++;
+    if (!P.swingLanded) P.meleeCd = fmaxf(P.meleeCd, 0) + vgm_fist_whiff(FIST_WHIFF_CD);
+    if (P.fistStep == vgm_fist_n()) { fistFullCombos++; vgm_fist_full(P.swingLanded); }
     P.fistStep = 0; P.swingLanded = 0; P.fistPts = 0;
 }
 /* combo casse : poing pare (1 s), choc (0,7 s), gros recul recu (0,3 s) */
@@ -69,7 +69,7 @@ static int fist_pj(V3 eye, V3 f, float *dist) {
 
 /* un coup du combo (P.fistStep = coups deja donnes : 0, 1 ou 2) */
 static void fist_punch(void) {
-    int step = P.fistStep, up = step == 2, parried, bestE = -1, bestP = -1, hit = 0, tgtAir = 0, pj = 0;
+    int step = P.fistStep, nmax = vgm_fist_n(), up = vgm_fist_up(step, nmax), parried, bestE = -1, bestP = -1, hit = 0, tgtAir = 0, pj = 0;
     float sp = vlen(P.vel), bestR = 1e9f, rel = 0, pjDist = 0;
     V3 eye = eye_pos(), f = view_dir(), fh = vnorm(v3(f.x, 0, f.z)), at = eye;
     V3 r = v3(cosf(P.yaw), 0, sinf(P.yaw));
@@ -77,6 +77,7 @@ static void fist_punch(void) {
     if (step == 0) { P.swingLanded = 0; P.fistPts = 0; fistCombos++; }
     melee_start_swing();                                  /* parry : +50 une fois par coup */
     parried = try_parry(MELEE_RANGE + 1.5f, 1);
+    if (vagOn) parried += roq_fist(eye, f);               /* VAGUES : ACROBATIE EXPLOSIVE */
     for (int i = 0; i < MAXE; i++) {                      /* une seule cible : la plus proche, ennemi ou joueur */
         Enemy *e = &E[i];
         if (!e->alive) continue;
@@ -107,7 +108,7 @@ static void fist_punch(void) {
             parried++;
         } else {
             damage_enemy(bestE, fist_dmg(rel, up), knock);
-            if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }   /* kill en melee (solo) */
+            if (!e->alive) { if (!vagOn) P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }   /* kill en melee (solo) ; VAGUES : pas de soin sur kill */
         }
         hit = 1;
     } else if (bestP >= 0) {
@@ -132,12 +133,14 @@ static void fist_punch(void) {
         play(up ? S_FIST_UPPER : S_FIST_HIT, 0.9f, frange(0.95f, 1.05f));
         fistHits++; fistRelSum += rel;
         if (up) fistUppers++;
+        vgm_fist_hit(up);
         if (up && bestP >= 0) { P.fistUpTgt = bestP + 1; P.fistUpT = FIST_UP_COMBO_T; }   /* bot : la cible vole, le rail suit */
     }
     if (!hit && !parried) pj = fist_pj(eye, f, &pjDist);   /* une cible touchee passe toujours avant le decor */
     P.swingLanded |= hit || parried || pj;                /* le combo entier : un punch-jump compte comme utile */
-    P.fistStep = P.fistAnim = step + 1; P.fistT = 0;
-    P.meleeCd = up ? FIST_END_CD : FIST_GAP;
+    P.fistStep = step + 1; P.fistAnim = step % 3 + 1; P.fistT = 0;
+    P.meleeCd = step == nmax - 1 ? vgm_fist_end(FIST_END_CD) : vgm_fist_gap(FIST_GAP);
+    vgm_fist_swing(step);
     P.meleeT = FIST_ANIM; P.parryWin = FIST_PARRY_WIN;
     fistPunches++;
     play(S_DASH, 0.3f, 2.2f);                             /* souffle du coup */
@@ -157,14 +160,16 @@ static void fist_punch(void) {
 /* game_tick : appui memorise 0,12 s, fin du combo (delai ou fenetre du 3e coup finie), parry, garde du viewmodel */
 static void fist_tick(float dt, int press) {
     P.fistBuf -= dt; P.fistT += dt; P.fistUpT -= dt;
+    vgm_melee_tick(dt);
+    if (vgm_fist_free() && (P.fistStep == 0 || P.fistStep == vgm_fist_n())) P.meleeCd = 0;
     if (press) P.fistBuf = FIST_BUFFER;
-    if ((P.fistStep == 1 || P.fistStep == 2) && P.fistT > FIST_COMBO_WIN) fist_combo_end();
+    if (P.fistStep >= 1 && P.fistStep < vgm_fist_n() && P.fistT > FIST_COMBO_WIN) fist_combo_end();
     if (!P.dead && P.fistBuf > 0 && P.meleeCd <= 0) { P.fistBuf = 0; fist_punch(); }
     if (P.parryWin > 0) {
         if (!P.dead) try_parry(MELEE_RANGE + 1.5f, 1);   /* met swingLanded a 1 s'il pare */
         P.parryWin -= dt;
     }
-    if (P.fistStep == 3 && P.parryWin <= 0) fist_combo_end();
+    if (P.fistStep == vgm_fist_n() && P.parryWin <= 0) fist_combo_end();
     if (P.meleeT > 0 || P.fistStep > 0) P.fistGuard = fminf(1, P.fistGuard + dt / 0.05f);   /* arme a distance abaissee */
     else P.fistGuard = fmaxf(0, P.fistGuard - dt / 0.15f);
 }

@@ -602,12 +602,61 @@ la fiche `docs/armes/03_fleau.md`.
 - Boutique VAGUES : l'effet ATTRAIT (« une touche tire l'ennemi vers toi », premier du chemin YOYO de `src/solo/ameliorations.c`) est un achat
   indépendant du Yoyo de base ; il n'est pas touché ici (l'arbre de la boutique est réécrit à part).
 - Réseau : `NET_VER` inchangé (**21**) ; ni paquet ni événement ne changent, seule la valeur du recul de `EV_HIT` (arme `W_FLAIL`).
+- **Partiellement annulé par le § 38** (10 novembre) : la traction **revient sur appui long** ; l'appui court reste sans traction comme décrit ici.
 - Le Yoyo perd son rôle de lanceur de combos : il reste une mêlée de zone à 6 m. Aucune valeur de dégâts ni de portée n'est modifiée pour compenser.
 - Tests (`--test`) réécrits : « fleau drone a 5.5 m » (vitesse 0, position inchangée), « fleau PvP » (recul `(0, 0, 0)`), « bot fleau » (le bot
   frappe, aucun recul, plus de combo) ; « fleau pare » (le lanceur est tiré vers le pareur) inchangé.
 - Mesure (2 matchs bot contre bot de 90 s par version, `--loadout 0,1,3,0`, tableau dans `docs/armes/03_fleau.md` § 11) : 7 et 7 kills avant, 8 et 6
   après ; coups de Yoyo qui touchent 4 et 6 avant, 3 et 6 après ; l'ancien combo fléau → rail n'avait servi que 2 fois en 2 matchs. Les TTK (2 à 10 s)
   sont du bruit à ce nombre de matchs : rien ne s'emballe ni ne cale, la perte se jouera surtout en partie humaine.
+
+## 38. Yoyo : traction sur appui long
+
+Demandé par le propriétaire, qui revient sur le § 37 : « on la garde, mais on la change pour que ça soit sur un **appui long** et que ça tracte **aussi
+longtemps que le joueur maintient** ». Détail technique : `docs/CODE.md` (« Yoyo : traction sur appui long ») et la fiche `docs/armes/03_fleau.md`.
+
+- **Appui court** (touche de mêlée relâchée avant 0,15 s, `FLAIL_HOLD_T`) : **inchangé**, le coup en arc de 140° (dégâts, parry à 6 m, pièce frappée,
+  recharges) **sans traction**, comme au § 37.
+- **Appui long** (touche tenue plus de 0,15 s) : le coup part **à l'appui** comme avant (réactivité, fenêtre de parry), puis, 0,15 s plus tard, la
+  chaîne s'accroche aux **cibles de l'arc à cet instant** (mêmes règles de portée, d'arc et de ligne de vue ; 8 au plus ; aucun nouveau dégât) et les
+  **tire vers le lanceur tant que la touche est tenue**, sans limite de durée. Relâcher coupe la chaîne : recharge de mêlée de **0,5 s** (0,9 s si
+  l'appui long n'a rien accroché). Le lanceur peut bouger et tirer pendant la traction : le combo fléau → rail est de retour (sans le bonus visuel
+  « RAPPEL + RAIL », qui reste supprimé) ; il ne peut pas relancer de coup tant qu'il tient la touche.
+- **Ennemis** (drones, kamikazes… du solo / VAGUES) : leur vitesse est ramenée vers le lanceur à 12 m/s (lissée, comme l'effet VORTEX mais avec une
+  consigne), ils s'arrêtent à 2,5 m (`FLAIL_DRONE_STOP`, de retour) ; **jamais un boss** ; un kamikaze accroché explose comme avant. *Attention* : la
+  boutique v2 limite la mêlée de VAGUES à la Lance et à l'Impulsion (`vg_mk_ok`, menu LOADOUT grisé) : **le Yoyo n'est pas équipable en VAGUES pour
+  l'instant**, la traction des ennemis n'y est donc pas jouable tant que ce choix tient (elle est codée et testée hors VAGUES, `--test` et `--shot`).
+- **Joueurs (PvP / LAN)** : la victime est tirée **sur sa propre vitesse** (12 m/s au plus, arrêt vers 2 m, le décor l'arrête comme d'habitude) par un
+  nouvel événement léger **`EV_FLAIL`** : le lanceur l'envoie à l'accroche puis toutes les 0,1 s tant qu'il tient la touche, la victime enregistre
+  « accrochée par X pour 0,3 s » et s'applique la traction à chaque tick ; **l'hôte arbitre** (lanceur et victime vivants et adverses, lanceur au Yoyo,
+  fléau non paré, portée) et divise la traction **par deux** si l'Égide de la victime fait face à la chaîne.
+- **Contre-jeu** (« une traction de 12 m/s n'est pas une prison ») : la traction se coupe si la cible s'éloigne à plus de **8 m**, si un **mur** coupe
+  la ligne de vue plus de 0,25 s, si le lanceur **meurt**, est **étourdi** (Tesla, Enclume) ou voit son fléau **paré** (la chaîne s'enroule, le lanceur
+  est tiré vers le pareur comme avant) ; et la victime s'en dégage **par sa vitesse** : courir à l'opposé ne suffit pas (la traction bat la course),
+  mais un **dash, un slide ou un bhop rapide** (plus de 16 m/s vers l'extérieur), un grappin ou un rocket jump **arrache la chaîne** (« CHAINE
+  ARRACHEE »).
+- **Retour visuel et sonore** : une chaîne tendue de la main jusqu'à chaque cible accrochée, tant que la traction dure (chez les autres joueurs aussi,
+  spectateurs compris) ; son discret à l'accroche et à la coupure ; chez la victime, le **zip de câble** d'avant est de retour, avec le popup
+  « CHAINE DE X ». Rien de nouveau dans le HUD.
+- **Bots** : une fois sur deux, à plus de 3,5 m, le bot tient la touche jusqu'à 0,9 s (le match bot exerce ainsi toute la voie réseau) ; journal :
+  tractions, secondes tenues, cibles accrochées, chaînes arrachées, et côté hôte accroches / refus / Égide.
+- Réseau : **`NET_VER` 22** (nouvel événement `EV_FLAIL`, sous-types `FLE_START`, `FLE_PULL`, `FLE_END` du lanceur vers la victime, `FLE_BREAK` de la
+  victime vers le lanceur ; `f[0]` = intensité écrite par l'hôte). Aucun changement de paquet. `CLAUDE.md` annonce encore `NET_VER` 20 : à mettre à jour.
+- Constantes (`src/reglages/equilibrage.c`, bloc Fléau) : `FLAIL_HOLD_T` 0,15, `FLAIL_HOOK_MAX` 8, `FLAIL_PULL_SPEED` 12, `FLAIL_PULL_RESPONSE` 14,
+  `FLAIL_PULL_ACCEL` 140, `FLAIL_DRONE_STOP` 2,5, `FLAIL_PULL_STOP` 2, `FLAIL_PULL_GAIN` 6, `FLAIL_PULL_SLACK` 2, `FLAIL_PULL_LOS_T` 0,25,
+  `FLAIL_PULL_SNAP` 16, `FLAIL_PULL_REFRESH` 0,1, `FLAIL_PULL_LEASE` 0,3, `FLAIL_PULL_END_CD` 0,5, `FLAIL_HOST_TOL` 3, `FLAIL_HOST_PARRY_T` 0,6.
+- **Choix à valider** (documentés dans la fiche, § 13) : le coup part à l'appui et l'accroche suit 0,15 s plus tard ; 12 m/s, 140 m/s², arrêt à
+  2,5 / 2 m ; l'arrachage de la chaîne au-delà de 16 m/s vers l'extérieur (c'est lui qui rend le dash utile) ; recharge de 0,5 s ; 8 cibles au plus ;
+  Égide ÷ 2 (et non bloquée) ; changer d'arme à distance ne coupe pas la traction ; événement à 10 Hz plutôt qu'un champ de l'état à 60 Hz.
+- Tests (`--test`) : 11 lignes « fleau traction … » / « fleau appui court » (drone tenu à 2,4 m puis relâché, appui court sans traction, boss, coupures
+  distance / mur / mort, fléau → rail pendant la traction, événements du lanceur, victime LAN, contre-jeu course / dash / Égide, arbitrage de l'hôte,
+  parry, observateur) ; **les lignes « fleau » existantes sont inchangées**. Captures : `--shot fleau_traction` (deux drones accrochés),
+  `--shot dm_fleau_traction` (la chaîne d'un adversaire sur un autre joueur).
+- Mesure (matchs bot contre bot en réseau réel, `--loadout 0,1,3,0`, tableau dans `docs/armes/03_fleau.md` § 11) : ARENE 60 s (4 kills, aucune traction), LE DOJO
+  90 s (16 et 19 kills, 3 à 4 tractions, 1 à 2 chaînes arrachées par le bot victime : ils fuient à plus de 16 m/s), et une variante de vérification (seuil
+  d'arrachage relevé, le bot tient toujours la touche) qui montre une traction soutenue de bout en bout (START, 12 PULL relayés par l'hôte, victime ramenée à
+  2,1 m puis tuée au rail, END à la mort du lanceur). Aucun plantage ni désynchronisation visible. **Pas encore joué en vrai** (partie humaine) : le
+  réglage fin (12 m/s, 140 m/s², seuil d'arrachage de 16 m/s, recharge de 0,5 s) se jugera en jouant.
 
 ## Vérifications faites
 
@@ -617,3 +666,72 @@ la fiche `docs/armes/03_fleau.md`.
 - Fenêtre du second écran essayée en vrai sur un Mac (contexte partagé, police, partie solo en direct).
 - **Pas encore vérifié sous Windows** : la CI Windows d'`origin/dev` compilera et testera `dev` à chaque push ; reste
   à essayer le second écran avec deux moniteurs.
+
+## Boutique v2 du mode VAGUES : un seul loadout et arbre de graines
+
+- VAGUES n'accepte plus qu'un loadout : Railgun / Roquettes / Shotgun, Lance / Impulsion, Pièce / All in One (le menu LOADOUT grise le
+  reste en partie ; les choix du PvP ne sont pas modifiés).
+- Nouvelle boutique : 3 offres tirées par rareté, étapes qui modifient une stat, branches vers les partenaires du loadout, capstones,
+  fusions, relance payante, changement d'arme payant (300 crédits). Arbre et règles : `docs/boutique_vagues/` (pour l'instant aucun
+  lien mêlée x compétence). Couverture actuelle : 140 étapes / 140, 30 capstones / 30, 10 fusions / 15 (voir §3.5 de `docs/CODE.md`).
+- Vérifié : build sans warning, `--test`, capture `vagues_boutique`. Pas encore joué en vrai ni en match bot.
+
+## Mode VAGUES : niveaux d'amélioration de la boutique
+
+- Une étape achetée peut monter de niveau (offre « NIV n+1 » dans la boutique, avec le niveau courant) : +20 % d'effet par niveau sur
+  ses paramètres numériques. Profondeur 1 : 60 / 80 / 100 / 120 crédits (niveau 5 au maximum), profondeur 2 : 120 / 160 / 200 (4),
+  profondeur 3 : 200 / 300 (3), profondeur 4 : 400 (2), capstone : niveau fixe.
+- Les étapes sans paramètre numérique réel (Satellite, Double, Surtension, Soute, Récupération, nombre d'estocs ou de coups de combo,
+  Réserve, Pièce recyclée, Rebond de plus, Pluie, Salve double…) ne montent pas et ne sont jamais proposées en amélioration.
+- Une fusion a un niveau (somme des niveaux des étapes et du capstone de ses deux branches, divisée par 5) : 100 / 125 / 150 % d'effet.
+  Le résumé de la boutique montre la somme des niveaux de chaque graine et le niveau de la fusion.
+- Vérifié : build sans warning, `--test` (blocs « niveaux »), capture `vagues_boutique`. Pas encore joué en vrai.
+
+## Mode VAGUES : règle de soin
+
+- Plus de soin sur kill en VAGUES (ni les 8 / 15 PV des ennemis, ni le bonus de mêlée). Hors VAGUES rien ne change.
+- Les étapes de soin de la boutique et le vol de vie passent par `vg_heal` : 20 PV de soin par seconde au maximum, aucun soin issu
+  d'une réaction en chaîne, jamais au-delà de 100 PV. Le parry rend toujours ses PV.
+- Vérifié : tests `--test` (bloc « soin »). Pas encore joué en vrai.
+
+## Mode VAGUES : formes fusionnées (armes hybrides)
+
+- Acheter la fusion d'une paire d'armes à distance donne une **jauge de fusion**, remplie par les dégâts des deux armes. Pleine, la touche
+  **T** (réaffectable : PARAMETRES > COMMANDES, « Fusion (arme hybride) ») active l'arme hybride pendant 15 s : elle remplace les deux armes (munitions mises
+  de côté puis rendues), hérite des modificateurs des deux arbres, puis les deux armes reviennent. Mêlée et compétence restent disponibles.
+- Trois formes : ARTILLERIE ORBITALE (rail + souffles de 3 m par cible et 8 m au bout), CANON SCIE (8 rails fins à 50 % en gerbe de 6° qui
+  traversent, recul du Shotgun), OBUSIER (6 mini-roquettes de 2,5 m en gerbe de 8°, recul vers le haut). Jauge, message « FUSION PRETE », nom
+  et temps restant dans le HUD ; la boutique annonce « FUSION + FORME » et rappelle la touche. Le niveau de la fusion (100 / 125 / 150 %)
+  multiplie les dégâts propres de la forme.
+- FISSION et DOUBLE DETENTE (pas d'effet passif codé) deviennent achetables : leur seul effet est la forme fusionnée. DOUBLE DETENTE reste
+  inatteignable tant que le capstone RAIL>SHO n'est pas codé.
+- Aucun effet hors VAGUES (PvP / LAN inchangés, pas de `NET_VER`). Détail : §3.5 de `docs/CODE.md`.
+- Vérifié : build sans warning, `--test` (blocs « hybride », « ARTILLERIE ORBITALE », « CANON SCIE », « OBUSIER »), captures `vagues_hybride*`.
+  Pas encore joué en vrai.
+
+## Mode VAGUES : sac de stats (refactor des armes « objet »)
+
+- Rien ne change pour le joueur ni hors VAGUES (PvP / LAN identiques, pas de `NET_VER`) : c'est un refactor de la boutique v2 pour rendre l'ajout
+  d'un modificateur d'arme simple. Cahier des charges, API et recettes : `docs/boutique_vagues/ARCHITECTURE_ARMES.md`.
+- Les étapes qui modifient une **stat** (dégâts, taille, portée, cône, perte à distance, plombs en plus, délai, coût de jauge, vol de vie, munition
+  rendue...) ne sont plus du code : ce sont des lignes de données (`{ stat: 'TAI', op: 'mul', val: 1.15 }` dans `docs/boutique_vagues/outils/effets/*.js`,
+  écrites dans `boutique_donnees.c` par `node export_c.js`) lues par le **sac de stats** (`src/solo/boutique_stats.c`, `st()` / `st_ctx()`). Le niveau
+  (+20 %) multiplie le delta de chaque modificateur, gain ou pénalité ; des conditions (distance, tête, en l'air, élite, cibles traversées, impact direct,
+  rebond n°N, salve pleine), des groupes (le plus fort l'emporte), des phases d'application (un retrait en secondes APRÈS un pourcentage), les opérations
+  « vers une valeur » (`to`) et « plafond » (`min`) et l'arrondi entier (`st_int`) existent. Hors VAGUES ou graine non équipée, `st()` rend la base.
+- Migrés : les genres génériques `BK_DMG` / `BK_NEAR` / `BK_VOL` / `BK_PTS` (15 étapes) et toute la famille **Shotgun** (14 étapes-stat ; Rafale, Peau
+  de plomb, Souffle de culasse, Coup double, Éclats et Détonation restent des événements). `fire_shotgun` lit ses stats une fois par tir (`sg_stats`).
+  Les formes fusionnées et la pièce en plombs lisent le même sac.
+- Classification exacte des 140 étapes (82 stats, 58 événements ou comportements) : `docs/boutique_vagues/CLASSIFICATION_ETAPES.md`, feuille de route
+  de la migration des autres familles (Roquettes, Railgun, Mêlée, Compétences).
+- **Préparation des familles restantes** (Roquettes + Railgun, Lance + Impulsion, Pièce + All in One) : le socle a été complété pour les 56 étapes-stat
+  qui restent (19 stats nommées, opérations `to` / `min`, conditions `direct` / `bounce` / `first` / `salvefull`, phases, `st_int`) et chaque étape a sa ligne de
+  données prête, vérifiée de bout en bout ; la classification donne, par famille, le bloc à coller, la fonction à brancher et les fichiers touchés. Les trois
+  migrations peuvent se faire en parallèle sans toucher un fichier partagé.
+- Vérifié : build sans warning ; `--test` identique à la référence d'avant refactor (671 lignes, hors 5 lignes instables d'une exécution à l'autre) plus
+  16 lignes « sac de stats » (une par opération et par condition) ; deux matchs bot contre bot en réseau réel (host / client, 60 s : loadout par défaut, puis
+  Shotgun + Railgun avec des touches de Shotgun arbitrées par l'hôte) sans plantage. Pas encore joué en vrai.
+
+## VAGUES : bombe, carré et mortier
+
+Trois nouveaux ennemis (détail dans `docs/CODE.md` §3.5) : la **BOMBE** (kamikaze rapide qui s'arrête, tique 2 s puis explose sur 5 m), le **CARRÉ** (mini tesseract : les autres ennemis encaissent ×0,1 tant qu'il vit) et le **MORTIER** (orbe lente à pulsation, explosion de 8 m). Ils arrivent aux vagues 12, 18 et 28.

@@ -13,7 +13,7 @@ Chaque fiche est rédigée en parallèle. Les choix d'interface qui touchent plu
 | `00_infra_loadout_munitions.md` | Loadout (1 mêlée + 2 distance), munitions par arme, cellules génériques, recharge par la mêlée, roquettes limitées, `NET_VER` 4 | S |
 | `01_enclume.md` | Marteau-pilon : coup au sol, piqué, onde de choc | M |
 | `02_lance.md` | Lance de joute : lance couchée, estoc, choc de joute | M |
-| `03_fleau.md` | Fléau à chaîne (Yoyo) : arc à 6 m sans traction (retirée au patch d'équilibrage), pièce frappée, parry à 6 m | M |
+| `03_fleau.md` | Fléau à chaîne (Yoyo) : arc à 6 m, appui court sans traction (retirée au patch d'équilibrage), **appui long = traction continue** (10 novembre, `EV_FLAIL`, `NET_VER` 22), pièce frappée, parry à 6 m | M |
 | `04_impulsion.md` | Poings : combo de 3 coups, punch-jump | S |
 | `05_egide.md` | Bouclier : blocage frontal, jauge, parry parfait, réseau | L |
 | `06_shotgun.md` | Fusil à pompe (ex-Éventail) : plombs agrégés, recul, pièce qui éclate | S |

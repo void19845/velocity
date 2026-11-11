@@ -132,7 +132,7 @@ Toutes gardent la touche de mêlée actuelle et la règle « un coup qui touche 
 
 ### 2.3 Fléau à chaîne « Fléau »
 
-- **Patch d'équilibrage (novembre 2026) : la traction est retirée.** Le Yoyo ne tire plus la cible (joueur, drone, ennemi des VAGUES) ; le combo fléau → rail a disparu avec elle. Sont barrés ci-dessous les passages qui en dépendaient. Reste une seule traction : celle du lanceur dont le fléau est paré.
+- **Patch d'équilibrage (novembre 2026) : la traction est retirée.** Le Yoyo ne tire plus la cible (joueur, drone, ennemi des VAGUES) ; le combo fléau → rail a disparu avec elle. Sont barrés ci-dessous les passages qui en dépendaient. Reste une seule traction : celle du lanceur dont le fléau est paré. **Rétablie le 10 novembre, sur APPUI LONG** (touche de mêlée tenue 0,15 s : le Yoyo tire les cibles de l'arc tant que la touche est tenue ; l'appui court reste sans traction) : fiche `armes/03_fleau.md`, `NOUVEAUTES.md` § 38 ; les passages barrés ci-dessous décrivent l'ancienne impulsion unique.
 - **Fantasme / rôle** : mêlée à longue portée, faible dégât, ~~*« viens ici ! »*, mêlée de contrôle qui déplace la cible~~.
 - **Mécanique** : portée `6 + 0,05 × v_rel` m, arc horizontal de 140° (cos 0,34), recharge 0,6 s. Dégâts `18 + 1,5 × v_rel`. ~~La cible est tirée vers toi : recul négatif de 12 m/s + 3 vers le haut.~~ Le recul envoyé est nul.
   - **Pièces** : le fléau qui touche une de tes pièces la **frappe**. Elle part à 45 m/s vers la cible visible la plus proche (aide à la visée `PARRY_AIM_COS`) et fait 40 PvE / 28 PvP. Si un rail la touche en vol, le ricochet ×1,5 normal s'applique.

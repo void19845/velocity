@@ -158,6 +158,48 @@ static const NetEvent *flail_test_last_hit(void) {
     }
     return NULL;
 }
+/* Yoyo, traction (appui long) : `ticks` ticks de jeu complets (game_tick) ; press = appui au premier tick, held = touche de melee tenue */
+static void flail_test_run(int ticks, int press, int held) {
+    for (int i = 0; i < ticks; i++) {
+        nowT += TICK;
+        botPress[A_MELEE] = (unsigned char)(press && i == 0); botHeld[A_MELEE] = (unsigned char)held;
+        game_tick(TICK);
+        hitstop = 0;                                      /* le hitstop du coup ne saute pas de ticks */
+    }
+    botPress[A_MELEE] = 0; botHeld[A_MELEE] = 0;
+}
+/* EV_FLAIL fabrique, comme s'il venait du reseau */
+static NetEvent flail_test_ev(int from, int target, int sub, float scale) {
+    NetEvent e = ev_new(EV_FLAIL);
+    e.from = (unsigned char)from; e.target = (unsigned char)target; e.sub = (unsigned char)sub; e.f[0] = scale;
+    return e;
+}
+/* EV_FLAIL de sous-type sub restes dans la file d'envoi (target t, ou tous si t < 0) ; scale : f[0] du dernier trouve */
+static int flail_test_count(int sub, int t, float *scale) {
+    int n = 0;
+    for (int k = 0; k < OUTQ; k++)
+        if (outq[k].left > 0 && outq[k].ev.kind == EV_FLAIL && outq[k].ev.sub == sub && (t < 0 || outq[k].ev.target == t)) {
+            n++;
+            if (scale) *scale = outq[k].ev.f[0];
+        }
+    return n;
+}
+/* victime simulee : `ticks` ticks (flail_victim_tick + player_tick) ; le lanceur NP[1] rafraichit le bail toutes les 0,1 s si refresh, avec
+ * l'intensite scale (l'hote l'ecrit dans chaque START et PULL). Renvoie par pointeurs la vitesse maximale, la distance minimale et la
+ * distance finale au lanceur (centres) */
+static void flail_test_victim(int ticks, int refresh, float scale, float *vmax, float *dmin, float *dEnd) {
+    NetEvent pu = flail_test_ev(1, 0, FLE_PULL, scale);
+    *vmax = 0; *dmin = 1e9f;
+    for (int k = 0; k < ticks; k++) {
+        if (refresh && k % 12 == 6) apply_event(&pu);
+        nowT += TICK;
+        hookPressIn = hookHeldIn = 0;
+        flail_victim_tick(TICK); player_tick(TICK, 0, 0); flail_fx_tick(TICK);
+        *vmax = fmaxf(*vmax, vlen(P.vel));
+        *dmin = fminf(*dmin, vlen(vsub(pcenter(), np_center(1))));
+    }
+    *dEnd = vlen(vsub(pcenter(), np_center(1)));
+}
 /* --- fin Fleau : outils des tests --- */
 /* --- Poings : outils des tests --- */
 /* remise a zero : solo, Poings en melee, immobile en pos, vue vers -z */
@@ -2350,6 +2392,239 @@ static void run_tests(const char *path) {
     }
     /* --- fin Fleau --- */
 
+    /* --- Yoyo : traction sur appui long (touche de melee tenue plus de FLAIL_HOLD_T) : les cibles de l'arc sont tirees tant qu'elle est tenue.
+     * Solo : couloir degage x = -20, joueur en (-20, 0, 40), vue vers -z ; LAN simule : moi (hote) et NP[1] --- */
+    {
+        FILE *savedLog = botLog;
+        double nowSave = nowT;
+        unsigned int rngSave = rng;
+        botLog = NULL;                                    /* pas de lignes du journal du bot au milieu des resultats */
+        memset(flailLinkT, 0, sizeof flailLinkT); memset(flailLinkBy, 0, sizeof flailLinkBy);
+        {   /* 12. appui long sur un drone a 5,5 m : le coup part a l'appui (82), la chaine s'accroche a 0,15 s et le tire vers l'oeil tant que la
+             * touche est tenue (il s'arrete vers 2,5 m) ; relache : plus de traction, recharge de 0,5 s, son IA le reprend */
+            flail_test_reset(v3(-20, 0, 40)); waveDelay = 1000;
+            Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 34.5f), EN_DRONE);
+            float tHook = -1, d06 = 0, dmin = 1e9f, vmax = 0;
+            int pulls0 = flailPulls;
+            for (int i = 0; i < 180; i++) {               /* 1,5 s, touche tenue */
+                flail_test_run(1, i == 0, 1);
+                float d = vlen(vsub(e->pos, eye_pos()));
+                if (tHook < 0 && P.flailPullN > 0) tHook = (i + 1) * TICK;
+                if (i == 71) d06 = d;
+                dmin = fminf(dmin, d);
+                vmax = fmaxf(vmax, vdot(e->vel, vnorm(vsub(eye_pos(), e->pos))));
+            }
+            float hp = e->hp, dEnd = vlen(vsub(e->pos, eye_pos()));
+            int held = P.flailPullN;
+            flail_test_run(1, 0, 0);                      /* relache */
+            float cd = P.meleeCd, dRel = vlen(vsub(e->pos, eye_pos()));
+            int still = P.flailPullN;
+            flail_test_run(120, 0, 0);                    /* 1 s sans traction : son IA l'emmene ailleurs */
+            fprintf(f, "fleau traction drone a 5.5 m : PV %.0f, accroche a %.2f s (%d traction), distance a 0.6 s %.2f, mini %.2f, a 1.5 s %.2f, "
+                       "vitesse max vers moi %.1f, encore accroche %d ; relache : accroche %d, recharge %.2f, distance %.2f puis %.2f 1 s plus tard "
+                       "(attendu 82, 0.15, 1, < 4.0, >= 2.3, 2.4 a 3.0, <= 13, 1 ; 0, 0.50, 2.4 a 3.0 puis > 4.0)\n",
+                    hp, tHook, flailPulls - pulls0, d06, dmin, dEnd, vmax, held, still, cd, dRel, vlen(vsub(e->pos, eye_pos())));
+        }
+        {   /* 13. appui court : le coup part, aucune traction (touche relachee avant FLAIL_HOLD_T) ; tenue 0,10 s : encore un appui court */
+            int pulled[2]; float dm[2], hpc[2];
+            for (int v = 0; v < 2; v++) {
+                flail_test_reset(v3(-20, 0, 40)); waveDelay = 1000;
+                Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 34.5f), EN_DRONE);
+                int p0 = flailPulls;
+                dm[v] = 1e9f;
+                flail_test_run(v ? 12 : 1, 1, 1);         /* tenue 1 tick, ou 0,10 s */
+                for (int i = 0; i < 120; i++) { flail_test_run(1, 0, 0); dm[v] = fminf(dm[v], vlen(vsub(e->pos, eye_pos()))); }
+                pulled[v] = flailPulls - p0 + P.flailPullN; hpc[v] = e->hp;
+            }
+            fprintf(f, "fleau appui court : PV %.0f et %.0f, tractions %d et %d (tenue 1 tick / 0.10 s), distance mini %.2f et %.2f "
+                       "(attendu 82, 82, 0, 0, > 4.0, > 4.0)\n", hpc[0], hpc[1], pulled[0], pulled[1], dm[0], dm[1]);
+        }
+        {   /* 14. un boss n'est jamais tire (boss et drone dans l'arc : seul le drone est accroche) ; un kamikaze dans l'arc a ce moment explose */
+            flail_test_reset(v3(-20, 0, 40)); waveDelay = 1000;
+            Enemy *b = flail_test_enemy(0, v3(-20, 1.6f, 35), EN_PYRA);
+            b->hp = b->maxHp = 99999;
+            flail_test_enemy(1, v3(-20, 1.6f, 36), EN_DRONE);
+            Enemy *r = flail_test_enemy(2, v3(-19, 1.6f, 35.5f), EN_RUSHER);
+            flail_hook_start();
+            int n = P.flailPullN, first = P.flailPullN ? P.flailHk[0] : -1;
+            for (int i = 0; i < 60; i++) flail_pull_tick(TICK, 1);
+            fprintf(f, "fleau traction boss : cibles accrochees %d (le drone, indice %d), vitesse du boss %.2f, kamikaze vivant %d "
+                       "(attendu 1, 1, 0.00, 0)\n", n, first, vlen(b->vel), r->alive);
+        }
+        {   /* 15. coupures : cible a plus de 8 m, mur sur la ligne de vue (plus de 0,25 s), lanceur mort : la cible est lachee, la recharge de 0,5 s demarre */
+            float tc[3], cdc[3];
+            int ok[3];
+            for (int c = 0; c < 3; c++) {
+                flail_test_reset(v3(-20, 0, 40)); waveDelay = 1000;
+                Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 34.5f), EN_DRONE);
+                int nb0 = nb;
+                flail_test_run(30, 1, 1);                 /* accroche */
+                ok[c] = P.flailPullN;
+                if (c == 0) { e->pos = v3(-20, 1.6f, 30.5f); e->vel = v3(0, 0, 0); }   /* 9,5 m */
+                if (c == 1) addbox(-21, 0, 37.5f, -19, 3.5f, 38.5f, 0.5f, 0.5f, 0.5f);   /* un mur entre nous */
+                if (c == 2) P.dead = 1;
+                int t = 0;
+                for (; t < 120 && P.flailPullN > 0; t++) flail_test_run(1, 0, 1);
+                tc[c] = t * TICK; cdc[c] = P.meleeCd;
+                nb = nb0;
+            }
+            fprintf(f, "fleau traction coupee : accroche %d %d %d ; lachee apres %.3f s (distance), %.3f s (mur), %.3f s (mort), recharge %.2f %.2f %.2f "
+                       "(attendu 1 1 1 ; 0.008, 0.25 a 0.28, 0.008, 0.50 0.50 0.50)\n", ok[0], ok[1], ok[2], tc[0], tc[1], tc[2], cdc[0], cdc[1], cdc[2]);
+        }
+        {   /* 16. tant que la touche est tenue : aucun nouveau coup, meme en rappuyant a chaque tick ; le rail part pendant la traction et tue le
+             * drone ramene (combo fleau -> rail) */
+            flail_test_reset(v3(-20, 0, 40)); waveDelay = 1000;
+            P.loadout[0] = WP_RAIL; P.weapon = WP_RAIL; P.ammo[WP_RAIL] = 2; P.fireCd = 0; P.switchT = 0;
+            Enemy *e = flail_test_enemy(0, v3(-20, 1.6f, 34.5f), EN_DRONE);
+            int s0 = flailSwings;
+            for (int i = 0; i < 90; i++) flail_test_run(1, 1, 1);   /* 0,75 s : appui a chaque tick, touche tenue */
+            int swings = flailSwings - s0, pulling = P.flailPullN;
+            float d = vlen(vsub(e->pos, eye_pos()));
+            V3 dv = vsub(e->pos, eye_pos());
+            P.yaw = atan2f(dv.x, -dv.z); P.pitch = asinf(dv.y / vlen(dv));
+            botPress[A_FIRE] = 1; botHeld[A_FIRE] = 1;
+            flail_test_run(1, 0, 1);
+            botPress[A_FIRE] = 0; botHeld[A_FIRE] = 0;
+            int dead = !e->alive;
+            flail_test_run(3, 0, 1);
+            fprintf(f, "fleau traction + rail : coups de fleau %d, accroche %d a %.2f m, rail : drone mort %d, traction encore %d "
+                       "(attendu 1, 1, 2.4 a 3.2, 1, 0)\n", swings, pulling, d, dead, P.flailPullN);
+        }
+        /* --- LAN simule (je suis l'hote) --- */
+        {   /* 17. je tire (hote) : START a l'accroche (0,15 s), un PULL tous les 0,1 s, END au relachement ; la cible n'est touchee qu'une fois */
+            flail_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 34));
+            memset(outq, 0, sizeof outq);
+            flail_test_run(1, 1, 1);
+            flail_test_run(59, 0, 1);                     /* 0,5 s tenue */
+            float sc = 0;
+            int st = flail_test_count(FLE_START, 1, &sc), pu = flail_test_count(FLE_PULL, 1, NULL), n1 = P.flailPullN;
+            float hp = NP[1].hp;
+            flail_test_run(1, 0, 0);                      /* relache */
+            int en = flail_test_count(FLE_END, 1, NULL);
+            fprintf(f, "fleau traction LAN (je tire) : START %d (intensite %.1f), PULL %d, accroche %d, PV cible %.1f ; relache : END %d, accroche %d "
+                       "(attendu 1 (1.0), 3, 1, 87.4 ; 1, 0)\n", st, sc, pu, n1, hp, en, P.flailPullN);
+        }
+        {   /* 18. victime : un lanceur a 6 m me tire a 12 m/s au plus et je m'arrete vers 2 m ; sans rafraichissement, libre au bout du bail (0,3 s) */
+            flail_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 34));
+            P.grounded = 1;
+            NetEvent st = flail_test_ev(1, 0, FLE_START, 1);
+            apply_event(&st);
+            int hooked = P.flailBy;
+            float vmax, dmin, dEnd, v2, d2, e2;
+            flail_test_victim(120, 1, 1, &vmax, &dmin, &dEnd);       /* 1 s, bail rafraichi toutes les 0,1 s */
+            int still = P.flailBy;
+            flail_test_victim(25, 0, 1, &v2, &d2, &e2);              /* dernier rafraichissement il y a 0,23 s */
+            int inLease = P.flailBy;
+            flail_test_victim(15, 0, 1, &v2, &d2, &e2);              /* 0,33 s : bail fini */
+            fprintf(f, "fleau traction victime : accrochee par %d, vitesse max %.1f, distance mini %.2f, finale %.2f, encore accrochee %d ; sans rafraichissement : "
+                       "%d a 0.23 s, %d a 0.33 s (attendu 2, <= 12.3, >= 1.7, 1.9 a 2.5, 2 ; 2, 0)\n",
+                    hooked, vmax, dmin, dEnd, still, inLease, P.flailBy);
+        }
+        {   /* 19. contre-jeu : courir a l'oppose (touche arriere tenue) ne bat pas la traction ; un dash a 18 m/s vers l'exterieur arrache la chaine (le lanceur
+             * est prevenu : FLE_BREAK) ; l'Egide (intensite 1/2) divise la vitesse de traction par deux */
+            flail_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 35.5f));
+            P.grounded = 1; act[A_BACK] = 1;
+            NetEvent st = flail_test_ev(1, 0, FLE_START, 1);
+            apply_event(&st);
+            float vmax, dmin, dEnd;
+            flail_test_victim(100, 1, 1, &vmax, &dmin, &dEnd);       /* 0,83 s en courant en arriere */
+            float vzRun = P.vel.z, dRun = dEnd; int tiedRun = P.flailBy;
+            memset(outq, 0, sizeof outq);
+            int sn0 = flailSnaps;
+            P.vel = v3(0, 0, 18);                         /* dash vers l'exterieur (+z : je m'eloigne du lanceur, en -z) */
+            flail_test_victim(1, 1, 1, &vmax, &dmin, &dEnd);
+            int tiedDash = P.flailBy, brk = flail_test_count(FLE_BREAK, 1, NULL);
+            act[A_BACK] = 0; P.vel = v3(0, 0, 0);
+            lance_test_lan(v3(-20, 0, 33));               /* lanceur a 7 m, Egide de face : intensite 0,5 */
+            P.pos = P.prevPos = v3(-20, 0, 40); P.flailBy = 0; P.grounded = 1;
+            NetEvent sh = flail_test_ev(1, 0, FLE_START, SHIELD_KNOCK_MULT);
+            apply_event(&sh);
+            flail_test_victim(60, 1, SHIELD_KNOCK_MULT, &vmax, &dmin, &dEnd);
+            fprintf(f, "fleau traction contre-jeu : course arriere (depart a 4.5 m) : vitesse z %.1f, distance %.2f, accrochee %d ; dash a 18 m/s : accrochee %d, "
+                       "FLE_BREAK %d, arrachees +%d ; Egide : vitesse max %.1f (attendu <= 0 (jamais vers l'exterieur), < 3.0, 2 ; 0, 1, +1 ; <= 6.2)\n",
+                    vzRun, dRun, tiedRun, tiedDash, brk, flailSnaps - sn0, vmax);
+        }
+        {   /* 20. l'hote arbitre : Egide de face = intensite 0,5 dans le START relaye, sans Egide 1 ; lanceur sans Yoyo, trop loin ou allie : refuse */
+            float sc[2] = { 0, 0 };
+            for (int sh = 0; sh < 2; sh++) {
+                flail_test_reset(v3(-20, 0, 40));
+                lance_test_lan(v3(-20, 0, 34));
+                memset(outq, 0, sizeof outq);
+                for (int i = 0; i < 30; i++) {
+                    if (sh) { NP[1].st.pad = (unsigned char)(MK_SHIELD | ST_SHIELD); NP[1].st.yaw = PI; NP[1].shieldGauge = SHIELD_GAUGE_MAX; NP[1].lastShieldT = nowT; }
+                    flail_test_run(1, i == 0, 1);
+                }
+                flail_test_count(FLE_START, 1, &sc[sh]);
+            }
+            flail_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 34));
+            memset(outq, 0, sizeof outq);
+            int d0 = flailHostDenied;
+            NP[0].st.pad = MK_SWORD; net_fx_flail(FLE_START, 1);                       /* pas de Yoyo */
+            NP[0].st.pad = MK_FLAIL; NP[1].disp = v3(-20, 0, 20); net_fx_flail(FLE_START, 1);   /* 20 m : trop loin */
+            NP[1].disp = v3(-20, 0, 34); teamSize = 2; NP[0].team = NP[1].team = 0; net_fx_flail(FLE_START, 1);   /* allie */
+            teamSize = 0;
+            int refused = flailHostDenied - d0, queued0 = flail_test_count(FLE_START, 1, NULL);
+            net_fx_flail(FLE_START, 1);                   /* en regle */
+            fprintf(f, "fleau traction arbitre : intensite %.1f sans Egide, %.1f face a une Egide ; refus (sans Yoyo, trop loin) %d, relayes avant %d, apres %d "
+                       "(attendu 1.0, 0.5 ; 2, 0, 1)\n", sc[0], sc[1], refused, queued0, flail_test_count(FLE_START, 1, NULL));
+        }
+        {   /* 21. fleau pare : la chaine est retournee et l'appui long est desarme (touche tenue : aucune traction) ; parade pendant une traction : coupee, END envoye */
+            flail_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 34));
+            NP[1].lastParryT = nowT;
+            memset(outq, 0, sizeof outq);
+            int p0 = flailPulls;
+            flail_test_run(1, 1, 1);
+            flail_test_run(40, 0, 1);
+            int pulledAfterParry = flailPulls - p0 + P.flailPullN, st0 = flail_test_count(FLE_START, 1, NULL);
+            float cd = P.meleeCd;
+            memset(outq, 0, sizeof outq);
+            net_fx_flail(FLE_START, 1);                   /* START en retard (client lent) : refuse par l'hote, la parade date de 0,34 s */
+            int late = flail_test_count(FLE_START, 1, NULL);
+            nowT += 0.5;
+            net_fx_flail(FLE_START, 1);                   /* 0,84 s apres la parade : accepte */
+            int later = flail_test_count(FLE_START, 1, NULL);
+            flail_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 34));
+            memset(outq, 0, sizeof outq);
+            flail_test_run(1, 1, 1);
+            flail_test_run(40, 0, 1);
+            int before = P.flailPullN;
+            flail_parried(np_center(1), pcenter());       /* EV_MELEE_PARRY recu en pleine traction */
+            fprintf(f, "fleau traction et parry : parade au coup : tractions %d, START %d, recharge %.2f, START en retard refuse par l'hote %d puis accepte %d ; "
+                       "parade en pleine traction : avant %d, apres %d, END %d (attendu 0, 0, 0.6 a 1.0, 0, 1 ; 1, 0, 1)\n",
+                    pulledAfterParry, st0, cd, late, later, before, P.flailPullN, flail_test_count(FLE_END, 1, NULL));
+        }
+        {   /* 22. observateur : la chaine d'un autre joueur sur un autre joueur est gardee pour le dessin (bail 0,3 s) ; un rafraichissement sans accroche
+             * ne raccroche pas la victime (moi) */
+            flail_test_reset(v3(-20, 0, 40));
+            lance_test_lan(v3(-20, 0, 34));
+            NP[2].active = NP[2].alive = 1; NP[2].hp = 100; snprintf(NP[2].name, 16, "Autre"); NP[2].disp = v3(-24, 0, 36);
+            memset(flailLinkT, 0, sizeof flailLinkT); memset(flailLinkBy, 0, sizeof flailLinkBy);
+            NetEvent st = flail_test_ev(2, 1, FLE_START, 1);      /* NP[2] accroche NP[1] */
+            apply_event(&st);
+            int by = flailLinkBy[1]; float t0 = flailLinkT[1];
+            for (int i = 0; i < 42; i++) flail_fx_tick(TICK);
+            float t1 = flailLinkT[1];
+            NetEvent pu = flail_test_ev(1, 0, FLE_PULL, 1);       /* NP[1] me rafraichit sans m'avoir accroche */
+            apply_event(&pu);
+            fprintf(f, "fleau traction observateur : chaine de %d sur 1, bail %.2f puis %.2f apres 0.35 s ; rafraichissement sans accroche sur moi : accrochee par %d "
+                       "(attendu 2, 0.30, 0.00 ; 0)\n", by - 1, t0, fmaxf(t1, 0), P.flailBy);
+        }
+        memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress); memset(act, 0, sizeof act);
+        memset(flailLinkT, 0, sizeof flailLinkT); memset(flailLinkBy, 0, sizeof flailLinkBy);
+        reset_game();
+        dmMode = 0; teamSize = 0;
+        memset(NP, 0, sizeof NP);
+        memset(outq, 0, sizeof outq);
+        botLog = savedLog; nowT = nowSave; rng = rngSave;  /* les lignes qui suivent gardent leurs horodatages et leur hasard d'avant ce bloc */
+    }
+    /* --- fin Yoyo : traction --- */
+
     /* --- Poings (solo) : couloir degage x = -20, joueur en (-20, 0, 40), vue vers -z --- */
     {
         FILE *savedLog = botLog;
@@ -4452,7 +4727,7 @@ static void run_tests(const char *path) {
     {   /* fusion : 2e ecran opt-in ; protocole */
         fprintf(f, "second ecran : actif par defaut %d (attendu 0)\n", secondScreen);
         PkAnnounce pa;
-        fprintf(f, "protocole : NET_VER %d, PkAnnounce %d octets avec ranked a l'octet %d (attendu 21, %d, %d)\n", NET_VER,
+        fprintf(f, "protocole : NET_VER %d, PkAnnounce %d octets avec ranked a l'octet %d (attendu 22, %d, %d)\n", NET_VER,
                 (int)sizeof(PkAnnounce), (int)((unsigned char *)&pa.ranked - (unsigned char *)&pa), (int)sizeof(PkHead) + 16 + 8, (int)sizeof(PkHead) + 20);
         double sNow = nowT;                               /* chargement de carte : l'arrivant a NET_LOAD_GRACE de plus */
         nowT = 100;

@@ -29,21 +29,22 @@ static int other_wp(void) { return P.loadout[cur_slot() ^ 1]; }
 static int wp_has_ammo(int w) { return P.ammo[w] > 0; }
 static int is_melee_w(int w) { return w == W_MELEE || (w >= W_SLAM && w <= W_SHIELD); }
 static int is_parryable_w(int w) { return is_melee_w(w) || w == W_HOOK; }
-static int wp_full(int w) { return ammoDef[w].gauge <= 0 || P.ammo[w] >= ammoDef[w].max; }
+static int wp_max(int w) { return vagOn ? roq_max(w, ammoDef[w].max) : ammoDef[w].max; }   /* VAGUES : Soute, Mini-nuke */
+static int wp_full(int w) { return ammoDef[w].gauge <= 0 || P.ammo[w] >= wp_max(w); }
 static int loadout_full(void) { return wp_full(P.loadout[0]) && wp_full(P.loadout[1]); }
 static float gauge_frac(int w) {                          /* HUD : 0..1, pleine au maximum */
     if (ammoDef[w].gauge <= 0) return 0;
-    return P.ammo[w] >= ammoDef[w].max ? 1 : P.ammoGauge[w] / ammoDef[w].gauge;
+    return P.ammo[w] >= wp_max(w) ? 1 : P.ammoGauge[w] / ammoDef[w].gauge;
 }
 
 /* ajoute des points a la jauge de w ; chaque jauge pleine donne 1 munition. Renvoie les points inutilises */
 static float gauge_add(int w, float pts) {
     const AmmoDef *d = &ammoDef[w];
-    if (d->gauge <= 0 || P.ammo[w] >= d->max) return pts;
+    if (d->gauge <= 0 || P.ammo[w] >= wp_max(w)) return pts;
     P.ammoGauge[w] += pts;
     while (P.ammoGauge[w] >= d->gauge) {
         P.ammoGauge[w] -= d->gauge;
-        if (++P.ammo[w] >= d->max) { float rest = P.ammoGauge[w]; P.ammoGauge[w] = 0; return rest; }
+        if (++P.ammo[w] >= wp_max(w)) { float rest = P.ammoGauge[w]; P.ammoGauge[w] = 0; return rest; }
     }
     return 0;
 }
@@ -61,6 +62,8 @@ static int ecoAmmoBoost;
 static void ammo_points(float pts, int src) {
     if (P.dead || pts <= 0) return;
     pts *= ammo_rule_mul();
+    if (vagOn && src == AP_KILL) pts *= vg_rail_gauge_mul();   /* VAGUES : Reserve du Railgun */
+    if (vagOn && src == AP_KILL) pts = st(SH_SHO, STAT_PTK, pts);   /* VAGUES : Rechargement du Shotgun (stat PTK : points de jauge par kill) */
     int s = cur_slot(), a0 = P.ammo[P.loadout[0]], a1 = P.ammo[P.loadout[1]];
     float rest = gauge_add(P.loadout[s], pts), lost = gauge_add(P.loadout[s ^ 1], rest);
     apStat[src] += pts - lost; apStat[AP_LOST] += lost;
@@ -80,6 +83,21 @@ static int loadout_valid(const int *l, int mk) {
     return l[0] >= 0 && l[0] < WP_COUNT && l[1] >= 0 && l[1] < WP_COUNT && l[0] != l[1] &&
            wpReady[l[0]] && wpReady[l[1]] && mk >= 0 && mk < MK_COUNT && mkReady[mk];
 }
+/* VAGUES : un seul loadout possible (les graines validees de la boutique) : 3 armes a distance, 2 melees, 2 competences.
+   Les choix du menu ne sont pas modifies (le PvP les garde) : seul le joueur de la partie est corrige au respawn. */
+static int vg_wp_ok(int w) { return w == WP_RAIL || w == WP_ROCKET || w == WP_SHOTGUN; }
+static int vg_mk_ok(int m) { return m == MK_LANCE || m == MK_FIST; }
+static int vg_sk_ok(int k) { return k == SK_COIN || k == SK_ALLIN; }
+static int vgPick[4], vgPickOn;                           /* choix de la partie (changement d'arme de la boutique) : arme 1, arme 2, melee, competence */
+static void vg_clamp_loadout(void) {
+    if (vgPickOn) { P.loadout[0] = vgPick[0]; P.loadout[1] = vgPick[1]; P.meleeKind = vgPick[2]; P.skill = vgPick[3]; }
+    for (int s = 0; s < 2; s++)
+        if (!vg_wp_ok(P.loadout[s]) || (s && P.loadout[1] == P.loadout[0]))
+            for (int w = 0; w < WP_COUNT; w++)
+                if (vg_wp_ok(w) && w != P.loadout[s ^ 1]) { P.loadout[s] = w; break; }
+    if (!vg_mk_ok(P.meleeKind)) P.meleeKind = MK_LANCE;
+    if (!vg_sk_ok(P.skill)) P.skill = SK_COIN;
+}
 static void tesla_reset(void);                            /* Tesla : definie avec l'arme */
 static void loadout_apply(void) {                         /* (re)spawn : munitions de depart, jauges vides, arme 1 en main */
     if (!loadout_valid(wantLoadout, wantMelee)) { wantLoadout[0] = WP_RAIL; wantLoadout[1] = WP_ROCKET; wantMelee = MK_SWORD; }
@@ -87,6 +105,7 @@ static void loadout_apply(void) {                         /* (re)spawn : munitio
     eco_loadout(P.loadout);                               /* boutique : les armes achetees (une seule au debut) */
     if (wantSkill < 0 || wantSkill >= SK_COUNT) wantSkill = SK_COIN;
     P.skill = wantSkill; P.ricArmed = 0; P.ricT = 0; P.chargeT = P.chargeHold = 0; P.aimT = 0; P.pushT = 0;
+    if (vagOn) vg_clamp_loadout();                        /* VAGUES : un seul loadout possible */
     for (int w = 0; w < WP_COUNT; w++) { P.ammo[w] = ecoAmmoBoost ? ammoDef[w].max : ammoDef[w].start; P.ammoGauge[w] = 0; }   /* MUNITIONS + */
     P.weapon = P.loadout[0]; P.switchT = 0; P.undoPts[0] = P.undoPts[1] = 0;
     P.kinT = 0; P.kinDashT = 1; P.kinPreDash = 0;          /* Elan : ni fenetre de dash-tir ni malus */

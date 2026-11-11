@@ -1,0 +1,490 @@
+{
+ "version": 1,
+ "branches": {
+  "RAIL>ROQ": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Réserve",
+    "Éclat d’impact",
+    "Doublé",
+    "Détonation"
+   ],
+   "capstone": "Rail orbital",
+   "traite": "2026-11-07",
+   "reponse": "Détonation a quitté le pool du Railgun (remplacée par Rail colossal) : seule la 4e étape change, Perce-mur ; le reste du chemin est celui que tu avais validé"
+  },
+  "RAIL>SHO": {
+   "commentaire": "satelite non pertinent tir explosif et detonation non plus",
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rail tendu",
+    "Satellite",
+    "Tir explosif",
+    "Détonation"
+   ],
+   "capstone": "Rail d’ouverture",
+   "traite": "2026-11-07",
+   "reponse": "chemin refait sans Satellite, Tir explosif ni Éclat d’impact (même genre d’effet) : Rail tendu / Lunette / Doublé / Rail colossal"
+  },
+  "RAIL>ELA": {
+   "statut": "validee",
+   "commentaire": "la forme fusionée semble indiquer deux armes mais sinon valide",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rail tendu",
+    "Éclat d’impact",
+    "Tir explosif",
+    "Perce-mur"
+   ],
+   "capstone": "Rail cinétique",
+   "traite": "2026-11-07",
+   "reponse": "forme fusionnée LUMIÈRE VIVE réécrite comme un fusil unique (4 munitions, 0,5 s) au lieu de deux armes"
+  },
+  "RAIL>SCI": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Visée courbe",
+    "Lunette",
+    "Tir explosif",
+    "Perce-mur"
+   ],
+   "capstone": "Rail magnétique"
+  },
+  "RAIL>VEN": {
+   "statut": "supprimee",
+   "commentaire": "capstone a revoir fusion validé forme fusioné a revoir",
+   "date": "2026-11-07",
+   "etapes": [
+    "Réserve",
+    "Éclat d’impact",
+    "Tir explosif",
+    "Détonation"
+   ],
+   "capstone": "Rail sur mine",
+   "traite": "2026-11-07",
+   "reponse": "fusion RELAIS DE MINE validée ; capstone Rail sur mine réécrite (déclenche tes mines sans les armer, rayon 8 m) ; forme fusionnée devenue FUSIL MINEUR ; chemin inchangé sauf la 4e étape (Détonation a quitté le pool) : Rail colossal",
+   "chemin": "ok"
+  },
+  "RAIL>TES": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rail tendu",
+    "Satellite",
+    "Doublé",
+    "Perce-mur"
+   ],
+   "capstone": "Arc conducteur"
+  },
+  "RAIL>EPE": {
+   "statut": "supprimee",
+   "commentaire": "a rework pour pve les enemy peuvent pas parry",
+   "date": "2026-11-07",
+   "etapes": [
+    "Calibre",
+    "Surtension",
+    "Doublé",
+    "Tir d’élite"
+   ],
+   "capstone": "Rail de duelliste",
+   "traite": "2026-11-07",
+   "reponse": "DUEL réécrit pour le PvE : le parry est le tien, il charge ton prochain rail (x1,5, +50 de jauge) ; capstones réécrites",
+   "chemin": "ok"
+  },
+  "RAIL>ENC": {
+   "statut": "validee",
+   "commentaire": "les degat suplementaire devrais etre en %de vie max et detonation devrait etre remplacer dans se cas par une size et hitbox upgrade",
+   "date": "2026-11-07",
+   "etapes": [
+    "Calibre",
+    "Surtension",
+    "Calibre lourd",
+    "Détonation"
+   ],
+   "capstone": "Rail de choc",
+   "traite": "2026-11-07",
+   "reponse": "CHOC LOURD en % de PV max (15 %, 3 % pour un boss) ; Détonation remplacée dans le pool du Railgun par Rail colossal (tir 40 % plus large, tête comprise), chemin : Calibre / Surtension / Calibre lourd / Rail colossal"
+  },
+  "RAIL>LAN": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Calibre",
+    "Éclat d’impact",
+    "Calibre lourd",
+    "Tir d’élite"
+   ],
+   "capstone": "Rail de joute"
+  },
+  "RAIL>YOY": {
+   "statut": "supprimee",
+   "commentaire": "le yoyo a pas de traction",
+   "date": "2026-11-07",
+   "etapes": [
+    "Calibre",
+    "Satellite",
+    "Sang-froid",
+    "Tir d’élite"
+   ],
+   "capstone": "Rail à traction",
+   "traite": "2026-11-07",
+   "reponse": "ALIGNEMENT réécrit sans traction : le rail se courbe vers les cibles frappées par le Yoyo ; capstones réécrites",
+   "chemin": "ok"
+  },
+  "RAIL>IMP": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Visée courbe",
+    "Surtension",
+    "Sang-froid",
+    "Tir d’élite"
+   ],
+   "capstone": "Rail agile",
+   "commentaire": "car encourage les combo soit l'archetype d'impulsion"
+  },
+  "RAIL>EGI": {
+   "statut": "validee",
+   "commentaire": "fusion a rework pour pve",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rail tendu",
+    "Surtension",
+    "Calibre lourd",
+    "Tir d’élite"
+   ],
+   "capstone": "Rail brèche",
+   "traite": "2026-11-07",
+   "reponse": "BOUCLIER PERCÉ réécrit pour le PvE : le rail ignore et brise le bouclier de face des Bastions ; un parry parfait rend 1 munition de rail"
+  },
+  "RAIL>PIE": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Visée courbe",
+    "Fourche",
+    "Éclats",
+    "Tir guidé"
+   ],
+   "capstone": "Banque"
+  },
+  "RAIL>MAR": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Visée courbe",
+    "Fourche",
+    "Calibre lourd",
+    "Tir guidé"
+   ],
+   "capstone": "Rail de traque"
+  },
+  "RAIL>CHA": {
+   "statut": "supprimee",
+   "commentaire": "etape valide mais fusiont et capstone a rework",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rail large",
+    "Lunette",
+    "Calibre lourd",
+    "Rail jumeau"
+   ],
+   "capstone": "Rail condensé",
+   "traite": "2026-11-07",
+   "reponse": "SURTENSION réécrite pour le PvE (la charge survit aux ennemis normaux, se perd sur un coup de boss) ; capstones : la charge tient pour 2 rails, la touche chargée traverse sans perte",
+   "chemin": "ok"
+  },
+  "RAIL>RIC": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rail large",
+    "Lunette",
+    "Éclats",
+    "Tir guidé"
+   ],
+   "capstone": "Rail rebondissant"
+  },
+  "RAIL>AIO": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Réserve",
+    "Satellite",
+    "Éclats",
+    "Rail jumeau"
+   ],
+   "capstone": "Rail multiple"
+  },
+  "RAIL>MIR": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rail large",
+    "Fourche",
+    "Éclats",
+    "Rail jumeau"
+   ],
+   "capstone": "Rail fantôme"
+  },
+  "RAIL>AIM": {
+   "statut": "supprimee",
+   "commentaire": "etape validé mais  rework fusion pour pve",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rail large",
+    "Fourche",
+    "Sang-froid",
+    "Tir guidé"
+   ],
+   "capstone": "Rail guidé",
+   "traite": "2026-11-07",
+   "reponse": "EXÉCUTION réécrite pour le PvE : pendant l’Aimant, une touche au corps compte comme une touche à la tête",
+   "chemin": "ok"
+  },
+  "ROQ>RAIL": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Charge creuse",
+    "Combustible",
+    "Cœur du souffle",
+    "Détonation en chaîne"
+   ],
+   "capstone": "Mini-nuke"
+  },
+  "ROQ>SHO": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rayon",
+    "Double départ",
+    "Cratère vital",
+    "Grappe"
+   ],
+   "capstone": "Roquette cluster"
+  },
+  "ROQ>ELA": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Propulseur",
+    "Combustible",
+    "Cratère vital",
+    "Détonation en chaîne"
+   ],
+   "capstone": "Roquette cinétique"
+  },
+  "ROQ>SCI": {
+   "statut": "validee",
+   "commentaire": "mais a play test",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rayon",
+    "Combustible",
+    "Cratère vital",
+    "Trajectoire courbe"
+   ],
+   "capstone": "Roquette tournoyante"
+  },
+  "ROQ>VEN": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Rayon",
+    "Souffle plein",
+    "Récupération",
+    "Détonation en chaîne"
+   ],
+   "capstone": "Roquette collante"
+  },
+  "ROQ>TES": {
+   "statut": "supprimee",
+   "commentaire": "fusion non valide forme fusioné valide",
+   "date": "2026-11-07",
+   "etapes": [
+    "Soute",
+    "Combustible",
+    "Récupération",
+    "Grappe"
+   ],
+   "capstone": "Roquette conductrice",
+   "traite": "2026-11-07",
+   "reponse": "ORAGE EXPLOSIF réécrite (le souffle décharge la batterie en éclairs ; un kill au Tesla rend de la jauge de roquette) ; forme fusionnée ROQUETTE-ORAGE marquée validée",
+   "chemin": "ok"
+  },
+  "ROQ>EPE": {
+   "statut": "validee",
+   "commentaire": "mais changement au fonctionement naturelle de l'épée qui autorise la parry de ses propre projectile",
+   "date": "2026-11-07",
+   "etapes": [
+    "Charge creuse",
+    "Impact direct",
+    "Récupération",
+    "Roquette lourde"
+   ],
+   "capstone": "Roquette parrée",
+   "traite": "2026-11-07",
+   "reponse": "la règle est écrite dans la fusion : ton épée peut parer tes propres roquettes ; fusion marquée validée"
+  },
+  "ROQ>ENC": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Charge creuse",
+    "Souffle plein",
+    "Grand souffle",
+    "Roquette lourde"
+   ],
+   "capstone": "Roquette de pique"
+  },
+  "ROQ>LAN": {
+   "statut": "validee",
+   "commentaire": "mais capstone a rework",
+   "date": "2026-11-07",
+   "etapes": [
+    "Propulseur",
+    "Impact direct",
+    "Cœur du souffle",
+    "Roquette lourde"
+   ],
+   "capstone": "Roquette montée",
+   "traite": "2026-11-07",
+   "reponse": "capstone Roquette montée réécrite : lance couchée, la roquette part de la pointe à la vitesse de joute (+100 %)"
+  },
+  "ROQ>YOY": {
+   "statut": "supprimee",
+   "commentaire": "capstone valide mais fusion a rework car pas de traction du yoyo",
+   "date": "2026-11-07",
+   "etapes": [
+    "Charge creuse",
+    "Impact direct",
+    "Éclats",
+    "Grappe"
+   ],
+   "capstone": "Roquette à chaîne",
+   "traite": "2026-11-07",
+   "reponse": "GRAPPIN EXPLOSIF réécrit sans traction : les ennemis frappés par le Yoyo explosent comme une roquette à leur mort (3 s)",
+   "chemin": "ok"
+  },
+  "ROQ>IMP": {
+   "statut": "validee",
+   "commentaire": "mais la capstone devrait ètre celle de l'autre coté et danse se cas la capstone reduit la vitesse de la roquete",
+   "date": "2026-11-07",
+   "etapes": [
+    "Propulseur",
+    "Impact direct",
+    "Grand souffle",
+    "Grappe"
+   ],
+   "capstone": "Roquette de poing",
+   "traite": "2026-11-07",
+   "reponse": "capstones échangées : côté Roquettes la roquette ralentit de 40 % près de toi ; côté Impulsion le coup envoie une roquette"
+  },
+  "ROQ>EGI": {
+   "statut": "validee",
+   "commentaire": "capstone a rework et fusion a reword \"transforme tous le projectiles proche en roquete\"",
+   "date": "2026-11-07",
+   "etapes": [
+    "Soute",
+    "Impact direct",
+    "Grand souffle",
+    "Roquette lourde"
+   ],
+   "capstone": "Roquette parfaite",
+   "traite": "2026-11-07",
+   "reponse": "fusion : un parry parfait transforme tous les projectiles ennemis à 9 m en roquettes ; capstone Roquette réactive (les projectiles bloqués rechargent 20 points de jauge)"
+  },
+  "ROQ>PIE": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Ogive large",
+    "Double départ",
+    "Éclats",
+    "Trajectoire courbe"
+   ],
+   "capstone": "Roquette-pièce"
+  },
+  "ROQ>MAR": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Soute",
+    "Fusée de proximité",
+    "Cœur du souffle",
+    "Trajectoire courbe"
+   ],
+   "capstone": "Roquette traquante"
+  },
+  "ROQ>CHA": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Ogive large",
+    "Double départ",
+    "Cœur du souffle",
+    "Salve"
+   ],
+   "capstone": "Roquette chargée"
+  },
+  "ROQ>RIC": {
+   "statut": "validee",
+   "commentaire": "mais capstone a reworks avec le rework récent de ricochet",
+   "date": "2026-11-07",
+   "etapes": [
+    "Propulseur",
+    "Souffle plein",
+    "Éclats",
+    "Salve"
+   ],
+   "capstone": "Roquette ricochante",
+   "traite": "2026-11-07",
+   "reponse": "capstone réécrite pour le Ricochet à durée : la roquette garde toute sa vitesse à chaque rebond"
+  },
+  "ROQ>AIO": {
+   "statut": "supprimee",
+   "commentaire": "capstone valité mais reword tire 8 roquettes suplémentaires et la fusion tire une salve par munition",
+   "date": "2026-11-07",
+   "etapes": [
+    "Soute",
+    "Double départ",
+    "Éclats",
+    "Salve"
+   ],
+   "capstone": "Roquette salve",
+   "traite": "2026-11-07",
+   "reponse": "capstone : l’All in One tire 8 roquettes en plus ; fusion : une salve de 3 roquettes par munition de jauge",
+   "chemin": "ok"
+  },
+  "ROQ>MIR": {
+   "statut": "validee",
+   "date": "2026-11-07",
+   "etapes": [
+    "Ogive large",
+    "Fusée de proximité",
+    "Éclats",
+    "Salve"
+   ],
+   "capstone": "Roquette-leurre"
+  },
+  "ROQ>AIM": {
+   "statut": "supprimee",
+   "commentaire": "captone okay mais réduit a une munition et la fusion chaque cible touché déclenche les effet de la roquete et la roquete perce la cible",
+   "date": "2026-11-07",
+   "etapes": [
+    "Ogive large",
+    "Fusée de proximité",
+    "Grand souffle",
+    "Trajectoire courbe"
+   ],
+   "capstone": "Roquette guidée",
+   "traite": "2026-11-07",
+   "reponse": "capstone : la roquette téléguidée ne coûte qu’une munition ; fusion : la roquette perce chaque cible et y déclenche ses effets",
+   "chemin": "ok"
+  }
+ }
+}

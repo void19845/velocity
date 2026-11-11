@@ -8,20 +8,26 @@ static V3 muzzle(void) {
 
 static unsigned int coinCounter;
 
-static void throw_coin(void) {
+static int throw_coin_one(V3 f, int pay) {
     for (int i = 0; i < MAXCOIN; i++) {
         Coin *c = &CO[i];
         if (c->alive) continue;
-        V3 f = view_dir();
-        P.skillCh -= 1;
-        c->alive = 1; c->owner = myId; c->life = 4; c->spin = 0; c->teslaT = 0; c->flailStruck = 0; c->decoy = 0;
+        if (pay) P.skillCh -= 1;
+        c->alive = 1; c->owner = myId; c->life = cp_coin_life(); c->spin = 0; c->teslaT = 0; c->flailStruck = 0; c->decoy = 0;
         c->pos = vadd(eye_pos(), vadd(vmul(f, 0.7f), v3(0, -0.2f, 0)));
         c->vel = vadd(P.vel, vadd(vmul(f, 9), v3(0, 6, 0)));   /* la piece garde ta vitesse : elle reste devant toi */
         c->netId = ((unsigned int)(myId + 1) << 24) | (++coinCounter & 0xFFFFFF);
         play(S_HIT, 0.5f, 2.3f);
         if (dmMode) net_fx_coin(0, c->netId, c->pos, c->vel);
-        return;
+        cp_coin_new(i);
+        return 1;
     }
+    return 0;
+}
+static void throw_coin(void) {
+    V3 dirs[8];
+    int n = cp_coin_dirs(view_dir(), dirs);               /* VAGUES : eventail (PLUIE), cercle ; sinon une seule piece */
+    for (int k = 0; k < n; k++) if (!throw_coin_one(dirs[k], k == 0) && k == 0) return;
 }
 
 static void tesla_relay_zap(int ci, int mine);          /* Tesla : definie avec l'arme */
@@ -62,13 +68,19 @@ static void coin_tick(float dt) {
             if (c->life <= 0) { c->alive = 0; burst(c->pos, v3(1, 0.85f, 0.3f), 8, 4, 0.25f, 0.08f); }
             continue;
         }                                                 /* --- fin Fleau --- */
+        if (vagOn && cp_coin_orbit(i, dt)) continue;      /* VAGUES : Piece orbitale */
         c->life -= dt; c->spin += dt;
         c->vel.y -= COIN_GRAVITY * dt;
         V3 step = vmul(c->vel, dt);
         float len = vlen(step);
-        if (len > 1e-5f && ray_world(c->pos, vmul(step, 1.0f / len), len, 0) < len) c->life = 0;   /* tombee */
+        V3 wn = v3(0, 1, 0);
+        if (len > 1e-5f && ray_world(c->pos, vmul(step, 1.0f / len), len, &wn) < len) { if (!cp_coin_bounce(i, wn)) c->life = 0; }   /* tombee */
         else c->pos = vadd(c->pos, step);
-        if (c->life <= 0) { c->alive = 0; if (frand() < 0.5f) add_part(c->pos, v3(0, 2, 0), v3(1, 0.8f, 0.3f), 0.3f, 0.1f, 6); }
+        if (c->life <= 0) {                               /* fin de vie : retombee, expiration */
+            c->alive = 0;
+            if (vagOn && c->owner == myId) cp_coin_pellets(c->pos);   /* VAGUES : capstone PIE>SHOTGUN, la piece explose en plombs */
+            if (frand() < 0.5f) add_part(c->pos, v3(0, 2, 0), v3(1, 0.8f, 0.3f), 0.3f, 0.1f, 6);
+        }
     }
 }
 
@@ -120,7 +132,7 @@ static int decoy_hit(int ci, float dmg, const char *what) {
  * (la piece le suit, pas le joueur ; il absorbe le tir) ; sinon l'ennemi ou le joueur visible le plus proche (COIN_SEEK_RANGE).
  * Renvoie 1 s'il y a une cible : *te / *tp = ennemi / joueur, *dc = leurre (les autres a -1) */
 static int coin_seek(V3 o, int *te, int *tp, int *dc) {
-    float best = COIN_SEEK_RANGE;
+    float best = cp_seek_range();
     *te = *tp = *dc = -1;
 #if DECOY_COIN_LURE
     for (int i = 0; i < MAXCOIN; i++) {
@@ -130,7 +142,7 @@ static int coin_seek(V3 o, int *te, int *tp, int *dc) {
     }
     if (*dc >= 0) return 1;
 #endif
-    best = COIN_SEEK_RANGE;
+    best = cp_seek_range();
     for (int i = 0; i < MAXE; i++) {
         if (!E[i].alive) continue;
         float d = vlen(vsub(E[i].pos, o));
@@ -175,7 +187,9 @@ static int ricochet(int ci, float dmg, int depth) {
     if (stolen && !same_team(c->owner, myId) && coin_vs_ric()) return coin_turns_back(ci, dmg);   /* PIECE => RICOCHET : la piece adverse renvoie mon tir en rebond */
     c->alive = 0;
     if (dmMode) net_fx_coin(1, c->netId, o, v3(0, 0, 0));
-    dmg *= c->decoy ? DECOY_MULT : stolen ? 1.0f : COIN_MULT;   /* piece volee : renvoie le tir, mais sans bonus */
+    dmg *= c->decoy ? DECOY_MULT : stolen ? 1.0f : cp_coin_mult(depth);   /* piece volee : renvoie le tir, mais sans bonus */
+    if (!depth) cpRicN = 0;
+    cp_coin_pop(o);                                       /* VAGUES : piece piegee */
     lastChain = depth + 1;
     for (int k = 0; k < 20; k++) add_part(o, vmul(rand_dir(), 6), v3(1, 0.85f, 0.3f), 0.35f, 0.1f, 0);
     play(S_PARRY, 0.55f, 1.5f + 0.15f * depth);
@@ -196,7 +210,7 @@ static int ricochet(int ci, float dmg, int depth) {
 
     {   /* --- Ventouse : une mine visible avec une cible a moins de 5 m passe avant les cibles directes (x1,5) --- */
         int mi = -1;
-        float mb = COIN_SEEK_RANGE;
+        float mb = cp_seek_range();
         for (int i = 0; i < MAXPR; i++) {
             float dm = vlen(vsub(PR[i].pos, o));
             if (!mine_shootable(&PR[i]) || dm >= mb || !mine_has_target(&PR[i]) || !los(o, PR[i].pos)) continue;
@@ -238,7 +252,7 @@ static int ricochet(int ci, float dmg, int depth) {
     add_beam(o, at, v3(1, 0.85f, 0.3f), 0.7f);
     if (dmMode) net_fx_rail(o, at, 1);
     burst(at, v3(1, 0.9f, 0.5f), 25, 9, 0.4f, 0.14f);
-    if (te >= 0) { vgCoinCtx++; damage_enemy(te, dmg, vmul(dir, 10)); vgCoinCtx--; }   /* VAGUES : chemin PIECE */
+    if (te >= 0) { vgCoinCtx++; damage_enemy(te, dmg, vmul(dir, 10)); vgCoinCtx--; cp_ric_after(te, o, dmg); }   /* VAGUES : chemin PIECE */
     else if (!hit_player(tp, dmg * PVP_SCALE, vmul(dir, 6), W_COIN, dir)) return 0;   /* Egide : ricochet de face bloque */
     if (stolen) snprintf(popText, sizeof popText, "PIECE VOLEE !");
     else snprintf(popText, sizeof popText, depth ? "RICOCHET x%d" : "RICOCHET", depth + 1);
@@ -275,18 +289,21 @@ static int hitscan_seg(V3 eye, V3 d, float maxLen, int selfHit, float dmg, float
         np_aabb(i, 0.05f, &mn, &mx);
         if (ray_box(eye, d, mn, mx, tw, &t, NULL) && t < tw) { tw = t; coinHit = mineHit = -1; shieldStop = 1; }
     }
+    if (vagOn && w == W_RAIL) vg_rail_rank(eye, d, tw);   /* VAGUES : ordre de traversee */
     for (int i = 0; i < MAXE; i++) {
         float t;
-        if (E[i].alive && ricHitE[i] < RIC_HITS_MAX && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type), tw, &t)) {
+        if (E[i].alive && ricHitE[i] < RIC_HITS_MAX && ray_sphere(eye, d, E[i].pos, enemy_radius(E[i].type) * vg_rail_wide(w), tw, &t)) {
             V3 at = vadd(eye, vmul(d, t));
             ricHitE[i]++;
-            int head = head_mult(w) > 1 && head_hit_enemy(i, at);   /* point faible : le sommet du drone */
+            int head = head_mult(w) > 1 && vg_rail_head(i, at, w);   /* point faible : le sommet du drone */
             float de = dmg * (head ? head_mult(w) : 1);
+            if (vagOn && w == W_RAIL) de *= vg_rail_mul(i);   /* VAGUES : Calibre lourd */
             int one = chainArmed && chain_direct_w(w) && !EN_BOSS(E[i].type);   /* VAGUES : jamais un boss d'un coup */
             if (one) de = fmaxf(de, E[i].hp);             /* chaine pleine : la touche tue (armure des VAGUES ensuite) */
             burst(at, v3(1, 1, 1), 15, 8, 0.3f, 0.12f);
             if (head) { head_fx(at); shotHeads++; headShotsMine++; }
             damage_enemy_k(i, de, vmul(d, knockE), one ? DN_ONESHOT : head ? DN_HEAD : DN_NORMAL);
+            if (vagOn && w == W_RAIL) vg_rail_hit(i, at, de, head);   /* VAGUES : souffles, soin */
             hit = 1;
         }
     }
@@ -306,7 +323,9 @@ static int hitscan_seg(V3 eye, V3 d, float maxLen, int selfHit, float dmg, float
         }
     }
     if (coinHit >= 0) {
+        if (vagOn && w == W_RAIL) rlCoinHit++;
         hit |= ricochet(coinHit, dmg, 0);
+        cp_after_ricochet();                              /* VAGUES : dividende */
         if (botMode) netlog("ricochet : chaine de %d, %s", lastChain, hit ? "touche" : "dans le vide");
     }
     if (mineHit >= 0) {                                   /* rail : x1,5 ; Elan : x1 */
@@ -336,10 +355,12 @@ static int hitscan_seg(V3 eye, V3 d, float maxLen, int selfHit, float dmg, float
  * recalcule la trace sur le decor. Chaque cible n'est touchee qu'RIC_HITS_MAX fois par tir. */
 static int hitscan_shot(float dmg, float knockE, float knockP, int w, V3 *endOut, V3 *nOut) {
     V3 o = eye_pos(), d = view_dir(), o1 = o, d1 = d;
+    if (vagOn && w == W_RAIL) { d = vg_rail_bend(o, d); d1 = d; }   /* VAGUES : visee courbe */
     int stop, bounces = ric_take(), nBounce = 0;
     ricSelfDone = 0;
     memset(ricHitE, 0, sizeof ricHitE); memset(ricHitP, 0, sizeof ricHitP);
     int hit = hitscan_seg(o, d, RIC_SEG_LEN, 0, dmg, knockE, knockP, w, endOut, nOut, &stop);
+    if (vagOn && w == W_RAIL && !bounces && !stop) hit |= vg_rail_wall(d, dmg, knockE, knockP, w, endOut, nOut);   /* VAGUES : Perce-mur */
     V3 a = *endOut, n = *nOut;
     ricSegs = 1; ricDir[0] = d; ricNrm[0] = n;
     if (bounces) ricStat[0]++;
@@ -364,10 +385,13 @@ static void fire_rail(void) {
     if (P.ammo[WP_RAIL] > 0) P.ammo[WP_RAIL]--;
     V3 end, n;
     chain_begin();                                        /* chaine de tirs pleine : ce tir peut tuer */
-    int hit = hitscan_shot(RAIL_DMG * streak_mult(), 8, 4, W_RAIL, &end, &n);
+    float rdmg = RAIL_DMG * streak_mult() * (vagOn ? vg_rail_before() : 1.0f);   /* VAGUES : joute, orbital */
+    int k0 = kills;
+    int hit = hitscan_shot(rdmg, 8, 4, W_RAIL, &end, &n);
     shot_result(hit);
     if (botMode) netlog("tir rail : %s%s", hit ? "touche" : "rate", shotHeads ? " (tete)" : "");
     chain_end(hit);
+    if (vagOn) vg_rail_after(hit, kills - k0, rdmg, end);   /* VAGUES : boutique du Railgun */
     V3 m = muzzle();
     float k = clampf(shotStreak / (float)STREAK_MAX, 0, 1);  /* le rayon vire a l'or avec la chaine */
     add_beam(m, end, v3(0.3f + 0.7f * k, 0.85f - 0.05f * k, 1.0f - 0.7f * k), 0.6f);

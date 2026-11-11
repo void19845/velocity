@@ -68,20 +68,23 @@ static int vg_count(int w) {
     return n > 40 ? 40 : n;
 }
 static int vg_pick_type(int w) {
-    float wt[5];                                          /* drone, kamikaze, sentinelle, essaim, bastion */
+    float wt[EN_PYRA] = { 0 };                            /* drone, kamikaze, sentinelle, essaim, bastion, bombe, carre, mortier (indices = EN_*) */
     if (w <= 33) {
         wt[0] = 1; wt[1] = w >= 2 ? 0.6f : 0; wt[2] = w >= 8 ? 0.25f + 0.01f * (w - 8) : 0;
         wt[3] = w >= 14 ? 0.3f : 0; wt[4] = w >= 22 ? 0.15f : 0;
+        wt[EN_BOMBE] = w >= 12 ? 0.25f : 0; wt[EN_CARRE] = w >= 18 ? 0.12f : 0; wt[EN_MORTIER] = w >= 28 ? 0.12f : 0;
     } else if (w <= 66) {
         wt[0] = 1; wt[1] = 0.9f; wt[2] = 0.25f; wt[3] = 0.6f; wt[4] = 0.12f;
+        wt[EN_BOMBE] = 0.4f; wt[EN_CARRE] = 0.15f; wt[EN_MORTIER] = 0.15f;
     } else {
         float k = clampf((w - 66) / 34.0f, 0, 1);
         wt[0] = 0.8f; wt[1] = 0.6f; wt[2] = 0.5f + 0.3f * k; wt[3] = 0.4f; wt[4] = 0.25f + 0.3f * k;
+        wt[EN_BOMBE] = 0.5f; wt[EN_CARRE] = 0.2f; wt[EN_MORTIER] = 0.2f + 0.15f * k;
     }
     float tot = 0;
-    for (int k = 0; k < 5; k++) tot += wt[k];
+    for (int k = 0; k < EN_PYRA; k++) tot += wt[k];
     float r = frand() * tot;
-    for (int k = 0; k < 5; k++) { if (r < wt[k]) return k; r -= wt[k]; }
+    for (int k = 0; k < EN_PYRA; k++) { if (r < wt[k]) return k; r -= wt[k]; }
     return EN_DRONE;
 }
 static void vg_build_queue(int w) {
@@ -117,7 +120,7 @@ static void vg_wave_start(int w) {
 
 /* --- credits --- */
 static void vg_credit_kill(int i) {
-    static const int base[EN_COUNT] = { 10, 6, 14, 3, 25, 400, 600, 800, 1200 };
+    static const int base[EN_COUNT] = { 10, 6, 14, 3, 25, 12, 20, 30, 400, 600, 800, 1200 };
     Enemy *e = &E[i];
     if (e->summoned == 2) return;                         /* fantome du PRISME */
     float c = (float)base[e->type];
@@ -157,7 +160,7 @@ static void vg_go_map(int m) {
     if (curMap != m) load_map(m);
     P.pos = P.prevPos = maps[curMap].start; P.vel = v3(0, 0, 0);
     hook_release(0);
-    memset(E, 0, sizeof E); memset(PR, 0, sizeof PR);
+    memset(E, 0, sizeof E); memset(PR, 0, sizeof PR); memset(MB, 0, sizeof MB);
     for (int i = 0; i < npu; i++) PU[i].t = PU[i].pending = 0;
 }
 static void vg_challenge_start(int kind) {
@@ -251,7 +254,7 @@ static void vg_wave_cleared(void) {
 static void vg_reset(void) {
     if (curMap != vgStartMap) { load_map(vgStartMap); P.pos = P.prevPos = maps[curMap].start; }
     wave = 0; vgState = VG_BREAK; waveDelay = 2.0f; vgQn = vgQi = 0;
-    vgCredits = 0; memset(vgLvl, 0, sizeof vgLvl); memset(fxStat, 0, sizeof fxStat);
+    vgCredits = 0; sh_reset(); memset(fxStat, 0, sizeof fxStat);
     vgRunT = 0; vgT100 = -1; memset(vgSplit, 0, sizeof vgSplit);
     vgInfinite = 0; vgSecret = 0; vgBlockHard = 0; vgClearedAt = 0; vgKillsBoss = 0; vgPend = -1;
     vgHpMul = 1; vgEliteP = 0;

@@ -62,6 +62,14 @@
 #include "src/solo/ennemis_vagues.c"             /* mode solo : ennemis (drone, kamikaze, sentinelle, essaim, bastion) */
 #include "src/solo/boss.c"                       /* mode VAGUES : pyramide, tesseract, sphere, hexaedre */
 #include "src/solo/ameliorations.c"              /* mode VAGUES : boutique de modificateurs (comportements, pas de stats) */
+#include "src/solo/boutique_stats.c"             /* mode VAGUES : sac de stats (st, st_ctx, sh_rebuild) : une valeur effective par graine et par stat */
+#include "src/solo/boutique_melee.c"             /* mode VAGUES : effets de la boutique, Lance et Impulsion */
+#include "src/solo/boutique_roquettes.c"          /* boutique VAGUES : effets des Roquettes */
+#include "src/solo/boutique_shotgun.c"           /* boutique VAGUES : effets du Shotgun (etapes, capstones) */
+#include "src/solo/boutique_competences.c"       /* boutique VAGUES : effets de PIECE et ALL IN ONE */
+#include "src/solo/boutique_soin.c"            /* boutique VAGUES : aide de soin commune (plafond 20 PV/s) */
+#include "src/solo/boutique_rail.c"              /* boutique VAGUES : effets du Railgun */
+#include "src/solo/boutique_hybrides.c"          /* boutique VAGUES : formes fusionnees (armes hybrides) */
 
 #include "src/jeu/economie.c"                   /* boutique : pieces, arme de depart, achats a la mort */
 #include "src/reseau/classe.c"                   /* mode classe : etat, cote Elo, paliers, identite de classement */

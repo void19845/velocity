@@ -30,7 +30,7 @@ static void melee(void) {
         } else {
             damage_enemy(i, melee_dmg(rel), vmul(f, 8 + rel * 0.5f));
             if (!e->alive) {
-                P.hp = fminf(100, P.hp + 15);             /* bonus de soin des kills au corps a corps */
+                if (!vagOn) P.hp = fminf(100, P.hp + 15);   /* bonus de soin des kills au corps a corps (supprime en VAGUES) */
                 ammo_points(PTS_MELEE_KILL, AP_KILL);
             }
         }

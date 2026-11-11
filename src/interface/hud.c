@@ -752,13 +752,14 @@ static void draw_hud(void) {
         {                                                     /* Competences : charges, nom, etat */
             const SkillDef *sd = &skillDef[P.skill];
             char kb[64];
-            for (int i = 0; i < sd->max; i++) {
-                float fill = clampf(P.skillCh - i, 0, 1), x = winW - 30.0f - (sd->max - i) * 20.0f, y = winH - 96.0f;
+            int cmax = cp_max(P.skill, sd->max);              /* VAGUES : charges de la boutique */
+            for (int i = 0; i < cmax; i++) {
+                float fill = clampf(P.skillCh - i, 0, 1), x = winW - 30.0f - (cmax - i) * 20.0f, y = winH - 96.0f;
                 rect(x, y, 14, 14, sd->r * 0.15f, sd->g * 0.15f, sd->b * 0.15f, 0.7f);
                 rect(x, y + 14 * (1 - fill), 14, 14 * fill, sd->r, sd->g, sd->b, fill >= 1 ? 1.0f : 0.5f);
             }
             snprintf(kb, sizeof kb, "%s [%s]", sd->name, bind_text(A_SKILL));
-            text(0, winW - 36.0f - sd->max * 20.0f - fontW[0] * (float)strlen(kb), winH - 83.0f, kb, sd->r * 0.8f, sd->g * 0.8f, sd->b * 0.8f, 0.9f);
+            text(0, winW - 36.0f - cmax * 20.0f - fontW[0] * (float)strlen(kb), winH - 83.0f, kb, sd->r * 0.8f, sd->g * 0.8f, sd->b * 0.8f, 0.9f);
             char aimBuf[24], ricBuf[24];
             snprintf(aimBuf, sizeof aimBuf, "AIMANT %.1f s", P.aimT);
             snprintf(ricBuf, sizeof ricBuf, "RICOCHET %.1f s", P.ricT);
@@ -830,7 +831,7 @@ static void draw_hud(void) {
                 }
                 x += gw + fontW[0] * 3;
             }
-            if (!eco_on() && (wantLoadout[0] != P.loadout[0] || wantLoadout[1] != P.loadout[1] || wantMelee != P.meleeKind || wantSkill != P.skill))
+            if (!eco_on() && !vagOn && (wantLoadout[0] != P.loadout[0] || wantLoadout[1] != P.loadout[1] || wantMelee != P.meleeKind || wantSkill != P.skill))
                 text(0, winW - 30.0f - fontW[0] * 32, winH - 120.0f, "nouveau loadout au prochain respawn", 0.6f, 0.6f, 0.65f, 0.8f);
         }
     }

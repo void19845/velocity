@@ -5,13 +5,14 @@
 /* Combat                                                              */
 /* ------------------------------------------------------------------ */
 /* rayon et couleur par type (EN_*) ; nom pour l'ecran de mort et la barre de boss */
-static const float enemyRad[EN_COUNT] = { 0.9f, 0.75f, 0.85f, 0.5f, 1.25f, 3.2f, 4.2f, 3.5f, 3.8f };
+static const float enemyRad[EN_COUNT] = { 0.9f, 0.75f, 0.85f, 0.5f, 1.25f, 0.8f, 0.95f, 1.1f, 3.2f, 4.2f, 3.5f, 3.8f };
 static const float enemyCol[EN_COUNT][3] = {
     { 1.0f, 0.25f, 0.3f }, { 1.0f, 0.6f, 0.15f }, { 0.35f, 1.0f, 0.55f }, { 1.0f, 0.95f, 0.3f }, { 0.55f, 0.6f, 1.0f },
+    { 1.0f, 0.3f, 0.75f }, { 0.3f, 0.9f, 1.0f }, { 0.75f, 0.3f, 1.0f },
     { 1.0f, 0.62f, 0.18f }, { 0.55f, 0.45f, 1.0f }, { 1.0f, 0.3f, 0.45f }, { 0.9f, 0.95f, 1.0f },
 };
 static const char *enemyName[EN_COUNT] = { "DRONE", "RUSHER", "SENTINELLE", "ESSAIM", "BASTION",
-                                           "PYRAMIDE", "TESSERACT", "SPHERE", "HEXAEDRE" };
+                                           "BOMBE", "CARRE", "MORTIER", "PYRAMIDE", "TESSERACT", "SPHERE", "HEXAEDRE" };
 static float vgBossScale = 1;                             /* boss plus petits dans une salle basse (LE DOJO) */
 static float enemy_radius(int type) {
     return type >= 0 && type < EN_COUNT ? enemyRad[type] * (EN_BOSS(type) ? vgBossScale : 1) : 0.75f;
@@ -78,14 +79,16 @@ static void kill_enemy(int i, int byPlayer) {
     kills++;
     combo++; comboT = 3.0f;
     float mult = (1 + rel_speed(e->vel) / 15.0f) * (1 + 0.25f * (combo - 1));
-    static const int basePts[EN_COUNT] = { 100, 60, 120, 30, 200, 3000, 4000, 5000, 10000 };
+    static const int basePts[EN_COUNT] = { 100, 60, 120, 30, 200, 150, 150, 250, 3000, 4000, 5000, 10000 };
     int pts = (int)(basePts[e->type >= 0 && e->type < EN_COUNT ? e->type : 1] * mult * style_mult());   /* le style multiplie les points */
     style_kill(-1);
     score += pts;
-    P.hp = fminf(100, P.hp + (e->type == EN_DRONE || e->type == EN_SNIPER || e->type == EN_BASTION ? 15 : 8));
+    if (!vagOn) P.hp = fminf(100, P.hp + (e->type == EN_DRONE || e->type == EN_SNIPER || e->type == EN_BASTION ? 15 : 8));
     snprintf(popText, sizeof popText, "+%d", pts);
     popT = 1.2f;
     if (vagOn) vg_on_kill(i);                             /* VAGUES : credits, effets de la boutique */
+    if (vagOn) vgm_kill(i);                               /* VAGUES : points de jauge des kills de melee, poings infatigables */
+    if (vagOn) cp_on_kill(i);                             /* VAGUES : prime de salve (ALL IN ONE) */
 }
 
 static void damage_enemy_k(int i, float dmg, V3 knock, int kind) {   /* kind : chiffre DN_* (tete, one-shot) */
@@ -93,11 +96,11 @@ static void damage_enemy_k(int i, float dmg, V3 knock, int kind) {   /* kind : c
     if (!e->alive) return;
     int charged = P.chargeT > 0, marked = markE[i] > 0;   /* VAGUES : contextes des chemins CHARGE et MARQUE */
     dmg = skill_out(-1, i, dmg);                          /* Competences : MARQUE, CHARGE */
-    if (vagOn) dmg = vg_dmg_filter(i, dmg);               /* VAGUES : armure des boss, bouclier du bastion */
+    if (vagOn) dmg = vg_dmg_filter(i, dmg * vg_dmg_mul(i, charged, marked));               /* VAGUES : armure des boss, bouclier du bastion */
     e->hp -= dmg; e->flash = 0.12f; e->lastDmg = dmg;
     dmg_number_k(e->pos, dmg, kind);
     if (!EN_BOSS(e->type)) e->vel = vadd(e->vel, knock);  /* un boss ne recule pas */
-    if (vagOn && dmg > 0) vg_on_hit(i, dmg, charged, marked);
+    if (vagOn && dmg > 0) { vg_on_hit(i, dmg, charged, marked); vg_lifesteal(dmg); }
     if (e->hp <= 0 && e->alive) kill_enemy(i, 1);
 }
 static void damage_enemy(int i, float dmg, V3 knock) { damage_enemy_k(i, dmg, knock, DN_NORMAL); }
@@ -119,7 +122,7 @@ static int explode_ex(V3 c, float radius, float dmg, int byPlayer, float knock, 
         if (!E[i].alive || i == skipEnemy) continue;
         V3 dv = vsub(E[i].pos, c);
         float d = vlen(dv), R = radius + enemy_radius(E[i].type);
-        if (d < R) { float f = 1 - d / R; damage_enemy(i, dmg * (0.3f + 0.7f * f), vmul(vnorm(dv), 12 * f)); hit++; }
+        if (d < R) { float f = 1 - d / R; damage_enemy(i, dmg * (roqBlastOn ? roq_blast_k(f) : 0.3f + 0.7f * f), vmul(vnorm(dv), 12 * f)); hit++; }
     }
     for (int i = 0; byPlayer && i < MAXP; i++) {         /* LAN : le tireur calcule le souffle sur les autres */
         if (!np_target(i) || i == skipPlayer) continue;
@@ -193,7 +196,7 @@ static float streak_mult(void) { return 1 + STREAK_DMG * (float)(shotStreak < ST
 static float streak_rate(void) { return 1 + STREAK_RATE * (float)(shotStreak < STREAK_MAX ? shotStreak : STREAK_MAX); }
 static void shot_result(int hit) {
     int was = shotStreak;
-    if (hit) shotStreak += shotHeads ? CHAIN_HEAD_STEP : 1;   /* tete : la chaine avance de 2 */
+    if (hit) shotStreak += shotHeads ? CHAIN_HEAD_STEP + (vagOn ? vg_rail_chain() : 0) : 1;   /* tete : la chaine avance de 2 */
     else { if (shotStreak >= 2) streakLostT = 1.0f; shotStreak = 0; }
     if (shotStreak > STREAK_MAX) shotStreak = STREAK_MAX;
     shotHeads = 0;

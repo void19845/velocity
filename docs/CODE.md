@@ -115,7 +115,8 @@ velocity/
 │   ├── joueur/       mouvement.c (player_tick, grappin)
 │   ├── combat/       degats.c, loadout.c, melee.c, pieces_rail.c, roquettes.c, projectiles.c, competences.c
 │   ├── armes/        une arme = un fichier : enclume, lance, fleau, poings, egide, elan, shotgun (ex-eventail), tesla, scie, ventouse
-│   ├── solo/         mode VAGUES : ennemis_vagues.c (ennemis), boss.c, ameliorations.c (boutique), vagues.c
+│   ├── solo/         mode VAGUES : ennemis_vagues.c (ennemis), boss.c, ameliorations.c (boutique), boutique_stats.c (sac de stats),
+│   │                 boutique_<famille>.c (effets), vagues.c
 │   ├── reseau/       etat_partage.c, protocole.c (paquets, EV_*), hote.c, modes.c, client.c, en_ligne.c (lobby, STUN),
 │   │                 classe.c (mode classe : Elo, paliers, identite), classe_match.c (suivi du match, rapport),
 │   │                 classe_serveur.c (requetes au serveur de classement), speedrun_serveur.c (classements de temps)
@@ -160,7 +161,8 @@ velocity/
 | `armes/*.c` | une arme par fichier (logique ; fiche de conception dans `docs/armes/`) | `slam_*`, `lance_*`, `flail_*`, `fist_*`, `shield_*`, `kin_*`, `sg_*`, `tesla_*`, `saw_*`, `mine_*` |
 | `solo/ennemis_vagues.c` | mode VAGUES : ennemis (§3.5) | `spawn_enemy_at`, `spawn_enemy_type`, `enemy_tick`, `reset_game` |
 | `solo/boss.c` | mode VAGUES : les quatre boss | `boss_spawn`, `boss_tick`, `boss_filter`, `boss_fx_tick`, `GW`, `LZ` |
-| `solo/ameliorations.c` | mode VAGUES : boutique de comportements | `fxDef`, `upPath`, `vgLvl`, `up_buy`, `vg_on_hit`, `vg_on_kill`, `vg_fx_tick` |
+| `solo/ameliorations.c` | mode VAGUES : boutique de comportements | `fxDef`, `shOwn`, `sh_roll`, `up_buy`, `vg_on_hit`, `vg_on_kill`, `vg_fx_tick` |
+| `solo/boutique_stats.c` | mode VAGUES : sac de stats (§3.5) | `st`, `st_ctx`, `sh_rebuild`, `st_fold`, `shMods` (généré) |
 | `solo/vagues.c` | mode VAGUES : progression | `wave_tick`, `vg_start`, `vg_wave_start`, `vg_choose`, `vagues_temps_100` |
 | `rendu/vagues_rendu.c` | mode VAGUES : rendu | `vg_draw_enemy`, `vg_draw_world_fx` |
 | `interface/vagues_hud.c` | mode VAGUES : HUD et écrans | `vg_draw_info`, `vg_draw_hud`, `vg_draw_shop`, `vg_draw_select` |
@@ -457,14 +459,42 @@ chaque compétence en contre une autre, chaque flèche se coupe par sa constante
 - **Élan** (`elan.c`) : 4 munitions (`ammoDef`), `kin_brake` enlève toute la vitesse horizontale du tireur (`KIN_BRAKE_ALL`).
 - **Tesla** (`tesla.c`) : `tesla_bolt`, l'éclair d'ALL IN ONE (voir « Compétences »).
 - **Scie** (`scie.c`) : `SAW_HOOK_R` 1,2 m pour `saw_hook_test` (crochet) et le viseur ; avec RICOCHET elle rebondit (`saw_tick`).
-- **Yoyo** (fléau, `fleau.c`, fiche `03_fleau.md`) : **plus aucune traction de la cible**. `flail_swing` envoie un recul nul : `damage_enemy(i, dmg,
-  (0, 0, 0))` pour les drones et ennemis des VAGUES (les boss ne reculaient déjà pas), `hit_player(..., (0, 0, 0), W_FLAIL, ...)` en PvP
-  (`EV_HIT.f[1..3] = 0`, rien à appliquer chez la victime ; le trait de chaîne reste, le « zip de câble » `S_HOOK` a disparu). Supprimés :
-  `FLAIL_PULL`, `FLAIL_PULL_UP`, `FLAIL_DRONE_STOP`, le combo fléau → rail (`flail_combo_check`, « RAPPEL + RAIL », `FLAIL_COMBO_T`,
+- **Yoyo** (fléau, `fleau.c`, fiche `03_fleau.md`) : **appui court : aucune traction de la cible** (7 novembre) ; **appui long : la traction est
+  de retour** (10 novembre, voir « Yoyo : traction sur appui long » juste après). `flail_swing` (appui court) envoie un recul nul :
+  `damage_enemy(i, dmg, (0, 0, 0))` pour les drones et ennemis des VAGUES (les boss ne reculaient déjà pas), `hit_player(..., (0, 0, 0),
+  W_FLAIL, ...)` en PvP (`EV_HIT.f[1..3] = 0`, rien à appliquer chez la victime ; le trait de chaîne reste). Supprimés le 7 novembre et **non
+  rétablis** : `FLAIL_PULL`, `FLAIL_PULL_UP`, le combo fléau → rail visuel (`flail_combo_check`, « RAPPEL + RAIL », `FLAIL_COMBO_T`,
   `P.flailLastT` / `P.flailLastTgt`, journal `combos fleau -> rail`) et l'enchaînement du bot (`bot.c`). Inchangés : arc de 140°, 6 m
-  (+ 0,05 m par m/s), 18 + 1,5 × v_rel, recharges, parry à 6 m (renvoi ×0,8), pièce frappée, points de jauge. **Seule traction restante** :
-  le *lanceur* dont le fléau est paré est tiré vers le pareur (`flail_parried`, `FLAIL_PARRIED_PULL` 16 + `FLAIL_PARRIED_UP` 4 ; mettre
-  `FLAIL_PARRIED_PULL` à 0 pour la retirer aussi). `NET_VER` inchangé (21) : ni paquet ni événement ne changent, seule la valeur du recul.
+  (+ 0,05 m par m/s), 18 + 1,5 × v_rel, recharges, parry à 6 m (renvoi ×0,8), pièce frappée, points de jauge. Le *lanceur* dont le fléau est
+  paré est tiré vers le pareur (`flail_parried`, `FLAIL_PARRIED_PULL` 16 + `FLAIL_PARRIED_UP` 4 ; mettre `FLAIL_PARRIED_PULL` à 0 pour la
+  retirer aussi) et la traction de l'appui long est coupée.
+
+#### Yoyo : traction sur appui long (`src/armes/fleau.c`, section « Traction » ; fiche `docs/armes/03_fleau.md`)
+
+**Décision du propriétaire** : « on la garde, mais sur un appui long, et ça tracte aussi longtemps que le joueur maintient ». Touche de mêlée
+(`A_MELEE`) tenue plus de `FLAIL_HOLD_T` (0,15 s) après l'appui : le coup en arc part **à l'appui** comme avant (dégâts, parry, pièce frappée,
+recharge ; `flail_swing` arme `P.flailArm`), puis `flail_tick` (appelé par `game_tick` avec `act[A_MELEE]`, comme `lance_tick`) accroche
+(`flail_hook_start`) **les cibles de l'arc à cet instant** (8 au plus, jamais un boss, un kamikaze explose) **sans nouveaux dégâts** et
+`flail_pull_tick` les tire **tant que la touche est tenue**, sans limite de durée. Relâcher, perdre toutes les cibles ou une coupure : recharge de
+mêlée `FLAIL_PULL_END_CD` (0,5 s) ; appui long dans le vide : `FLAIL_WHIFF_CD` (0,9 s).
+- **Ennemis** : `E[i].vel` ramenée vers l'œil à chaque tick, avant `enemy_tick` (`vlerp` à `FLAIL_PULL_RESPONSE`, consigne `min(FLAIL_PULL_SPEED,
+  FLAIL_PULL_GAIN × (d − FLAIL_DRONE_STOP))` : 12 m/s, arrêt à 2,5 m).
+- **Joueurs (LAN)** : le lanceur envoie `EV_FLAIL` (`net_fx_flail`, `NET_VER` **22**) : `FLE_START` à l'accroche, `FLE_PULL` toutes les 0,1 s
+  (`FLAIL_PULL_REFRESH`), `FLE_END` au relâchement (`target` = victime, `f[0]` = intensité écrite par l'hôte : 1 ou 0,5 face à une Égide) ;
+  `FLE_BREAK` (victime → lanceur, `target` = lanceur) quand la victime rompt la chaîne. **L'hôte arbitre** (`flail_host`, `hote.c`) : présents,
+  vivants, adverses, lanceur au Yoyo dont le fléau n'a pas été paré depuis `FLAIL_HOST_PARRY_T`, portée `FLAIL_RANGE + FLAIL_PULL_SLACK +
+  FLAIL_HOST_TOL`. **La victime se tire elle-même** (`flail_victim_tick`,
+  avant `player_tick`) tant que son bail `P.flailLeaseT` (`FLAIL_PULL_LEASE` 0,3 s, prolongé par chaque événement) court : elle gagne de la vitesse
+  vers le lanceur à `FLAIL_PULL_ACCEL` (140 m/s², plus que la course au sol) jusqu'à `FLAIL_PULL_SPEED` (12 m/s), s'arrête vers `FLAIL_PULL_STOP`
+  (2 m) ; le décor arrête le mouvement comme d'habitude.
+- **Contre-jeu** : coupée si la cible s'éloigne au-delà de `FLAIL_RANGE + FLAIL_PULL_SLACK` (8 m), si un mur coupe la ligne de vue plus de
+  `FLAIL_PULL_LOS_T` (0,25 s), si le lanceur meurt / est étourdi / n'a plus le Yoyo, si le fléau est **paré** (`flail_parried`), si la victime
+  s'éloigne à plus de `FLAIL_PULL_SNAP` (16 m/s : dash, bhop rapide, grappin) ; l'Égide de face divise la traction par deux. Changer d'arme à
+  distance ne la coupe pas (combo fléau → rail).
+- **Rendu** : chaîne tendue de la main à chaque cible (`draw_flails`, `armes_rendu.c`) ; chez les autres, depuis les baux `flailLinkT/By[]`.
+- **Bots** : une fois sur deux à plus de 3,5 m, le bot tient la touche jusqu'à 0,9 s (`bot.c`). **Tests** : lignes « fleau traction … » et
+  « fleau appui court » de `run_tests`. **Journal** : `fleau traction (moi)`, `fleau traction (arbitre)`. **Captures** : `fleau_traction`,
+  `dm_fleau_traction`.
 
 #### Dégâts et mort
 
@@ -508,7 +538,8 @@ boutique n'augmente une stat : chaque étape ajoute un comportement. Réglages :
 |---|---|
 | `solo/ennemis_vagues.c` | types d'ennemis et leur IA (`enemy_tick`), apparition (`spawn_enemy_at`, `spawn_enemy_type`, `spawn_enemy` de l'ancien solo), `reset_game` (appelle `vg_reset` en VAGUES) |
 | `solo/boss.c` | les quatre boss (`boss_spawn`, `boss_tick`, `boss_filter`), ondes au sol `GW`, rayons `LZ`, impacts `MT`, balayage `SWP`, hypercube `HYP` (`boss_fx_tick`) |
-| `solo/ameliorations.c` | boutique : effets `fxDef`, chemins `upPath`, `vgLvl`, `up_buy`, crochets `vg_on_hit` / `vg_on_kill` / `vg_on_parry` / `vg_on_fire` / `vg_dmg_filter` / `vg_lure`, objets des effets (éclats `VS`, mines `VM`, spectres `VP`, vortex `VV`) |
+| `solo/ameliorations.c` | boutique : effets `fxDef`, étapes `shOwn`, `sh_roll`, `up_buy`, `vg_dmg_mul`, crochets `vg_on_hit` / `vg_on_kill` / `vg_on_parry` / `vg_on_fire` / `vg_dmg_filter` / `vg_lure`, objets des effets (éclats `VS`, mines `VM`, spectres `VP`, vortex `VV`) |
+| `solo/boutique_stats.c` | le **sac de stats** : une valeur effective par graine et par stat, lue avec `st()` / `st_ctx()` par le code des armes (voir « Sac de stats » plus bas) |
 | `solo/vagues.c` | progression : `wave_tick`, `vg_wave_start`, composition (`vg_count`, `vg_pick_type`), crédits, sélecteur, challenges, INFINI, temps (`vgRunT`, `vagues_temps_100`) |
 | `rendu/vagues_rendu.c` | `vg_draw_enemy` (appelé par `draw_enemy`), `vg_draw_world_fx` (passe additive de `render`) |
 | `interface/vagues_hud.c` | `vg_draw_info`, barre du boss, boutique, sélecteur, écran de la vague 100, écran de mort |
@@ -523,6 +554,9 @@ boutique n'augmente une stat : chaque étape ajoute un comportement. Réglages :
 | `EN_SNIPER` SENTINELLE | 80 | se poste à ~30 m, vise 1,4 s (rayon visible), se fige 0,35 s avant le tir ; élite : suit jusqu'à 0,12 s. À chaque tir elle choisit (`e->phase`, dès le début de la visée) un **laser** (phase 1, probabilité `VG_SNIPER_LASER_P` 0,5, rayon rouge qui blanchit une fois figé) ou une **orbe très rapide** (phase 0, `VG_SNIPER_FAST_SPEED` 110 m/s au lieu de 34, rayon vert). Les dégâts restent ceux de l'orbe du type (`VG_ORB_DMG` 12 : aucune inflation) |
 | `EN_SWARM` ESSAIM | 25 | par 5, tourne autour à 7 m, plonge, touche (6 PV) et repart |
 | `EN_BASTION` | 300 | marche au sol, bouclier de face (×0,15 sur les touches de face, `vg_dmg_filter`), salve de 3 orbes lentes ; tombé dans le vide = revient à son départ ; élite : tourne deux fois plus vite |
+| `EN_BOMBE` BOMBE | 40 | kamikaze rapide (`VG_BOMBE_SPEED` 20 m/s) : s'arrête à ~8 m (`VG_BOMBE_STOP`), tique `VG_BOMBE_FUSE` 2 s (la sphère gonfle et clignote de plus en plus vite, anneau de 5 m au sol) puis explose (`VG_BOMBE_R` 5 m, `VG_BOMBE_DMG` 30, Égide de face = bloque). Tuée pendant le tic, elle n'explose pas ; élite : continue de ramper vers toi |
+| `EN_CARRE` CARRÉ | 150 | mini tesseract qui flotte à 16 m ; **tant qu'un carré vit, tous les autres ennemis (hors boss) encaissent ×`VG_CARRE_MULT` 0,1** (`vg_dmg_filter`), liens cyan visibles ; lui n'est pas protégé |
+| `EN_MORTIER` MORTIER | 220 | se poste à ~26 m, charge 0,9 s, lance une **orbe à pulsation** (`MB[]`, `mortar_tick` : 7 m/s, sphère de souffle de `VG_MORTIER_R` 8 m affichée et qui bat plus vite, détone au contact, sur le décor ou seule après 4 s, `VG_MORTIER_DMG` 30) toutes les 5 s ; élite : deux orbes en V, 3,5 s |
 
 *Sentinelle (`sniper_fire`, `ennemis_vagues.c`).* Le laser est un trait **instantané** le long du cap figé (`ray_world`, arrêté par le décor).
 S'il passe à moins de `VG_LASER_R` (0,7 m) du joueur, une orbe-éclair part à 1,6 m de lui, dans le sens du tir, à 110 m/s : tout le reste est
@@ -569,10 +603,97 @@ ses pas ; DÉPLIAGE, quatre rayons au ras du sol tournent 7 s, à sauter). Les v
 `VG_INF_CLEAR_T` 2 s après avoir tout tué ; ce qui reste en file s'ajoute à la suivante), sauf les vagues de boss et
 de fin de bloc (`vg_checkpoint`), qui attendent que tout soit tué. 30 → 40 ennemis, PV toujours plafonnés à ×1,5.
 
-**Crédits** (`vgCredits`, `vg_credit_kill`) : drone 10, kamikaze 6, sentinelle 14, essaim 3, bastion 25, boss 400 /
+**Crédits** (`vgCredits`, `vg_credit_kill`) : drone 10, kamikaze 6, sentinelle 14, essaim 3, bastion 25, bombe 12, carré 20, mortier 30, boss 400 /
 600 / 800 / 1200 ; élite ×1,5, carte difficile ×1,5, invocation ÷3 ; `20 + vague` par vague vidée.
 
-**Boutique** (`ameliorations.c`, écran `VGM_SHOP`) : les 4 chemins du loadout (2 armes, mêlée, compétence), 5 étapes
+**Boutique v2** (`ameliorations.c` pour le moteur, `boutique_donnees.c` généré, un `boutique_<groupe>.c` par famille d'effets ;
+arbre complet dans `docs/boutique_vagues/`) : **un seul loadout possible** en VAGUES (`vg_clamp_loadout`, `loadout.c`) : Railgun /
+Roquettes / Shotgun, Lance / Impulsion, Pièce / All in One (7 graines `SH_*`, `shSeedUp`). Chaque graine a 20 étapes (4 profondeurs
+x 5) qui modifient une stat ; une branche = 4 étapes + 1 capstone vers un partenaire du loadout (38 branches) ; une fusion (19) se
+débloque quand les deux capstones de la paire sont achetés (une seule par partie, 1200 crédits). Une étape achetée vaut pour toutes
+les branches qui la contiennent (`shOwn`, `sh_owns`). Offres : 3 tirées par rareté (poids 50/30/14/5/1 pour les profondeurs 1 à 4
+et le capstone), prix 120 / 240 / 400 / 600 / 850 ; un achat rafraîchit les offres ; relance 40 crédits +20 par relance de suite
+(`sh_roll`, `up_buy`, `sh_reroll`). Une étape sans effet codé (`BK_NONE`) n'est jamais proposée : une branche s'arrête là.
+- Données : `cd docs/boutique_vagues/outils && node export_c.js` régénère `boutique_donnees.c` depuis `donnees/arbre_v2.json` et
+  `effets/*.js` (clé `GRAINE:Nom` pour une étape, `GRAINE>PARTENAIRE` pour un capstone, nom pour une fusion). Une étape qui modifie une
+  **stat** = une entrée `{ stat, op, val }` dans `effets/<groupe>.js` (sac de stats, ci-dessous), **zéro ligne de C** si le code de l'arme lit déjà
+  la stat ; un effet qui n'est pas une stat (événement, comportement, capstone) = un genre `BK_*` (enum de `ameliorations.c`), son code, son
+  entrée dans `effets/<groupe>.js`, une ligne de test.
+- Genres : `BK_STAT` (étape-stat : lignes de `shMods`, voir « Sac de stats »), `BK_FX` (effets historiques `fxDef`), et les familles `BK_RAIL`,
+  `BK_ROQ`, `BK_SHO` (événements et capstones du Shotgun), `BK_MEL_*`, `BK_COMP`. Les anciens genres génériques `BK_DMG` / `BK_NEAR` / `BK_VOL` /
+  `BK_PTS` sont devenus des étapes-stat (stats `DEG`, `VOL`, `MUR`) ; les familles Roquettes, Railgun, Mêlée et Compétences migrent une à une
+  (`docs/boutique_vagues/CLASSIFICATION_ETAPES.md`, `ARCHITECTURE_ARMES.md`).
+- **Sac de stats** (`src/solo/boutique_stats.c`, enums et types dans `monde/entites.c`) : chaque étape-stat est une ou plusieurs lignes de
+  `shMods[]` (`StatMod` : graine, rang de l'étape, stat `STAT_*`, opération `SOP_MUL` / `SOP_ADD` / `SOP_MAX` / `SOP_MULL` / `SOP_MIN` / `SOP_TO`, condition
+  `COND_*`, groupe, phase, valeur, paramètre) et le code des armes lit la valeur effective avec **`st(graine, stat, base)`** (ou **`st_ctx(..., &StatCtx)`**
+  pour les conditions : distance, tête, en l'air, élite, cibles traversées, impact direct, rebond n°N, salve pleine ; **`st_int`** / **`st_int_ctx`** pour un
+  entier arrondi), une fois par tir, dans des variables locales (modèle `sg_stats` / `SgStats` du Shotgun). **Hors VAGUES ou graine non équipée, `st()` rend la
+  base telle quelle** (PvP et LAN identiques, pas de `NET_VER`). Règles : le **delta** de chaque modificateur est multiplié par `sh_scale` (gain et pénalité
+  montent avec le niveau ; `fixed` : jamais), ordre **phase par phase** (dans une phase : `to`, puis `(base + somme des add) x produit des mul`, puis les
+  planchers `max`, puis les plafonds `min` ; la phase 1 passe après la 0 : Impulsion, Cadence x0,9 puis Combo enchaîné -0,2 s = 0,43 s), un **groupe** ne garde
+  que son modificateur applicable le plus fort (Plombs chercheurs / traqueurs ; Prime de ricochet remplace Pièce polie au 1er rebond), un modificateur
+  conditionnel ne compte pas sans contexte. Le sac est un cache : `sh_rebuild()` à l'achat, à la montée de niveau, au changement d'arme et au reset, et `st()`
+  recalcule seul si l'état de la boutique (`shOwn`, `shLvl`, `shCap`, `shFusion`, loadout) a changé depuis (un test qui pose `shOwn` reste juste).
+  Les stats (38, catalogue dans `docs/boutique_vagues/CLASSIFICATION_ETAPES.md`, §2) : `DEG` `TAI` `VIT` `ZON` `POR` `MUN` `NBP` `SUI` (armes à distance et
+  compétences), `CD` `ANI` `COM` `MUR` `VOL` (mêlée), les stats nommées `CONE` `PERTE` `PNEAR` `PFAR` `COUT` `PTK` (Shotgun, points de jauge par kill), et celles
+  créées pour les familles qui restent à migrer : `TETE` `DEGC` (Railgun), `BORD` `CENTRE` `DIRECT` (Roquettes), `CDJ` `CDE` `CDV` `TCH` `MURJ` (Lance), `CDC` `ECA`
+  `CDW` `MURC` (Impulsion), `RIC` `DUREE` (Pièce), `CDT` `DEGS` `ANGLE` (All in One). Migrées : le Shotgun (14 étapes), `vg_dmg_mul` (`DEG`, avec contexte),
+  `vg_lifesteal` (`VOL`), les points de mêlée (`MUR`), `ammo_points` (`PTK`) ; les 56 étapes restantes ont leurs données prêtes. Recettes (ajouter une
+  étape-stat, migrer une famille, ajouter une stat, une opération, une condition) : `docs/boutique_vagues/ARCHITECTURE_ARMES.md`. Tests : lignes « sac de
+  stats » de `vagues_tests.c` (une par opération et par condition).
+- Pour l'instant aucun lien mêlée x compétence (ni branche ni fusion) : 30 branches et 15 fusions pour les 7 graines (`sansLien` dans
+  `outils/migrer_v2.js`).
+- Couverture : 140 étapes sur 140, 30 capstones sur 30, 10 fusions sur 15 ; les 30 branches sont terminables, 10 fusions atteignables (FISSION et DOUBLE DÉTENTE avec leur seule forme fusionnée). Détail de ce qui reste : `docs/boutique_vagues/BLOQUANTS.md`.
+- **Changement d'arme** (`sh_swap`, bouton CHANGER D'ARME de la boutique, 300 crédits) : remplace une arme, la mêlée ou la compétence ;
+  le choix est rejoué au respawn (`vgPick`, `vg_clamp_loadout`). Les étapes achetées restent à leur graine, inactives tant qu'elle n'est
+  pas équipée ; une fusion s'éteint si une de ses deux graines part et revient avec elle.
+- **Niveaux d'amélioration** (`ameliorations.c`) : une étape achetée est niveau 1 et peut monter (offre « NIV n+1 », type `SO_UP`, tirée
+  comme les autres avec le poids de la rareté de l'étape). Profondeur 1 : 4 niveaux à 60 / 80 / 100 / 120 crédits (max 5), profondeur 2 :
+  120 / 160 / 200 (max 4), profondeur 3 : 200 / 300 (max 3), profondeur 4 : 400 (max 2), capstone : niveau fixe 1 (`shMaxLvl`, `shUpPrice`,
+  `sh_up_price`). Le niveau est dans `shLvl[graine][étape]` (0 = niveau 1, remis à zéro par `sh_reset`) ; **tout lecteur d'effet passe par
+  `sh_scale(graine, étape)`** = 1 + 0,2 × (n − 1) (`sh_sum`, `up_sc`, `sh_sc_of`, `st_scaled` pour le sac de stats, et `rl_sc` / `roq_sc` /
+  `vgsg_get` / `vgm_max` / `vgm_lower` / `cp_sc` dans les cinq `boutique_*.c`) ; elle multiplie le gain de l'étape (« +10 % » niveau 3 = +14 %,
+  un souffle de 3 m à 45 dégâts → 45 × échelle, une durée de 4 s → 4 × échelle, une pénalité comme la vitesse de la Roquette lourde
+  augmente aussi). Les effets déclencheurs d'`ameliorations.c` (FX) lisent l'échelle dans `fxSc`. Les étapes sans paramètre
+  numérique réel (`sh_scalable` = 0) ne sont jamais proposées en amélioration : Satellite, Double, Surtension, Soute, Récupération,
+  Second estoc / Estocs en chaîne / combos de N coups / Joute en chaîne, Réserve de la Pièce, Pièce recyclée, Rebond de plus, Pluie,
+  Réserve et Salve double de l'All in One, Aimantée, Gel et consorts. **Fusion** : niveau = min (des deux branches de la paire : somme
+  des niveaux des 4 étapes + capstone) / 5, arrondi inférieur, 1 au moins (`sh_fusion_lvl`) ; effet 100 / 125 / 150 % (`sh_fusion_scale`),
+  appliqué au paramètre numérique des fusions codées (plombs perforants de SALVE D'ARTILLERIE, roquette de LANCE-ROQUETTES, propulsion
+  d'ACROBATIE EXPLOSIVE, souffle de FEU D'ARTIFICE, rails de FUSILLADE, suspension de COMBO AERIEN ; CHEVALIER et TAPIS DE BOMBES n'ont
+  pas de paramètre). Tout n'agit qu'en VAGUES : PvP / LAN inchangés, pas de `NET_VER`.
+- **Formes fusionnées (armes hybrides)** (`src/solo/boutique_hybrides.c`, textes dans `shHy[]` de `boutique_donnees.c`, généré par
+  `export_c.js` ; cadre dans `arbre_v2.json` « cadre ») : acheter la FUSION d'une paire d'armes à distance (`shFusion`, une seule par
+  partie) donne une **jauge de fusion** (`hyGauge`, `HY_GAUGE_MAX` 1500) remplie par les dégâts des deux armes (`hy_charge`, appelé par
+  `vg_on_hit` quand `vgSrc` est l'une des deux). Pleine, la touche `A_FUSION` (T par défaut, réaffectable dans PARAMETRES > COMMANDES,
+  `bind_fusion` dans `velocity.ini` ; `draw_controls` resserre ses lignes dans une fenêtre basse) active l'arme hybride `HY_TIME` = 15 s (`hy_tick` dans `vg_fx_tick`, donc rien hors VAGUES) : `fire_weapon`
+  appelle `hy_fire()` d'abord, qui remplace le tir des deux armes. Leurs munitions et jauges sont mises de côté (`hy_start`), les deux armes
+  sont tenues pleines pendant la forme (l'hybride ne consomme rien, seul son délai de tir limite) puis rendues (`hy_end`). La forme
+  s'arrête au bout du temps, à la mort, ou dès qu'une des deux armes quitte le loadout (CHANGER D'ARME) ; mêlée et compétence restent
+  utilisables. Disponible seulement si la fusion est achetée ET les deux armes équipées (`hy_usable`). HUD : jauge « FUSION [T] » en bas à
+  droite, message « FUSION PRETE », puis nom de la forme et temps restant (`hy_draw_hud`, appelé par `vg_draw_hud`).
+  Formes codées (modificateurs hérités stat par stat) : **ARTILLERIE ORBITALE** (Railgun + Roquettes) = un vrai `fire_rail` (tout l'arbre
+  du Railgun, capstones compris : « Rail orbital » x4, acheté pour atteindre la fusion, s'applique) + un souffle de roquette
+  (`ROCKET_DMG`, arbre des Roquettes par `vgSrc`, zone `hy_zone_roq`) sur chaque cible traversée (3 m) et au bout de la course (8 m) ; **CANON SCIE** (Railgun + Shotgun) = 8 rails fins (+ plombs en plus du Shotgun) en gerbe de 6°
+  au total (3° de demi-angle comme `SG_HALF_ANGLE`, avec l'ouverture et la recherche du Shotgun), chacun un `hitscan_seg` perforant à
+  50 % du rail (arbre du Railgun par `vgSrc`, stat `DEG` du Shotgun par `hy_tree_dmg`), portée 120 m + portée du Shotgun (`sg_stats`), recul du Shotgun
+  (`push_start`, `sg_recoil`) ; **OBUSIER** (Roquettes + Shotgun) = 6 mini-roquettes `roqGen` (+ plombs en plus) en gerbe de 8° au
+  total (souffle 0,55 x le rayon de la roquette, 2,5 m de base, `roq_setup` : vitesse / taille / carburant), stat `DEG` du Shotgun en
+  plus, recul de 16 m/s dont au moins 10 vers le haut. Le **niveau de la fusion** (`sh_fusion_scale`, 100 / 125 / 150 %) multiplie les
+  dégâts propres de la forme (souffles de l'ARTILLERIE, rails du CANON, mini-roquettes de l'OBUSIER). Boutique : l'offre de fusion porte
+  « FUSION + FORME » et le résumé affiche « FORME FUSIONNEE : nom (jauge pleine : [T], 15 s) ». Les autres
+  paires ont leur texte mais pas de code (`id` = `HY_NONE`, jamais jouables). Les fusions FISSION et DOUBLE DETENTE n'ont pas encore leur
+  effet passif : elles sont de genre `BK_HYB` (achetables, seul effet = la forme) ; DOUBLE DETENTE reste hors de portée tant que le
+  capstone RAIL>SHO n'est pas codé. Tests : lignes « hybride », « ARTILLERIE ORBITALE », « CANON SCIE », « OBUSIER » ; captures
+  `vagues_hybride`, `vagues_hybride_canon`, `vagues_hybride_obusier`, `vagues_boutique_forme` (offre « FUSION + FORME »),
+  `vagues_boutique_forme_achetee` (résumé « FORME FUSIONNEE »).
+- **Règle de soin** : en VAGUES le soin sur kill n'existe plus (`kill_enemy`, bonus de +15 PV des kills au corps à corps dans `src/combat/melee.c` et `src/armes/` : seulement hors `vagOn`).
+  Tous les soins de la boutique et le vol de vie (`vg_lifesteal`) passent par `vg_heal(pv)` (`src/solo/boutique_soin.c`) : seau à jetons
+  de 20 PV/s (capacité 20, rempli par `gameTime`), rien si `vgDepth > 0` (dégâts d'un effet), rien hors VAGUES, rien sur un joueur mort,
+  jamais au-delà de 100 PV. Gardés : le parry (+`PARRY_HEAL`, pas un soin de boutique) ; le PvP / LAN est inchangé (pas de `NET_VER`).
+- Les 31 effets historiques ci-dessous (`fxDef`) restent le moteur des genres `BK_FX`.
+
+**Ancienne boutique** (chemins de 5 étapes, remplacée par la v2 ci-dessus ; texte gardé pour les effets) (`ameliorations.c`, écran `VGM_SHOP`) : les 4 chemins du loadout (2 armes, mêlée, compétence), 5 étapes
 chacun, achetées dans l'ordre (`VG_PRICE_1..5` : 120, 240, 400, 600, 850). 20 chemins (`NUP` = `WP_COUNT + MK_COUNT +
 SK_COUNT` ; indices `WP_*`, `UP_MELEE(mk)`, `UP_SKILL(sk)`), 31 effets (`fxDef` : nom, déclencheur, description). Un
 effet ne vaut que pour les touches de son chemin, et seulement si l'arme est équipée (`up_has`) :
@@ -599,7 +720,8 @@ temps passé dans la boutique et le sélecteur compte (`vg_menu_set`). Point d'e
 - Écrans (souris libérée, jeu figé) : `vgMenu` (`VGM_SHOP`, `VGM_SELECT`, `VGM_WIN`) ; ÉCHAP ferme la boutique ; à la
   fermeture, `vgWantResume` → `ACT_RESUME` recapture la souris.
 - Tests (`vagues_tests`) : courbe (nombre, PV, élites, boss), dégâts fixes, enchaînement des vagues, sélecteur et
-  crédits, boutique (ordre, prix, dégâts inchangés), effets (fourche, gel, fracture, onde de parry, propulsion),
+  crédits, boutique (ordre, prix, dégâts inchangés), sac de stats (neutre hors VAGUES, graine non équipée, chaque opération, conditions, groupe,
+  niveaux, achat et changement d'arme), effets (fourche, gel, fracture, onde de parry, propulsion),
   bastion, chaque boss, vague 100 et splits, INFINI (chrono, boss qui attend, secret), temps, challenges.
 - Captures : `--shot vagues_pyramide.bmp` (`_charge`), `vagues_tesseract`, `vagues_boule`, `vagues_hexaedre`,
   `vagues_boutique` (`_small`), `vagues_selecteur`, `vagues_fin`, `vagues_infini`, `vagues` (une vague ordinaire),
@@ -689,7 +811,7 @@ Deux couches :
 Liste des actions (`A_*`, avec `actId` pour `velocity.ini`) : `A_FWD` avancer, `A_BACK` reculer,
 `A_LEFT` gauche, `A_RIGHT` droite, `A_JUMP` sauter, `A_CROUCH` accroupi, `A_DASH` dash, `A_FIRE` tirer,
 `A_MELEE` épée, `A_HOOK` grappin, `A_COIN` pièce, `A_WEAP1` arme1, `A_WEAP2` arme2, `A_SWAP`
-changer_arme, `A_SCORES` scores. Les touches par défaut sont dans `bindDefault`.
+changer_arme, `A_SCORES` scores, `A_DETONATE_ALL` / `A_DETONATE_ONE` Ventouse, `A_FUSION` fusion (VAGUES : arme hybride, T). Les touches par défaut sont dans `bindDefault`.
 
 Touches **non réaffectables**, codées en dur dans `wndproc` / `game_tick` : Échap (menu, ou annuler),
 F2/F3 (sensibilité), F11 (plein écran), R (recommencer en solo, `latch[SC_R]`).
@@ -1591,8 +1713,10 @@ chaîne de tirs) et onde de l'Enclume du plan 1b (`EV_SLAM` : centre, rayon, hau
 **21** patch d'équilibrage : `EV_RAIL` sous-type 2 (tous les rebonds d'un tir RICOCHET en un événement), `EV_SHOT.pad[0]` = rebonds des
 plombs, `EV_ROCKET.sub` = rebonds (jusqu'à `RIC_ROCKET_CAP`) et roquette redirigée par une pièce (`EV_PARRY`), `EV_SKILL` `SK_RICOCHET` et
 `SK_ALLIN` avec `actor` 1 (éclair de la Tesla), `EV_HIT` `W_SHOTGUN` : le recul est une vitesse de **poussée** (proportionnelle à la vitesse
-du tireur, pendant `SG_KNOCK_T` s, `push_start`) et non une vitesse ajoutée.
-La valeur fait foi dans `src/reseau/protocole.c`.
+du tireur, pendant `SG_KNOCK_T` s, `push_start`) et non une vitesse ajoutée ; **22** Yoyo, traction sur appui long : `EV_FLAIL` (24) :
+`FLE_START` / `FLE_PULL` / `FLE_END` (lanceur → victime, `target` = victime) et `FLE_BREAK` (victime → lanceur, `target` = lanceur), `f[0]` =
+intensité de la traction écrite par l'hôte (1, ou 0,5 face à une Égide).
+La valeur fait foi dans `src/reseau/protocole.c` (`CLAUDE.md` peut être en retard : il annonce encore 20).
 
 ### Horloge de match commune (`src/reseau/horloge.c`)
 
@@ -1796,7 +1920,8 @@ plafonné à 0,1 s) ou pendant le `hitstop`, la simulation ralentit mais pas le 
 | `PVP_SCALE` | 0,7 | dégâts contre les joueurs = 70 % des dégâts contre les monstres |
 | `KILL_HEAL` | 30 PV | soin du tueur |
 | `NET_MAGIC` | `0x564C4F43` | signature des paquets (« VLOC ») |
-| `NET_VER` | 21 | version du protocole (historique : §4, « `NET_VER` ») ; 15 = règles et objectifs, 16 = mode classé, 17 = cartes néon seulement, 18 = horloge commune, 19 = tirs à la tête, chaîne pleine, onde de l'Enclume, 20 = spécialisations retirées, 21 = patch d'équilibrage (RICOCHET en fenêtre, poussée du SHOTGUN, éclair de la Tesla) |
+| `NET_VER` | 22 | version du protocole (historique : §4, « `NET_VER` ») ; 15 = règles et objectifs, 16 = mode classé, 17 = cartes néon seulement, 18 = horloge commune, 19 = tirs à la tête, chaîne pleine, onde de l'Enclume, 20 = spécialisations retirées, 21 = patch d'équilibrage (RICOCHET en fenêtre, poussée du SHOTGUN, éclair de la Tesla), 22 = Yoyo : traction sur appui long (`EV_FLAIL`) |
+| `FLAIL_HOLD_T`, `FLAIL_PULL_*`, `FLAIL_DRONE_STOP`, `FLAIL_HOOK_MAX`, `FLAIL_HOST_TOL` | 0,15 s, 12 m/s… | Yoyo, traction sur appui long : maintien, vitesse, accélération (joueurs), lissage (ennemis), arrêts, coupures, bail et rafraîchissement `EV_FLAIL`, recharge de fin (voir « Yoyo : traction sur appui long », §3.4) |
 | `RANK_*` | voir §4 | mode classé : `RANK_START` 1000, bornes 100 à 3000, `RANK_K` 32, `RANK_K_PLACE` 64 sur `RANK_PLACEMENT` 10 matchs, paliers, `RANK_END_WAIT`, `RANK_RETRY`, `RANK_TRIES` |
 | `MAXSPEC` | 4 | spectateurs en direct sur l'hôte |
 | `MAXFOUND` | 12 | parties mémorisées (LAN + en ligne ; 7 affichées) |

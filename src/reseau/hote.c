@@ -91,6 +91,7 @@ static double parry_grace(int w, int victimMK) {
 static double joustT[MAXP][MAXP];                         /* derniere joute resolue entre a et b */
 static int lanceHostCouch, lanceHostThrust, lanceHostParried, lanceClashWins, lanceClashDouble;
 static int flailHostParried;                              /* Fleau : fleaux pares (arbitre) */
+static double flailHostParriedAt[MAXP];                   /* Fleau : derniere fois que le fleau de i a ete pare (pas d'accroche apres) */
 static int fistHostParried;                               /* Poings : poings pares (arbitre) */
 static float lanceHostVcSum;
 
@@ -258,7 +259,7 @@ static void host_melee_parry(int v, int from, int w, int couched) {
                 ((NP[from].st.pad & 15) == MK_FIST ? FIST_PARRY_GRACE : MELEE_PARRY_GRACE);
     if (w == W_SLAM) slamParried++;
     if (w == W_LANCE) lanceHostParried++;
-    if (w == W_FLAIL) flailHostParried++;                 /* Fleau */
+    if (w == W_FLAIL) { flailHostParried++; if (from < MAXP) flailHostParriedAt[from] = nowT; }   /* Fleau */
     if (w == W_FIST) fistHostParried++;                   /* Poings */
     NetEvent e = ev_new(EV_MELEE_PARRY);
     e.actor = (unsigned char)v; e.target = (unsigned char)from; e.sub = (unsigned char)clash;
@@ -353,12 +354,40 @@ static int shield_host(const NetEvent *ev) {
 }
 /* --- fin Egide : arbitrage --- */
 
+/* --- Yoyo : arbitrage de la traction (EV_FLAIL, appui long) ------------------------------------------------------------------
+ * FLE_START / FLE_PULL (lanceur -> victime) : l'hote verifie que le lanceur et la victime sont presents, vivants et adverses, que le
+ * lanceur porte le Yoyo (NetPState.pad) et n'a pas son fleau pare depuis FLAIL_HOST_PARRY_T (chez un client lent la parade arrive apres
+ * l'accroche) et que la victime est a portee (FLAIL_RANGE + FLAIL_PULL_SLACK + tolerance de latence). Si
+ * l'Egide de la victime fait face a la chaine, la traction est divisee par deux : l'hote ecrit l'intensite dans f[0] avant de relayer.
+ * FLE_END (lanceur) et FLE_BREAK (victime -> lanceur) ne font que retirer une traction : toujours relayes. Renvoie 1 si annule. */
+static int flailHostStarts, flailHostPulls, flailHostDenied, flailHostBreaks, flailHostHalved;
+static int flail_host(NetEvent *ev) {
+    int from = ev->from, t = ev->target;
+    if (from >= MAXP || t >= MAXP || from == t || ev->sub > FLE_BREAK) return 1;
+    if (ev->sub == FLE_END) return 0;
+    if (ev->sub == FLE_BREAK) { flailHostBreaks++; return 0; }
+    if (!NP[from].active || !NP[from].alive || !NP[t].active || !NP[t].alive || matchOver || same_team(from, t)) return 1;
+    if (nowT - flailHostParriedAt[from] < FLAIL_HOST_PARRY_T) return 1;   /* son fleau vient d'etre pare : pas d'accroche (latence d'un client) */
+    V3 a = np_center(from), c = np_center(t);
+    if ((NP[from].st.pad & 0x0F) != MK_FLAIL || vlen(vsub(c, a)) > FLAIL_RANGE + FLAIL_PULL_SLACK + FLAIL_HOST_TOL) {
+        flailHostDenied++;
+        netlog("fleau : traction de %s sur %s refusee (arme ou portee)", pname(from), pname(t));
+        return 1;
+    }
+    int halved = host_shield_ok(t, vnorm(vsub(c, a)), SHIELD_COS_HOST);   /* Egide de face : tire a moitie */
+    ev->f[0] = halved ? SHIELD_KNOCK_MULT : 1.0f;
+    if (ev->sub == FLE_START) { flailHostStarts++; flailHostHalved += halved; } else flailHostPulls++;
+    return 0;
+}
+/* --- fin Yoyo : arbitrage --- */
+
 /* arbitre un evenement ; renvoie 1 s'il est annule : il ne doit alors ni s'appliquer ni etre relaye
  * (sinon la victime d'un coup pare subirait quand meme le recul et le flash) */
 static int host_handle(NetEvent *ev) {
     if (ev->kind == EV_PICKUP) { host_take_pickup(ev->sub, ev->from); return 0; }
     if (ev->kind == EV_MINE) return mine_host(ev);        /* Ventouse */
     if (ev->kind == EV_SHIELD) return shield_host(ev);    /* Egide */
+    if (ev->kind == EV_FLAIL) return flail_host(ev);      /* Yoyo : traction (appui long) */
     if (ev->kind == EV_HIT) {
         int v = ev->target;
         if (ev->sub >= W_COUNT) return 1;

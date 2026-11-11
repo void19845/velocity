@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Arbre de fusions – Boutique Vagues</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f4ef;--card:#fff;--ink:#1d1b26;--mute:#6b6878;--line:#dcd8e6;--fu:#7c3aed;--fub:#efe7ff;
+--r1:#8a8797;--r2:#2f9e6b;--r3:#2f6fd6;--r4:#d9731a;--r5:#c79a12;color-scheme:light}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14121d;--card:#1e1b2b;--ink:#ece9f6;--mute:#9b97ae;--line:#34304a;--fu:#a679ff;--fub:#2a2145;--r1:#9a97aa;--r2:#4cc48c;--r3:#6c9dff;--r4:#f0993f;--r5:#e5bb3a;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#14121d;--card:#1e1b2b;--ink:#ece9f6;--mute:#9b97ae;--line:#34304a;--fu:#a679ff;--fub:#2a2145;--r1:#9a97aa;--r2:#4cc48c;--r3:#6c9dff;--r4:#f0993f;--r5:#e5bb3a;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 "Avenir Next","Segoe UI",system-ui,sans-serif;padding:16px 14px 150px}
+h1{font:600 24px/1.2 Georgia,"Iowan Old Style",serif;margin:0 0 4px}
+.sub{color:var(--mute);margin:0 0 14px}
+.tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+button,select{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.sel{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:14px}
+.sel label{display:flex;flex-direction:column;font-size:12px;color:var(--mute);gap:3px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+.card h2{font:600 17px Georgia,serif;margin:0}
+.arch{color:var(--mute);font-size:12px;margin-bottom:8px}
+.br{border-top:1px solid var(--line);padding:8px 0}
+.br .to{font-size:12px;color:var(--mute);margin-bottom:4px}
+.chips{display:flex;flex-wrap:wrap;gap:4px}
+.chip{border:1px solid var(--c,var(--line));color:var(--c,var(--ink));border-radius:6px;padding:2px 7px;font-size:12px;cursor:pointer;background:transparent}
+.chip.cap{background:var(--c);color:var(--card);font-weight:600}
+.chip:focus-visible,button:focus-visible{outline:2px solid var(--fu);outline-offset:2px}
+.d1{--c:var(--r1)}.d2{--c:var(--r2)}.d3{--c:var(--r3)}.d4{--c:var(--r4)}.d5{--c:var(--r5)}
+h3{font:600 15px Georgia,serif;margin:20px 0 8px}
+.fu{border:2px solid var(--fu);background:var(--fub);border-radius:12px;padding:10px 12px;cursor:pointer}
+.fu b{color:var(--fu);font-size:15px}
+.fu small{display:block;color:var(--mute)}
+.chip.ok::after{content:" ✓"}
+.chip.rev::after{content:" ✦"}
+.chip.new::before{content:"✦ "}
+.why{font-size:11px;color:var(--mute);margin:3px 0 0}
+.fu.rev{border-style:dashed}
+.leg{color:var(--mute);font-size:12px;margin:0 0 12px}
+.rv-ok{color:#2f9e6b}.rv-sup{color:#d14}.rv-mod{color:#c79a12}
+.br.sup .chips,tr.sup td{opacity:.5}
+.fu .hy{font-size:12px;color:var(--mute);border-top:1px dashed var(--line);padding-top:4px}
+.fu .hy b{font-size:12px}
+.fu p{margin:4px 0 0}
+.pool{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.pool>div{display:flex;flex-direction:column;gap:4px}
+.pool .h{font-size:12px;color:var(--c);font-weight:600}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:640px}
+td,th{text-align:left;padding:5px 6px;border-top:1px solid var(--line);vertical-align:top;font-size:13px}
+th{font-size:12px;color:var(--mute);border:0}
+#det{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:2px solid var(--c,var(--line));padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));min-height:64px}
+#det b{color:var(--c,var(--ink))}
+@media (max-width:640px){.pool{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body>
+<h1>Arbre des branches et fusions</h1>
+<p class="sub">Boutique du mode Vagues. Choisis un loadout ou une arme, puis touche une étape pour lire son effet.</p>
+<p class="leg">/*LEGENDE*/</p>
+<p class="leg">/*CADRE*/</p>
+<div class="tabs"><button id="tL" class="on">Loadout</button><button id="tA">Arme</button></div>
+<div id="app"></div>
+<div id="det" style="--c:var(--line)">Touche une étape, un capstone ou une fusion.</div>
+<script>
+var D=/*DONNEES*/null;
+var RAR=[["Commune",5,120,50],["Peu commune",4,240,30],["Rare",3,400,14],["Épique",2,600,5],["Légendaire",1,850,1]];
+var IDS=Object.keys(D.seeds),mode="L";
+var LO={d1:"RAIL",d2:"ROQ",m:"EPE",c:"PIE"},AR="RAIL";
+var $=function(i){return document.getElementById(i)};
+function esc(s){return String(s).replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c]})}
+function pk(a,b){return D.fu[a+"-"+b]||D.fu[b+"-"+a]}
+function show(cls,title,tag,eff,extra){var d=$("det");d.style.setProperty("--c",cls);d.innerHTML="<b>"+esc(title)+"</b> <span style=\"color:var(--mute)\">"+esc(tag)+"</span><br>"+esc(eff)+(extra?"<br><span style=\"color:var(--mute)\">"+esc(extra)+"</span>":"")}
+function etat(f){return f.ok?"validée":f.rev?"revue (v2)":"à valider"}
+window.sd=function(s,d,i){var st=D.seeds[s].pool[d][i],r=RAR[d];show("var(--r"+(d+1)+")",st.n,"Profondeur "+(d+1)+" · "+r[0]+" · "+D.seeds[s].n+(st.x&&D.axes?" · axe : "+D.axes[st.x]:"")+(st.was?" · nouveau, remplace « "+st.was+" »":st.nv?" · nouveau":st.av?" · modifié (avant : "+st.av+")":""),st.e,r[1]+" niveau(x) max · achat "+r[2]+" · poids de tirage "+r[3]+" · +20 % d’effet par niveau")};
+window.sc=function(s,p){var b=D.br[s].filter(function(x){return x.p==p})[0];show("var(--r5)",b.c.n,"Capstone · "+D.seeds[s].n+" → "+D.seeds[p].n+" · Légendaire"+(b.cr?" · revu (v2)":""),b.c.e,"1 niveau · achat 850 · débloque la fusion "+b.f)};
+window.sf=function(a,b){var f=pk(a,b);show("var(--fu)",f.n,"Fusion · "+D.seeds[a].n+" × "+D.seeds[b].n+" · "+etat(f),f.e,(f.np?f.np+" ":"")+(f.h?"Forme fusionnée « "+f.h.n+" » ("+f.h.b+") : "+f.h.e+" — ":"")+"Branches requises : "+D.seeds[a].n+" → "+D.seeds[b].n+" et "+D.seeds[b].n+" → "+D.seeds[a].n+" · une seule fusion par run")};
+function chip(s,d,i){var st=D.seeds[s].pool[d][i];return"<button class=\"chip d"+(d+1)+(st.was||st.nv||st.av?" new":"")+"\" onclick=\"sd('"+s+"',"+d+","+i+")\">"+esc(st.n)+"</button>"}
+function rvLine(b){var t=b.rv=="ok"?"✓ validée":b.rv=="sup"?"✗ supprimée":b.rv=="mod"?(b.rp?"~ retravaillée, à revalider":"~ modifiée depuis le tri"):"";
+ if(b.nt)t+=(t?" · ":"")+"★★★★★".slice(0,b.nt)+"☆☆☆☆☆".slice(0,5-b.nt);
+ if(b.cm)t+=(t?" · ":"")+"« "+b.cm+" »";
+ if(b.rp)t+=(t?" · ":"")+"↳ "+b.rp;
+ return t?"<div class=\"why rv-"+(b.rv||"n")+"\">"+esc(t)+"</div>":""}
+function branch(s,b){var h="<div class=\"br"+(b.rv=="sup"?" sup":"")+"\"><div class=\"to\">vers "+D.seeds[b.p].n+"</div><div class=\"chips\">";
+ for(var d=0;d<4;d++)h+=chip(s,d,b.s[d]);
+ return h+"<button class=\"chip cap d5\" onclick=\"sc('"+s+"','"+b.p+"')\">"+esc(b.c.n)+"</button></div>"+(b.w?"<div class=\"why\">chemin : "+esc(b.w)+"</div>":"")+rvLine(b)+"</div>"}
+function sel(id,type,val,excl){var o=IDS.filter(function(k){return D.seeds[k].t==type&&k!=excl}).map(function(k){return"<option value=\""+k+"\""+(k==val?" selected":"")+">"+D.seeds[k].n+"</option>"}).join("");
+ return"<select id=\""+id+"\">"+o+"</select>"}
+function loadout(){
+ var L=[LO.d1,LO.d2,LO.m,LO.c],h="<div class=\"sel\"><label>Distance 1"+sel("s1","D",LO.d1,LO.d2)+"</label><label>Distance 2"+sel("s2","D",LO.d2,LO.d1)+"</label><label>Mêlée"+sel("s3","M",LO.m)+"</label><label>Compétence"+sel("s4","C",LO.c)+"</label></div><div class=\"grid\">";
+ L.forEach(function(s){h+="<div class=\"card\"><h2>"+D.seeds[s].n+"</h2><div class=\"arch\">"+D.seeds[s].a+"</div>";
+  D.br[s].filter(function(b){return L.indexOf(b.p)>=0}).forEach(function(b){h+=branch(s,b)});h+="</div>"});
+ h+="</div><h3>Fusions possibles avec ce loadout</h3><div class=\"grid\">";
+ for(var i=0;i<4;i++)for(var j=i+1;j<4;j++){var a=L[i],b=L[j],f=pk(a,b);if(!f)continue;
+  h+="<div class=\"fu"+(f.rev&&!f.ok?" rev":"")+"\" onclick=\"sf('"+a+"','"+b+"')\"><b>"+esc(f.n)+"</b><small>"+D.seeds[a].n+" × "+D.seeds[b].n+(f.ok?" · ✓ validée":f.rev?" · ✦ revue (v2)":"")+"</small><p>"+esc(f.e)+"</p>"+(f.h?"<p class=\"hy\">⚙ Forme fusionnée <b>"+esc(f.h.n)+"</b>"+(f.h.ok?" ✓":"")+" : "+esc(f.h.e)+"</p>":"")+"</div>"}
+ $("app").innerHTML=h+"</div>";
+ [["s1","d1"],["s2","d2"],["s3","m"],["s4","c"]].forEach(function(x){$(x[0]).onchange=function(){LO[x[1]]=this.value;loadout()}})}
+function arme(){
+ var o=IDS.map(function(k){return"<option value=\""+k+"\""+(k==AR?" selected":"")+">"+D.seeds[k].n+"</option>"}).join("");
+ var S=D.seeds[AR],h="<div class=\"sel\"><label>Arme ou compétence<select id=\"sa\">"+o+"</select></label></div><div class=\"card\"><h2>"+S.n+"</h2><div class=\"arch\">"+S.a+" · "+D.br[AR].length+" branches</div><h3 style=\"margin-top:6px\">Pool d’étapes</h3><div class=\"pool\">";
+ for(var d=0;d<4;d++){h+="<div class=\"d"+(d+1)+"\"><span class=\"h\">"+RAR[d][0]+"</span>";for(var i=0;i<5;i++)h+=chip(AR,d,i);h+="</div>"}
+ h+="</div><h3>Branches</h3><div class=\"wrap\"><table><tr><th>Vers</th><th>Étapes 1 à 4</th><th>Capstone</th><th>Fusion</th></tr>";
+ D.br[AR].forEach(function(b){h+="<tr"+(b.rv=="sup"?" class=\"sup\"":"")+"><td>"+D.seeds[b.p].n+"</td><td><div class=\"chips\">";
+  for(var d=0;d<4;d++)h+=chip(AR,d,b.s[d]);
+  var ff=pk(AR,b.p);
+  h+="</div>"+(b.w?"<div class=\"why\">chemin : "+esc(b.w)+"</div>":"")+rvLine(b)+"</td><td><button class=\"chip cap d5\" onclick=\"sc('"+AR+"','"+b.p+"')\">"+esc(b.c.n)+"</button></td><td><button class=\"chip"+(ff&&ff.ok?" ok":ff&&ff.rev?" rev":"")+"\" style=\"--c:var(--fu)\" onclick=\"sf('"+AR+"','"+b.p+"')\">"+esc(b.f)+"</button></td></tr>"});
+ $("app").innerHTML=h+"</table></div></div>";
+ $("sa").onchange=function(){AR=this.value;arme()}}
+function render(){$("tL").className=mode=="L"?"on":"";$("tA").className=mode=="A"?"on":"";mode=="L"?loadout():arme()}
+$("tL").onclick=function(){mode="L";render()};$("tA").onclick=function(){mode="A";render()};
+render();
+</script>
+</body>
+</html>

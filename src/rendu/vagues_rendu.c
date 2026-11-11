@@ -123,6 +123,43 @@ static void vg_draw_enemy(Enemy *e) {
         glEnd();
         break;
     }
+    case EN_BOMBE: {                                      /* sphere qui gonfle (+30 %) et clignote de plus en plus vite pendant le tic */
+        float k = e->st == 1 ? clampf(1 - e->stT / VG_BOMBE_FUSE, 0, 1) : 0;
+        float pulse = e->st == 1 ? 0.5f + 0.5f * sinf(e->t * (10 + 40 * k)) : 0.3f;
+        float sc = (1 + 0.3f * k) * (1 + 0.06f * pulse);
+        V3 hot = vlerp(col, v3(1, 1, 0.85f), pulse * k);
+        glRotatef(e->t * 90, 0.2f, 1, 0.1f);
+        vg_sphere(R * sc, v3(hot.x * (1 + 2.5f * pulse * k), hot.y * (1 + 2.5f * pulse * k), hot.z * (1 + 2.5f * pulse * k)), 1);
+        if (lit) glDisable(GL_LIGHTING);
+        glColor3f(hot.x, hot.y, hot.z);
+        glLineWidth(2);
+        vg_ring(v3(0, 0, 0), R * sc * 1.08f, 20);
+        glLineWidth(1);
+        if (lit) glEnable(GL_LIGHTING);
+        break;
+    }
+    case EN_CARRE:                                        /* mini tesseract (cube 4D qui tourne) */
+        vg_tesseract(R * 1.15f, e->t * 1.4f, col, lit);
+        break;
+    case EN_MORTIER: {                                    /* caisson massif, canon tourne vers le joueur, pointe lumineuse pendant la charge */
+        V3 d = e->st == 1 ? e->aim : vnorm(vsub(eye_pos(), e->pos));
+        glRotatef(atan2f(d.x, d.z) * 180 / PI, 0, 1, 0);
+        glRotatef(-asinf(clampf(d.y, -1, 1)) * 180 / PI, 1, 0, 0);
+        glColor3f(col.x * 0.22f, col.y * 0.22f, col.z * 0.25f);
+        box_faces(v3(-0.75f, -0.75f, -0.75f), v3(0.75f, 0.75f, 0.75f));
+        box_faces(v3(-0.28f, -0.28f, 0.7f), v3(0.28f, 0.28f, 1.7f));
+        if (lit) glDisable(GL_LIGHTING);
+        glColor3f(col.x, col.y, col.z);
+        glLineWidth(2);
+        box_edges(v3(-0.77f, -0.77f, -0.77f), v3(0.77f, 0.77f, 0.77f));
+        box_edges(v3(-0.3f, -0.3f, 0.7f), v3(0.3f, 0.3f, 1.72f));
+        float ch = e->st == 1 ? clampf(1 - e->stT / 0.9f, 0, 1) : 0;
+        glColor3f(1, 0.6f + 0.4f * ch, 1);
+        box_faces(v3(-0.2f - 0.1f * ch, -0.2f - 0.1f * ch, 1.6f), v3(0.2f + 0.1f * ch, 0.2f + 0.1f * ch, 1.8f + 0.3f * ch));
+        glLineWidth(1);
+        if (lit) glEnable(GL_LIGHTING);
+        break;
+    }
     case EN_BASTION: {                                    /* corps massif, bouclier lumineux devant (cote de e->yaw) */
         glRotatef(e->yaw * 180 / PI, 0, 1, 0);
         glColor3f(col.x * 0.22f, col.y * 0.22f, col.z * 0.25f);
@@ -223,6 +260,26 @@ static void vg_draw_world_fx(void) {
             vg_line(e->pos, vadd(e->pos, vmul(e->aim, len)));
             glEnd();
         }
+        if (e->type == EN_BOMBE && e->st == 1) {          /* zone d'explosion (VG_BOMBE_R) : anneau au sol + anneau qui se resserre */
+            float k = clampf(e->stT / VG_BOMBE_FUSE, 0, 1), gy = ground_below(e->pos, 30) + 0.12f;
+            float fl = 0.5f + 0.5f * sinf(t * (10 + 40 * (1 - k)));
+            glLineWidth(3);
+            glColor4f(1, 0.3f, 0.6f, 0.5f + 0.4f * fl);
+            vg_ring(v3(e->pos.x, gy, e->pos.z), VG_BOMBE_R, 48);
+            glColor4f(1, 0.8f, 0.9f, 0.4f);
+            vg_ring(v3(e->pos.x, gy, e->pos.z), VG_BOMBE_R * (1 - k), 48);
+            vg_ring(e->pos, VG_BOMBE_R, 48);              /* equateur de la sphere de souffle */
+        }
+        if (e->type == EN_CARRE) {                        /* liens vers les ennemis proteges */
+            glLineWidth(2);
+            glBegin(GL_LINES);
+            for (int j = 0; j < MAXE; j++) {
+                if (!E[j].alive || E[j].type == EN_CARRE || EN_BOSS(E[j].type)) continue;
+                glColor4f(0.3f, 0.9f, 1, 0.55f); glVertex3f(e->pos.x, e->pos.y, e->pos.z);
+                glColor4f(0.3f, 0.9f, 1, 0.1f); glVertex3f(E[j].pos.x, E[j].pos.y, E[j].pos.z);
+            }
+            glEnd();
+        }
         if (e->elite) {                                   /* elite : couronne doree */
             glLineWidth(2); glColor4f(1, 0.85f, 0.3f, 0.7f);
             vg_ring(vadd(e->pos, v3(0, enemy_radius(e->type) + 0.35f, 0)), 0.45f, 14);
@@ -234,6 +291,31 @@ static void vg_draw_world_fx(void) {
                 if (!E[j].alive || E[j].summoned != 1) continue;
                 glColor4f(0.6f, 0.5f, 1, 0.6f); glVertex3f(e->pos.x, e->pos.y, e->pos.z);
                 glColor4f(0.6f, 0.5f, 1, 0.1f); glVertex3f(E[j].pos.x, E[j].pos.y, E[j].pos.z);
+            }
+            glEnd();
+        }
+    }
+    for (int k = 0; k < MAXMB; k++) {                     /* MORTIER : orbe a pulsation, sphere de souffle qui bat de plus en plus vite */
+        MortOrb *m = &MB[k];
+        if (!m->on) continue;
+        float u = 1 - clampf(m->t / VG_MORTIER_LIFE, 0, 1), pu = 0.5f + 0.5f * sinf(t * (6 + 30 * u));
+        glLineWidth(2 + 2 * pu);
+        for (int ax = 0; ax < 3; ax++) {
+            glColor4f(0.8f, 0.35f, 1, 0.15f + 0.35f * pu * (0.4f + u));
+            glBegin(GL_LINE_LOOP);
+            for (int a = 0; a < 40; a++) {
+                float c = cosf(a * 2 * PI / 40), s = sinf(a * 2 * PI / 40), r = VG_MORTIER_R * (0.97f + 0.03f * pu);
+                V3 o = ax == 0 ? v3(c, s, 0) : ax == 1 ? v3(c, 0, s) : v3(0, c, s);
+                glVertex3f(m->pos.x + o.x * r, m->pos.y + o.y * r, m->pos.z + o.z * r);
+            }
+            glEnd();
+        }
+        glColor4f(1, 0.7f, 1, 0.9f);
+        for (int ax = 0; ax < 2; ax++) {                  /* le noyau */
+            glBegin(GL_LINE_LOOP);
+            for (int a = 0; a < 16; a++) {
+                float c = cosf(a * 2 * PI / 16) * (0.5f + 0.2f * pu), s = sinf(a * 2 * PI / 16) * (0.5f + 0.2f * pu);
+                glVertex3f(m->pos.x + c, m->pos.y + (ax ? s : 0), m->pos.z + (ax ? 0 : s));
             }
             glEnd();
         }

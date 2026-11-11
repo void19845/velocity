@@ -157,6 +157,10 @@ static float sg_falloff(float t) {
 }
 ```
 
+Note : dans le code actuel, la courbe est `sg_fall(&S, t)` (`S` = `SgStats`, les stats du Shotgun pour un tir, lues UNE fois par `sg_stats` dans le sac de
+stats de la boutique VAGUES : portée utile, perte à distance, cône, plombs en plus...). Hors VAGUES, `S` contient les `#define` ci-dessus : mêmes valeurs,
+même calcul. Voir `docs/boutique_vagues/ARCHITECTURE_ARMES.md`.
+
 ### 5.3 `fire_shotgun()` (nouvelle, section Combat, après `fire_rail`)
 
 ```c

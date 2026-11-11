@@ -24,7 +24,8 @@ Le propriétaire est francophone : réponses, commentaires et docs **en françai
   règles par défaut, sans bots, hors cartes CHALLENGE (LA TOILE).
 - **Mode VAGUES** (le solo : 100 vagues, boss aux vagues 25/50/75/100, sélecteur de carte toutes les 10, boutique de
   comportements, INFINI) : **§3.5 de `docs/CODE.md`**, code dans `src/solo/`. Aucune inflation : les dégâts des ennemis
-  ne montent jamais, aucun achat n'augmente une stat. Temps de la vague 100 pour le speedrun : `vagues_temps_100()`.
+  ne montent jamais. Boutique v2 (`docs/boutique_vagues/`, §3.5) : un seul loadout possible, les étapes achetées modifient des stats
+  (la règle « aucun achat n'augmente une stat » de l'ancienne boutique est abandonnée). Temps de la vague 100 pour le speedrun : `vagues_temps_100()`.
 - **Speedrun** (écran CHALLENGE, classements de temps par carte CHALLENGE, speedrun complet, vague 100) : **§4 « Speedrun »
   de `docs/CODE.md`**. Serveur : `worker/src/speedrun.js` (même base D1, même identité) ; jeu : `src/jeu/speedrun.c`,
   `src/reseau/speedrun_serveur.c` ; point d'entrée `speedrun_begin(cat)` / `speedrun_report(cat, ms)`. Les planchers de

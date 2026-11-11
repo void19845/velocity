@@ -11,7 +11,7 @@
 /* HIT. Les evenements sont renvoyes 3 fois et dedoublonnes par id.    */
 /* ------------------------------------------------------------------ */
 #define NET_MAGIC 0x564C4F43u
-#define NET_VER   21      /* 15 : regles (mode, grappin, munitions, boutique, specs) et objectifs dans PkSnap, EV_OBJ, spec dans NetPState ;
+#define NET_VER   22      /* 15 : regles (mode, grappin, munitions, boutique, specs) et objectifs dans PkSnap, EV_OBJ, spec dans NetPState ;
                              16 = fusion du fork + mode classe (PkJoin, PkRoster, PkAnnounce.ranked, PkWelcome pad[1]) ;
                              17 = cartes CITADELLE et OASIS retirees, objectifs sur les cartes neon ;
                              18 = horloge de match commune (PkSnap.clk, clkSrv) ;
@@ -23,7 +23,10 @@
                                   rebonds), EV_SHOT.pad[0] = rebonds des plombs, EV_ROCKET.sub = rebonds (jusqu'a RIC_ROCKET_CAP) et
                                   roquette redirigee par une piece (EV_PARRY), EV_SKILL SK_RICOCHET et SK_ALLIN actor 1 (eclair de la
                                   Tesla), EV_HIT W_SHOTGUN : le recul est une vitesse de poussee (proportionnelle a la vitesse du
-                                  tireur, SG_KNOCK_RATIO), pas une vitesse ajoutee */
+                                  tireur, SG_KNOCK_RATIO), pas une vitesse ajoutee ;
+                             22 = Yoyo : traction sur appui long, EV_FLAIL (sub FLE_START / FLE_PULL / FLE_END du lanceur vers la
+                                  victime, FLE_BREAK de la victime vers le lanceur ; f[0] = intensite ecrite par l'hote, 1/2 face
+                                  a une Egide) */
 static int net_silent(double last) { return nowT - last > NET_TIMEOUT; }   /* plus de nouvelles (grace : last dans le futur) */
 enum { PK_QUERY = 1, PK_ANNOUNCE, PK_JOIN, PK_WELCOME, PK_STATE, PK_SNAP, PK_ROSTER, PK_EVENT, PK_LEAVE,
        PK_PUNCH, PK_KEEP };   /* PUNCH : ouvre le NAT vers un client ; KEEP : un spectateur dit qu'il est la */
@@ -37,7 +40,8 @@ enum { EV_RAIL = 1, EV_ROCKET, EV_ROCKET_END, EV_PARRY, EV_HIT, EV_MELEE, EV_KIL
        EV_LANCE = 20,                                    /* Lance : choc de joute, emis par l'hote seulement */
        EV_SLAM = 21,                                      /* identifiants figes des armes : PLAN.md (15 a 20 reserves) */
        EV_SKILL = 22,                                     /* Competences : sub = SK_*, target = cible marquee */
-       EV_OBJ = 23 };                                     /* objectifs des modes : sub = OBJ_*, target = equipe, actor = joueur, f[0] = indice */
+       EV_OBJ = 23,                                       /* objectifs des modes : sub = OBJ_*, target = equipe, actor = joueur, f[0] = indice */
+       EV_FLAIL = 24 };                                   /* Yoyo : traction sur appui long, sub = FLE_*, target = victime (FLE_BREAK : lanceur) */
 
 #pragma pack(push, 1)
 typedef struct { unsigned int magic; unsigned char type, from, ver, pad; } PkHead;
@@ -330,6 +334,14 @@ static void net_fx_skill(int sub, int target, V3 a, V3 b) {
 static void net_fx_melee(V3 pos, V3 dir, float sp) {
     NetEvent e = ev_new(EV_MELEE);
     vf(e.f, pos); vf(e.f + 3, dir); e.f[6] = sp;
+    net_emit(&e);
+}
+/* Yoyo, traction sur appui long : EV_FLAIL. sub = FLE_START (accroche), FLE_PULL (rafraichissement du bail, ~10 Hz), FLE_END (le lanceur
+ * lache) : target = victime ; FLE_BREAK (la victime rompt la chaine) : target = lanceur. f[0] = intensite de la traction : 1, ou 1/2
+ * quand l'Egide de la victime fait face a la chaine (l'hote le decide et l'ecrit avant de relayer) */
+static void net_fx_flail(int sub, int target) {
+    NetEvent e = ev_new(EV_FLAIL);
+    e.sub = (unsigned char)sub; e.target = (unsigned char)target; e.f[0] = 1;
     net_emit(&e);
 }
 static void net_fx_fist(V3 pos, V3 dir, float x, int sub) {   /* Poings : x = vitesse, ou distance du decor si punch-jump */
@@ -1221,6 +1233,12 @@ static void apply_event(const NetEvent *ev) {
             netlog("tesla : decharge renvoyee par %s vers %s", pname(def), pname(sh));
         }
         break;                                            /* --- fin Tesla --- */
+    case EV_FLAIL:                                        /* --- Yoyo : traction (appui long) d'un autre joueur --- */
+        if (flail_net_event(ev->from, ev->target, ev->sub, ev->f[0])) {   /* nouvelle accroche sur moi */
+            snprintf(popText, sizeof popText, "CHAINE DE %s", pname(ev->from)); popT = 0.8f;
+            netlog("fleau : %s m'accroche", pname(ev->from));
+        }
+        break;                                            /* --- fin Yoyo --- */
     case EV_INFO:
         if (ev->sub && ev->target < MAXP) saw_remove_owner(ev->target);   /* depart : ses scies disparaissent */
         if (ev->sub && ev->target < MAXP) mine_remove_owner(ev->target);  /* Ventouse : ses mines aussi (celles sur lui retombent) */

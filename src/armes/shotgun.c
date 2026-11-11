@@ -16,6 +16,20 @@ static int sgBursts;                                      /* pieces eclatees au 
 static int sgShots, sgPelletSum, sgStreakShots, sgJumps, sgBurstSum;   /* journal du bot */
 static int sgPellRic, sgPellRicSum;                        /* rebonds de plombs au dernier tir (tests) et au total (journal) */
 static float sgLastPush;                                  /* poussee (m/s) du dernier tir (tests) */
+/* VAGUES : effets de la boutique. Les etapes qui sont des STATS (taille, cone, portee, perte a distance, plombs en plus, delai, cout de jauge,
+ * courbure) sont lues dans le sac de stats (boutique_stats.c) par sg_stats, une seule fois par tir ; les evenements et comportements (rafale,
+ * coup double, culasse, peau de plomb) et les capstones sont dans src/solo/boutique_shotgun.c (definis plus bas).
+ * SG_PMAX : capacite en plombs d'une salve */
+#define SG_PMAX 16
+#define SG_PCAP 24                                        /* capacite des tableaux de fire_shotgun : SG_PMAX plombs, +50 % pour la salve All in One (capstone AIO>SHO) */
+static int sgFree;                                       /* salve gratuite (rafale, coup double) : ni munition, ni recul, ni recharge */
+static int vgsg_cap_near(void);
+static float vgsg_salvo_mul(void);
+static void vgsg_refund(float cost);
+static void vgsg_pellet_hit(V3 at, int enemy);
+static int vgsg_coin_mode(void);
+static void vgsg_coins(const V3 *dir, int n);
+static void vgsg_after(V3 eye, V3 d, int pellets, int kills);
 
 static float sg_rand(unsigned int *s) { *s = *s * 1664525u + 1013904223u; return (*s >> 8) * (1.0f / 16777216.0f); }
 static unsigned int sg_new_seed(void) {                   /* unique, deterministe, sans toucher rng */
@@ -37,10 +51,74 @@ static void sg_pellet_dirs(V3 d, float half, unsigned int seed, V3 *out) {
         out[k] = vnorm(vadd(d, vadd(vmul(r, cosf(ang) * rho * th), vmul(u, sinf(ang) * rho * th))));
     }
 }
-static float sg_falloff(float t) {                        /* plein jusqu'a 10 m, puis lineaire jusqu'a x0.3 a 30 m */
-    if (t <= SG_NEAR) return 1;
-    if (t >= SG_FAR) return SG_FAR_MULT;
-    return 1 - (1 - SG_FAR_MULT) * (t - SG_NEAR) / (SG_FAR - SG_NEAR);
+/* directions des plombs au-dela des SG_PELLETS du motif (VAGUES : Plombs en plus), tirees dans le meme cone */
+static void sg_extra_dirs(V3 d, float half, unsigned int seed, V3 *dir, int n) {
+    unsigned int s = seed ^ 0x9e3779b9u;
+    V3 r = vnorm(vcross(d, v3(0, 1, 0.01f))), u = vcross(r, d);
+    float th = tanf(half);
+    for (int k = SG_PELLETS; k < n; k++) {
+        float rho = sqrtf(sg_rand(&s)) * 0.9f, ang = sg_rand(&s) * 2 * PI;
+        dir[k] = vnorm(vadd(d, vadd(vmul(r, cosf(ang) * rho * th), vmul(u, sinf(ang) * rho * th))));
+    }
+}
+/* PLOMBS CHERCHEURS / TRAQUEURS (VAGUES, stat SUI) : chaque plomb se courbe de deg degres vers l'ennemi le plus proche de la visee */
+static void sg_seek(V3 eye, V3 d, V3 *dir, int n, float deg) {
+    if (deg <= 0) return;
+    int best = -1;
+    float bc = cosf(25 * PI / 180.0f);
+    for (int j = 0; j < MAXE; j++) {
+        if (!E[j].alive || E[j].summoned == 2) continue;
+        float c = vdot(d, vnorm(vsub(E[j].pos, eye)));
+        if (c > bc && los(eye, E[j].pos)) { bc = c; best = j; }
+    }
+    if (best < 0) return;
+    V3 t = vnorm(vsub(E[best].pos, eye));
+    float lim = deg * PI / 180.0f;
+    for (int k = 0; k < n; k++) {
+        float ang = acosf(clampf(vdot(dir[k], t), -1, 1));
+        if (ang < 1e-4f) continue;
+        dir[k] = vnorm(vlerp(dir[k], t, fminf(1, lim / ang)));
+    }
+}
+
+/* Stats du Shotgun pour UN tir, lues une seule fois (fire_shotgun, piece en plombs, formes fusionnees). Hors VAGUES, ou Shotgun non equipe,
+ * st() rend la base : ce sont les valeurs du PvP. `half` et `range` sont les bases du tireur (cone apres le slide, portee de l'arme).
+ * ATTENTION : near et far sont des macros vides de windef.h, d'ou les noms fallA / fallB. */
+typedef struct {
+    float half;                                           /* demi-angle du cone (rad) : Gerbe large, Cone serre */
+    int extra;                                            /* plombs en plus, au plus SG_PMAX - SG_PELLETS : Plombs en plus */
+    float range;                                          /* portee d'un plomb (m) : Pompe tendue */
+    float size;                                           /* taille des plombs (x) : Gros plomb */
+    float fallA, fallB, fallMin;                          /* perte de degats : pleins jusqu'a fallA, puis lineaire jusqu'a fallMin a fallB : Cone serre, Pompe tendue, Chevrotine */
+    float seek;                                           /* courbure des plombs vers la cible (deg) : Plombs chercheurs / traqueurs */
+    float cd;                                             /* delai entre deux salves (x) : Pompe vive */
+    float cost;                                           /* cout de jauge d'un tir (x) : Double canon */
+    int capNear;                                          /* capstone SHO>LAN (Shotgun de joute) : x1,4 sous 3,5 m */
+} SgStats;
+static void sg_stats(SgStats *S, float half, float range) {
+    S->half = half; S->extra = 0; S->range = range; S->size = 1; S->cd = 1; S->cost = 1; S->seek = 0;
+    S->fallA = SG_NEAR; S->fallB = SG_FAR; S->fallMin = SG_FAR_MULT; S->capNear = 0;
+    if (!vagOn) return;
+    S->half = fmaxf(0.01f, st(SH_SHO, STAT_CONE, half));
+    int ex = (int)(st(SH_SHO, STAT_NBP, 0) + 0.5f);
+    S->extra = ex > SG_PMAX - SG_PELLETS ? SG_PMAX - SG_PELLETS : ex;
+    S->range = st(SH_SHO, STAT_POR, range);
+    S->size = st(SH_SHO, STAT_TAI, 1.0f);
+    S->fallA = st(SH_SHO, STAT_PNEAR, SG_NEAR); S->fallB = st(SH_SHO, STAT_PFAR, SG_FAR);
+    float loss = st(SH_SHO, STAT_PERTE, 1.0f);            /* part de la perte de degats a distance qui reste */
+    if (loss != 1.0f) S->fallMin = 1 - (1 - SG_FAR_MULT) * loss;
+    S->seek = st(SH_SHO, STAT_SUI, 0);
+    S->cd = st(SH_SHO, STAT_CD, 1.0f);
+    S->cost = st(SH_SHO, STAT_COUT, 1.0f);
+    S->capNear = vgsg_cap_near();
+}
+static float sg_fall(const SgStats *S, float t) {         /* plein jusqu'a 10 m, puis lineaire jusqu'a x0.3 a 30 m (valeurs de base) */
+    float m;
+    if (t <= S->fallA) m = 1;
+    else if (t >= S->fallB) m = S->fallMin;
+    else m = 1 - (1 - S->fallMin) * (t - S->fallA) / (S->fallB - S->fallA);
+    if (S->capNear && t < 3.5f) m *= 1.4f;
+    return m;
 }
 /* poussee (m/s) d'un tir tire a la vitesse `speed` : proportionnelle (SG_KNOCK_RATIO), au moins SG_KNOCK_MIN, sans plafond (SG_KNOCK_MAX = 0) */
 static float sg_push_speed(float speed) {
@@ -124,32 +202,41 @@ static void sg_recoil(V3 d) {
 }
 
 static void fire_shotgun(void) {
-    if (P.ammo[WP_SHOTGUN] > 0) P.ammo[WP_SHOTGUN]--;
-    enum { SGSEG = SG_PELLETS * (RIC_PELLET_CAP + 1) };   /* segments de plomb au plus (un par rebond avec RICOCHET) */
-    V3 eye = eye_pos(), d = view_dir(), dir[SG_PELLETS];
-    float half = SG_HALF_ANGLE * (P.sliding ? SG_SLIDE_SPREAD : 1), mult = streak_mult();
+    int fr = sgFree;
+    SgStats S;                                            /* VAGUES : tout ce que la boutique change est lu ici, une fois par tir (sac de stats) */
+    sg_stats(&S, SG_HALF_ANGLE * (P.sliding ? SG_SLIDE_SPREAD : 1), SG_RANGE);
+    if (!fr && P.ammo[WP_SHOTGUN] > 0) { P.ammo[WP_SHOTGUN]--; if (vagOn) vgsg_refund(S.cost); }
+    enum { SGSEG = SG_PCAP * (RIC_PELLET_CAP + 1) };   /* segments de plomb au plus (un par rebond avec RICOCHET) */
+    V3 eye = eye_pos(), d = view_dir(), dir[SG_PCAP];
+    float half = S.half, mult = streak_mult();
+    int nP = SG_PELLETS + S.extra, kills = 0;
+    float rng = S.range, gros = S.size;
+    if (vagOn) { mult *= vgsg_salvo_mul(); cp_aio_sho_fire(&half, &nP); }
     unsigned int seed = sg_new_seed();
     static SgAcc A;
     static V3 segA[SGSEG], segB[SGSEG], segN[SGSEG];      /* trace de chaque segment : depart, arrivee, normale du mur */
     static unsigned char segWall[SGSEG], segFirst[SGSEG]; /* le segment finit sur un mur (etincelles) ; premier segment d'un plomb */
     static int burstList[SGSEG], mineList[SGSEG];
-    int pellets = 0, nBurst = 0, nMineHit = 0, nSeg = 0, ricMax = ric_take() ? RIC_PELLET_CAP : 0;
+    int pellets = 0, nBurst = 0, nMineHit = 0, nSeg = 0, ricMax = (!fr && ric_take()) ? RIC_PELLET_CAP : 0;
     float push = sg_push_speed(vlen(P.vel));           /* poussee de ce tir : ma vitesse actuelle, AVANT le residu de sg_recoil */
     memset(&A, 0, sizeof A);
     sgPellRic = 0; sgLastPush = push;
     sg_pellet_dirs(d, half, seed, dir);
-    for (int k = 0; k < SG_PELLETS; k++) {                /* le plomb s'arrete sur le plus proche : piece, drone ou joueur */
+    if (nP > SG_PELLETS) sg_extra_dirs(d, half, seed, dir, nP);
+    sg_seek(eye, d, dir, nP, S.seek);                     /* Plombs chercheurs / traqueurs (S.seek = 0 : rien) */
+    if (vagOn && vgsg_coin_mode()) { vgsg_coins(dir, nP); nP = 0; }   /* capstone PIECES : plus de plomb, des pieces */
+    for (int k = 0; k < nP; k++) {                /* le plomb s'arrete sur le plus proche : piece, drone ou joueur */
         V3 o = eye, dk = dir[k];
         float travelled = 0;                              /* distance deja parcourue (les degats baissent avec elle) */
         for (int sgm = 0; sgm <= ricMax; sgm++) {         /* RICOCHET : un segment par rebond (un seul sans lui) */
             V3 nrm;
-            float tw = ray_world(o, dk, SG_RANGE, &nrm), t;
-            int ci = -1, te = -1, tp = -1, mi = -1, wall = tw < SG_RANGE;
+            float tw = ray_world(o, dk, rng, &nrm), t;
+            int ci = -1, te = -1, tp = -1, mi = -1, wall = tw < rng;
             for (int i = 0; i < MAXCOIN; i++)             /* toute piece, la mienne ou non (MIRAGE : pas mon leurre) */
                 if (CO[i].alive && !(CO[i].decoy && CO[i].owner == myId) && !(sgm == 0 && decoy_skip(i, eye)) &&
                     ray_sphere(o, dk, CO[i].pos, SG_COIN_RADIUS, tw, &t)) { tw = t; ci = i; }
             for (int i = 0; i < MAXE; i++)
-                if (E[i].alive && ray_sphere(o, dk, E[i].pos, enemy_radius(E[i].type), tw, &t)) { tw = t; te = i; ci = -1; }
+                if (E[i].alive && ray_sphere(o, dk, E[i].pos, enemy_radius(E[i].type) * gros, tw, &t)) { tw = t; te = i; ci = -1; }
             for (int i = 0; i < MAXP; i++) {
                 V3 mn, mx;
                 if (!np_target(i)) continue;
@@ -159,11 +246,14 @@ static void fire_shotgun(void) {
             for (int i = 0; i < MAXPR; i++)               /* --- Ventouse : le plomb s'arrete sur une mine (x1) --- */
                 if (mine_shootable(&PR[i]) && ray_sphere(o, dk, PR[i].pos, MINE_HIT_R, tw, &t)) { tw = t; te = tp = ci = -1; mi = i; }
             V3 e = vadd(o, vmul(dk, tw));
-            float dmg = SG_PELLET_DMG * sg_falloff(travelled + tw) * mult;
+            float fo = sg_fall(&S, travelled + tw);
+            if (vagOn && te >= 0) fo = vg_rail_open_mul(te, fo);   /* capstone RAIL>SHO : cible ouverte par le rail (x1,3, sans perte a distance) */
+            float dmg = SG_PELLET_DMG * fo * mult;
             int stopped = 1;
             if (te >= 0) {
                 A.e[te] += dmg; A.ke[te] = vadd(A.ke[te], vmul(dk, SG_PELLET_KNOCK)); A.ne[te]++; A.he[te] = e;
                 pellets++;
+                if (vagOn) vgsg_pellet_hit(e, te);
             } else if (tp >= 0) {
                 A.p[tp] += dmg; A.kp[tp] = vadd(A.kp[tp], vmul(dk, push / SG_PELLETS)); A.np[tp]++; A.hp[tp] = e;
                 pellets++;
@@ -192,6 +282,7 @@ static void fire_shotgun(void) {
         if (A.ne[i] >= 8 && vlen(vsub(E[i].pos, eye)) < 6) { juice = 1; juiceAt = at; }
         burst(at, v3(1, 0.45f, 0.2f), 12, 7, 0.3f, 0.1f);
         damage_enemy(i, A.e[i], A.ke[i]);
+        if (!E[i].alive) kills++;
     }
     for (int i = 0; i < MAXP; i++) {                      /* AGREGATION : un seul net_hit par joueur et par tir */
         if (A.p[i] <= 0) continue;
@@ -208,12 +299,13 @@ static void fire_shotgun(void) {
             if (mine_explode(&PR[mineList[b]], 0, 1)) A.burstHit = 1;
             snprintf(popText, sizeof popText, foreign ? "MINE VOLEE !" : "MINE !"); popT = 1.0f;
         }                                                 /* --- fin Ventouse --- */
+    if (vagOn) vgsg_after(eye, d, pellets, fr ? 0 : kills);
     int hit = pellets >= SG_STREAK_MIN || A.burstHit;
     shot_result(hit);
     sgShots++; sgPelletSum += pellets; sgStreakShots += hit; sgBurstSum += sgBursts; sgPellRicSum += sgPellRic;
     if (botMode) netlog("tir pompe : %d plomb(s), %d eclat(s), %s", pellets, sgBursts, hit ? "touche" : "rate");
-    if (push > 0) push_start(vmul(d, -push), SG_KNOCK_T); /* poussee du tireur : proportionnelle a sa vitesse, sens oppose au tir, sol et air */
-    if (!P.grounded) sg_recoil(d);                        /* en l'air : le residu de vitesse (saut au recul) */
+    if (push > 0 && !fr) push_start(vmul(d, -push), SG_KNOCK_T); /* poussee du tireur : proportionnelle a sa vitesse, sens oppose au tir, sol et air */
+    if (!P.grounded && !fr) sg_recoil(d);                        /* en l'air : le residu de vitesse (saut au recul) */
 
     V3 m = muzzle(), col = sg_tint(shotStreak / (float)STREAK_MAX);   /* effets locaux : traceurs, etincelles, son */
     for (int s = 0; s < nSeg; s++) {
@@ -223,7 +315,7 @@ static void fire_shotgun(void) {
                 add_part(segB[s], vadd(vmul(segN[s], 3), vmul(rand_dir(), 2)), v3(1, 0.75f, 0.4f), 0.35f, 0.07f, 12);
     }
     if (dmMode) net_fx_shot(eye, d, half, seed);
-    P.fireCd = P.sgPumpMax = P.sgPumpT = SG_CD / streak_rate();
+    if (!fr) P.fireCd = P.sgPumpMax = P.sgPumpT = SG_CD / streak_rate() * S.cd;   /* VAGUES : Pompe vive (S.cd = 1 sinon) */
     P.recoil = 1.6f; shake += 0.1f + 0.012f * pellets; muzzleT = 0.09f;
     P.sgLastPellets = pellets; P.sgLastT = pellets ? 0.5f : 0;
     play(S_SG_FIRE, 0.85f, frange(0.96f, 1.04f));

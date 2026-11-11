@@ -53,6 +53,7 @@ static void spec_tick(float dt) {
 
 /* tir de l'arme en main (chaque fire_* retire lui-meme sa munition) */
 static void fire_weapon(void) {
+    if (vagOn && hy_fire()) return;                       /* VAGUES : arme hybride active (boutique_hybrides.c) */
     switch (P.weapon) {
     case WP_RAIL:   fire_rail(); break;
     case WP_ROCKET: fire_rocket(); break;
@@ -124,6 +125,7 @@ static void game_tick(float dt) {
     }
 
     vgSrc = UP_MELEE(P.meleeKind);                        /* VAGUES : chemin de la boutique des touches qui suivent */
+    flail_victim_tick(dt);                                /* Yoyo : un adversaire me tire (EV_FLAIL, appui long), avant le mouvement */
     player_tick(dt, jp, dp);
     race_tick(dt);                                        /* course : decompte, portes, chrono */
     sr_full_tick(dt);                                     /* speedrun complet : carte suivante */
@@ -151,6 +153,10 @@ static void game_tick(float dt) {
         lance_tick(dt, act[A_MELEE]);                     /* maintenu : act, pas actP */
     } else if (P.meleeKind == MK_FIST) fist_tick(dt, meleePress);   /* Poings : combo, tampon, parry de chaque coup */
     else if (P.meleeKind == MK_SHIELD) shield_tick(dt, meleePress, act[A_MELEE]);   /* Egide : maintenu = leve, tap = coup */
+    else if (P.meleeKind == MK_FLAIL) {                   /* Yoyo : appui = coup en arc, maintien (FLAIL_HOLD_T) = traction tant que tenu */
+        if (!P.dead && meleePress && P.meleeCd <= 0 && P.flailPullN == 0) flail_swing();
+        flail_tick(dt, act[A_MELEE]);                     /* maintenu : act, pas actP */
+    }
     else if (!P.dead && meleePress && P.meleeCd <= 0) melee();
     shield_remote_tick(dt);                               /* Egide : jauges miroirs (clients) */
     if (P.meleeKind != MK_FIST && P.parryWin > 0) {
@@ -221,6 +227,7 @@ static void fx_tick(float dt) {
     for (int i = 0; i < MAXBM; i++) BM[i].life -= dt;
     for (int i = 0; i < MAXTR; i++) TR[i].t += dt;       /* SHOTGUN : traceurs */
     slam_vis_tick(dt);                                    /* Enclume : murs d'onde */
+    flail_fx_tick(dt);                                    /* Yoyo : baux des chaines vues (tractions des autres joueurs) */
     tesla_fx_tick(dt);                                    /* Tesla : liens d'arc, arcs des autres */
     for (int i = 0; i < nb; i++)                         /* particules des jump pads */
         if (boxes[i].kind == B_PAD && frand() < 0.15f) {

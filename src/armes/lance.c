@@ -33,6 +33,7 @@ static void lance_win(void) {
     P.lanceState = LS_IDLE; P.meleeCd = LANCE_HIT_CD; P.lanceVc = 0;
     P.dashCharge = fminf(2, P.dashCharge + 1);
     melee_hit_points(PTS_LANCE_JOUST);
+    if (vagOn) roq_joust();                               /* VAGUES : LANCE-ROQUETTES */
 }
 
 /* joute annulee par l'hote (choc perdu, double desarconnement) : la touche ne compte plus, on rend ses points */
@@ -63,7 +64,7 @@ static void lance_press(void) {
         bd = reach; best = i; bestP = pl;
     }
     P.lanceState = LS_THRUST; P.lanceT = 0; P.lanceVc = 0;
-    P.meleeT = 0.2f; P.parryWin = PARRY_WINDOW;
+    P.meleeT = vgm_estoc_anim(0.2f); P.parryWin = PARRY_WINDOW;
     lanceThrusts++;
     if (best >= 0 && !bestP) {                            /* drone ou kamikaze */
         Enemy *e = &E[best];
@@ -76,7 +77,7 @@ static void lance_press(void) {
             parried++;
         } else {
             damage_enemy(best, lance_thrust_dmg(rel), vmul(f, 8 + rel * 0.5f));
-            if (!e->alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
+            if (!e->alive) { if (!vagOn) P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }   /* VAGUES : pas de soin sur kill */
         }
         hit = 1;
     } else if (best >= 0) {
@@ -91,7 +92,8 @@ static void lance_press(void) {
     if (hit) {                                            /* effets locaux d'abord : chez l'hote, un parry revient tout de suite */
         lanceThrustHits++;
         P.dashCharge = fminf(2, P.dashCharge + 1);
-        melee_hit_points(meleePts[P.meleeKind]);
+        melee_hit_points(meleePts[P.meleeKind] + vgm_estoc_pts());
+        if (best >= 0 && !bestP) vgm_estoc_hit(best);   /* VAGUES : estocs a la suite, capstones */
         hitMarker = 0.18f; shake += 0.15f;
         if (!parried) hitstop = fmaxf(hitstop, 0.04f);
         play(S_PUNCH, 0.9f, 0.8f);
@@ -109,7 +111,7 @@ static void lance_press(void) {
 static void lance_strike(int i, int isP, float vc) {
     V3 eye = eye_pos(), c = isP ? np_center(i) : E[i].pos, tv = isP ? np_vel(i) : E[i].vel;
     V3 dir = vnorm(vsub(c, eye));
-    float dmg = lance_dmg(vc), spd = vlen(P.vel);
+    float dmg = lance_dmg(vgm_vc(vc)) * vgm_joust_mul(), spd = vlen(P.vel);
     /* la cible recoit 60 % de ta vitesse, et perd sa composante d'approche : elle est desarconnee */
     V3 knock = vsub(vmul(P.vel, LANCE_GIVE), vmul(dir, fminf(0, vdot(tv, dir))));
     knock.y += 3;
@@ -119,6 +121,7 @@ static void lance_strike(int i, int isP, float vc) {
         lanceJoustHook++;
     }
     lanceJousts++; lanceVcSum += vc;
+    if (vagOn) vg_rail_joust();                           /* VAGUES : CHEVALIER */
     if (isP && shield_faces(i, dir, SHB_DIRECT)) {        /* Egide : joute bloquee, lance relevee, ni dash ni points */
         P.vel = vmul(P.vel, LANCE_KEEP);                  /* (la cible ne recoit que 30 % : l'hote divise le recul par 2) */
         P.lanceState = LS_IDLE; P.meleeCd = LANCE_HIT_CD; P.lanceVc = 0;
@@ -126,7 +129,8 @@ static void lance_strike(int i, int isP, float vc) {
     lance_juice(c, dir, vc);
     if (!isP) {
         damage_enemy(i, dmg, knock);
-        if (!E[i].alive) { P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }
+        if (!E[i].alive) { if (!vagOn) P.hp = fminf(100, P.hp + 15); ammo_points(PTS_MELEE_KILL, AP_KILL); }   /* VAGUES : pas de soin sur kill */
+        vgm_joust_hit(i);                                 /* VAGUES : recharge, soin, points, capstones */
     } else {
         if (botMode) netlog("joute : v_c %.1f -> %s", vc, NP[i].name);
         P.lanceHitT = 0; P.lanceHitWho = i + 1;           /* avant l'envoi : chez l'hote, EV_LANCE revient tout de suite */
@@ -136,22 +140,23 @@ static void lance_strike(int i, int isP, float vc) {
 
 /* machine a etats de la lance, apres player_tick (donc apres le grappin). held = touche de melee tenue */
 static void lance_tick(float dt, int held) {
+    vgm_melee_tick(dt);
     if (P.dead || P.lanceState == LS_IDLE) { P.lanceState = LS_IDLE; P.lanceVc = 0; return; }
     P.lanceT += dt;
     if (P.lanceState == LS_THRUST) {
         if (P.swingLanded || !held) {                     /* estoc seul (ou estoc qui a touche) */
             P.lanceState = LS_IDLE;
-            P.meleeCd = fmaxf(P.meleeCd, P.swingLanded ? LANCE_THRUST_CD : MELEE_WHIFF_CD - P.lanceT);
+            P.meleeCd = fmaxf(P.meleeCd, P.swingLanded ? vgm_thrust_cd(LANCE_THRUST_CD) : vgm_whiff_cd(MELEE_WHIFF_CD) - P.lanceT);
             return;
         }
-        if (P.lanceT < LANCE_TAP) return;
+        if (P.lanceT < vgm_tap(LANCE_TAP)) return;
         P.lanceState = LS_COUCH;                          /* l'estoc dans le vide devient la lance couchee, sans penalite */
         lanceCouches++;
         play(S_LANCE_COUCH, 0.7f, 1.0f);
     }
     if (!held || P.lanceT >= LANCE_HOLD_MAX - 1e-4f) {    /* relevee sans toucher (marge : somme de 240 ticks en float) */
-        P.lanceState = LS_IDLE; P.meleeCd = fmaxf(P.meleeCd, LANCE_MISS_CD); P.lanceVc = 0;
-        lanceWhiffs++;
+        P.lanceState = LS_IDLE; P.meleeCd = fmaxf(P.meleeCd, vgm_whiff_cd(LANCE_MISS_CD)); P.lanceVc = 0;
+        lanceWhiffs++; vgm_joust_whiff();
         return;
     }
     V3 eye = eye_pos(), f = view_dir();

@@ -417,8 +417,9 @@ enum { MS_NONE, MS_FLY, MS_WORLD, MS_ENEMY, MS_PLAYER };
 enum { MINE_EV_THROW, MINE_EV_WORLD, MINE_EV_PLAYER, MINE_EV_BOOM, MINE_EV_TORN, MINE_EV_CANCEL };   /* EV_MINE.sub */
 enum { MX_REMOTE, MX_FUSE, MX_THIRD, MX_SHOT, MX_FLY, MX_PROX, MX_COUNT };   /* origine des explosions (journal) */
 /* --- fin Ventouse --- */
-/* --- Fleau a chaine (Yoyo) : arc de 140 degres a longue portee, SANS traction (la cible touchee ne bouge pas ; plus de
- * FLAIL_PULL / FLAIL_PULL_UP / FLAIL_DRONE_STOP ni de combo fleau -> rail). Seul le lanceur pare est encore tire --- */
+/* --- Fleau a chaine (Yoyo) : arc de 140 degres a longue portee. APPUI COURT : le coup en arc, SANS traction (la cible touchee ne
+ * bouge pas). APPUI LONG (touche de melee tenue FLAIL_HOLD_T apres l'appui) : la chaine s'accroche aux cibles de l'arc et les TIRE
+ * vers le lanceur tant que la touche est tenue (aucune limite de duree). Le lanceur pare est tire vers le pareur (FLAIL_PARRIED_*) --- */
 #define FLAIL_RANGE         6.0f    /* portee de base */
 #define FLAIL_RANGE_PER_MS  0.05f   /* +0.05 m par m/s de vitesse relative */
 #define FLAIL_ARC_COS       0.34f   /* cos du demi-angle horizontal (70 deg, arc de 140) */
@@ -438,6 +439,25 @@ enum { MX_REMOTE, MX_FUSE, MX_THIRD, MX_SHOT, MX_FLY, MX_PROX, MX_COUNT };   /* 
 #define FLAIL_COIN_LIFE     1.5f    /* 67 m de vol */
 #define FLAIL_COIN_SEEK     60.0f   /* portee de recherche de cible */
 #define FLAIL_COIN_HIT_R    0.4f    /* marge de touche de la piece frappee */
+/* traction (appui long) : le coup en arc part a l'appui comme avant ; si la touche est encore tenue FLAIL_HOLD_T apres l'appui, la
+ * chaine s'accroche aux cibles de l'arc A CET INSTANT (memes regles de portee, d'arc et de ligne de vue), sans nouveaux degats */
+#define FLAIL_HOLD_T        0.15f   /* tenue plus longtemps apres l'appui : traction (comme la Lance couchee et le tap de l'Egide) */
+#define FLAIL_HOOK_MAX      8       /* cibles accrochees au plus, les plus proches d'abord */
+#define FLAIL_PULL_SPEED    12.0f   /* vitesse de traction vers le lanceur (m/s) : plus vite que la course (RUN_SPEED 9,5) */
+#define FLAIL_PULL_RESPONSE 14.0f   /* ennemis : leur vitesse rejoint la consigne en ~70 ms (1/s), comme le VORTEX mais lisse */
+#define FLAIL_PULL_ACCEL    140.0f  /* joueurs : acceleration de la traction (m/s2) ; plus que la course au sol (GROUND_ACCEL x RUN_SPEED = 114) */
+#define FLAIL_DRONE_STOP    2.5f    /* ennemis : un ennemi tire s'arrete a cette distance de l'oeil */
+#define FLAIL_PULL_STOP     2.0f    /* joueurs : une victime tiree s'arrete a cette distance du lanceur */
+#define FLAIL_PULL_GAIN     6.0f    /* on ralentit en arrivant : vitesse de consigne <= GAIN x (distance - arret) */
+#define FLAIL_PULL_SLACK    2.0f    /* la traction se coupe si la cible s'eloigne au-dela de FLAIL_RANGE + SLACK (m) */
+#define FLAIL_PULL_LOS_T    0.25f   /* un mur qui coupe la ligne de vue plus longtemps que cela coupe la traction (s) */
+#define FLAIL_PULL_SNAP     16.0f   /* PvP : une victime qui s'eloigne plus vite que cela (dash 18, slide ou bhop rapide, grappin) arrache la chaine */
+#define FLAIL_PULL_REFRESH  0.10f   /* PvP : EV_FLAIL renvoye toutes les 0,1 s par le lanceur tant que la touche est tenue */
+#define FLAIL_PULL_LEASE    0.30f   /* PvP : bail cote victime : sans nouvelle depuis 0,3 s, la traction s'arrete (3 rafraichissements perdus) */
+#define FLAIL_PULL_END_CD   0.5f    /* recharge de melee apres la traction (a partir du relachement ou de la coupure) */
+#define FLAIL_HOST_TOL      3.0f    /* PvP : tolerance de latence de l'hote sur la portee de l'accroche (m) */
+#define FLAIL_HOST_PARRY_T  0.6f    /* PvP : l'hote refuse l'accroche d'un fleau pare dans ce delai (la parade peut arriver apres l'appui long chez un client lent) (s) */
+enum { FLE_START, FLE_PULL, FLE_END, FLE_BREAK };         /* EV_FLAIL.sub : accroche, rafraichissement, fin (lanceur), chaine rompue (victime) */
 /* --- fin Fleau --- */
 /* --- Poings a impulsion : combo de 3 coups (le 3e est un uppercut), punch-jump sur le decor --- */
 #define FIST_GAP            0.22f   /* entre deux coups du combo */
@@ -600,6 +620,18 @@ static const float wpCd[WP_COUNT] = { RAIL_CD, ROCKET_CD, SG_CD, KIN_CD, 0.4f, M
 #define VG_SNIPER_LASER_P    0.5f    /* part des tirs au laser (le reste : orbe rapide) */
 #define VG_SNIPER_FAST_SPEED 110.0f  /* vitesse de l'orbe rapide (34 m/s avant) ; au dela de ~150 elle traverserait le joueur entre deux pas */
 #define VG_LASER_R           0.7f    /* le joueur est touche par le laser a moins de 0,7 m de la ligne */
+/* BOMBE (kamikaze rapide qui s'arrete, tique puis explose), CARRE (mini tesseract : bouclier des autres), MORTIER (orbe lente a grosse zone) */
+#define VG_BOMBE_SPEED    20.0f   /* vitesse de la bombe (le kamikaze : 12) */
+#define VG_BOMBE_STOP     8.0f    /* distance a laquelle elle s'arrete pour tiquer */
+#define VG_BOMBE_FUSE     2.0f    /* secondes de tic avant l'explosion */
+#define VG_BOMBE_R        5.0f    /* rayon de l'explosion (m) */
+#define VG_BOMBE_DMG      30.0f   /* degats de l'explosion (fixes) */
+#define VG_CARRE_MULT     0.1f    /* degats subis par les ennemis tant qu'un carre vit */
+#define VG_MORTIER_SPEED  7.0f    /* vitesse de l'orbe a pulsation */
+#define VG_MORTIER_LIFE   4.0f    /* l'orbe detonne seule au bout de ce temps */
+#define VG_MORTIER_R      8.0f    /* rayon de l'explosion de l'orbe (m) */
+#define VG_MORTIER_DMG    30.0f   /* degats de l'explosion (fixes) */
+#define VG_MORTIER_T      5.0f    /* delai entre deux tirs (3,5 s pour l'elite) */
 /* boss */
 #define VG_BOSS_PYRA_HP   2400.0f
 #define VG_BOSS_TESS_HP   3600.0f

@@ -15,19 +15,21 @@ static unsigned char keys[K_COUNT], latch[K_COUNT];
 enum { A_FWD, A_BACK, A_LEFT, A_RIGHT, A_JUMP, A_CROUCH, A_DASH, A_FIRE, A_MELEE, A_HOOK, A_SKILL,
        A_WEAP1, A_WEAP2, A_SWAP, A_SCORES,
        A_DETONATE_ALL, A_DETONATE_ONE,                    /* Ventouse : toutes mes mines / la plus ancienne */
+       A_FUSION,                                          /* VAGUES : active l'arme hybride (jauge de fusion pleine) */
        A_COUNT };
 static const char *actId[A_COUNT] = { "avancer", "reculer", "gauche", "droite", "sauter", "accroupi", "dash", "tirer",
                                       "epee", "grappin", "piece", "arme1", "arme2", "changer_arme", "scores",
-                                      "detoner_tout", "detoner_une" };
+                                      "detoner_tout", "detoner_une", "fusion" };
 static const char *actLabel[A_COUNT] = { "Avancer", "Reculer", "Gauche", "Droite", "Sauter (maintenir = bhop)",
                                          "S'accroupir / slide", "Dash", "Tirer", "Epee / parry", "Grappin (maintenir)",
                                          "Lancer une piece", "Railgun", "Roquettes", "Changer d'arme", "Tableau des scores",
-                                         "Detoner toutes les mines", "Detoner la plus ancienne" };
+                                         "Detoner toutes les mines", "Detoner la plus ancienne", "Fusion (arme hybride)" };
 static const int bindDefault[A_COUNT][2] = {
     { 0x11, 0 }, { 0x1F, 0 }, { 0x1E, 0 }, { 0x20, 0 }, { 0x39, 0 }, { 0x1D, 0x2E }, { 0x2A, 0x12 },
     { K_LMB, 0 }, { K_RMB, 0x2F }, { 0x21, K_MMB }, { 0x22, K_X1 }, { 0x02, 0 }, { 0x03, 0 }, { K_WHEEL, 0 },
     { 0x0F, 0 },
     { K_X2, 0x10 }, { 0x2D, 0 },                          /* Ventouse : pouce arriere + Q/A physique ; X */
+    { 0x14, 0 },                                          /* Fusion : T physique (libre ; R reste le redemarrage) */
 };
 static int binds[A_COUNT][2];
 static unsigned char act[A_COUNT], actP[A_COUNT];          /* tenu / appuye pendant ce tick */

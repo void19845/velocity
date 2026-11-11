@@ -48,15 +48,16 @@ static void draw_controls(float x, float y) {
     };
     char buf[128];
     text(1, x, y, "COMMANDES", 0.5f, 0.9f, 1.0f, 1);
+    float pitch = clampf(((float)winH - 24 - (y + 34)) / ((float)A_COUNT + 6.6f), 17.0f, 21.0f);   /* serre les lignes si la fenetre est basse */
     for (int a = 0; a < A_COUNT; a++) {
-        text(0, x, y + 34 + a * 21.0f, actLabel[a], 0.75f, 0.78f, 0.88f, 1);
-        text(0, x + 285, y + 34 + a * 21.0f, bind_text(a), 1, 0.9f, 0.55f, 1);
+        text(0, x, y + 34 + a * pitch, actLabel[a], 0.75f, 0.78f, 0.88f, 1);
+        text(0, x + 285, y + 34 + a * pitch, bind_text(a), 1, 0.9f, 0.55f, 1);
     }
-    float ty = y + 44 + A_COUNT * 21.0f;
+    float ty = y + 44 + A_COUNT * pitch;
     for (int i = 0; i < (int)(sizeof tips / sizeof tips[0]); i++)
-        text(0, x, ty + i * 21.0f, tips[i], 0.6f, 0.75f, 0.9f, 1);
+        text(0, x, ty + i * pitch, tips[i], 0.6f, 0.75f, 0.9f, 1);
     snprintf(buf, sizeof buf, "les commandes se changent dans PARAMETRES");
-    text(0, x, ty + 5 * 21.0f + 6, buf, 0.5f, 0.55f, 0.65f, 1);
+    text(0, x, ty + 5 * pitch + 6, buf, 0.5f, 0.55f, 0.65f, 1);
 }
 
 static float slider(int id, float x, float y, float w, const char *label, const char *valText, float v, float lo, float hi) {
@@ -224,7 +225,7 @@ static int sel_button(float x, float y, float w, float h, const char *label, int
     if (chosen) rect(x - 3, y - 3, w + 6, h + 6, col.x, col.y, col.z, 1);
     rect(x, y, w, h, hover ? 0.2f : 0.08f, hover ? 0.42f : 0.1f, hover ? 0.62f : 0.18f, 0.95f);
     float k = ready ? 1.0f : 0.4f;
-    text_c(0, x + w * 0.5f, y + h * 0.5f + 5, ready ? label : "BIENTOT", k, k, k, 1);
+    text_c(0, x + w * 0.5f, y + h * 0.5f + 5, ready ? label : vagOn ? "HORS VAGUES" : "BIENTOT", k, k, k, 1);
     if (hover && uiClick) { uiClick = 0; play(S_HIT, 0.4f, 1.5f); return 1; }
     return 0;
 }
@@ -248,19 +249,19 @@ static void draw_loadout(float cx, float cy) {
     y = top + 128;
     text(1, x0, y - 8, "MELEE", 0.5f, 0.9f, 1.0f, 1);
     for (int m = 0; m < MK_COUNT; m++)
-        if (sel_button(x0 + m * step, y, bw, 44, meleeNames[m], m == wantMelee, mkReady[m], v3(1, 0.85f, 0.4f)))
+        if (sel_button(x0 + m * step, y, bw, 44, meleeNames[m], m == wantMelee, mkReady[m] && (!vagOn || vg_mk_ok(m)), v3(1, 0.85f, 0.4f)))
             wantMelee = m;
     y += R;
     text(1, x0, y - 8, "COMPETENCE", 0.5f, 0.9f, 1.0f, 1);
     for (int k = 0; k < SK_COUNT; k++)                    /* Competences : la piece est l'une d'elles */
-        if (sel_button(x0 + k * step, y, bw, 44, skillDef[k].name, k == wantSkill, 1,
+        if (sel_button(x0 + k * step, y, bw, 44, skillDef[k].name, k == wantSkill, !vagOn || vg_sk_ok(k),
                        v3(skillDef[k].r, skillDef[k].g, skillDef[k].b)))
             wantSkill = k;
     for (int s = 0; s < 2; s++) {
         y += R;
         text(1, x0, y - 8, s ? "ARME 2" : "ARME 1", 0.5f, 0.9f, 1.0f, 1);
         for (int w = 0; w < WP_COUNT; w++)
-            if (sel_button(x0 + w * step, y, bw, 44, ammoDef[w].name, w == wantLoadout[s], wpReady[w],
+            if (sel_button(x0 + w * step, y, bw, 44, ammoDef[w].name, w == wantLoadout[s], wpReady[w] && (!vagOn || vg_wp_ok(w)),
                            v3(ammoDef[w].r, ammoDef[w].g, ammoDef[w].b)))
                 loadout_pick(s, w);
     }
@@ -291,7 +292,8 @@ static void draw_loadout(float cx, float cy) {
         text(0, x0, y, buf, sd->r, sd->g, sd->b, 1);
         y += 22;
     }
-    if (appState == APP_GAME) text(0, x0, y, "pris en compte au prochain respawn", 0.6f, 0.6f, 0.7f, 1);
+    if (vagOn) text(0, x0, y, "VAGUES : Railgun, Roquettes, Shotgun, Lance, Impulsion, Piece et All in One seulement", 1, 0.85f, 0.5f, 1);
+    else if (appState == APP_GAME) text(0, x0, y, "pris en compte au prochain respawn", 0.6f, 0.6f, 0.7f, 1);
     if (button(cx - 105, y + 14, 210, 50, "VALIDER")) { loadoutOpen = 0; cfg_save(); }
     if (uiClick) uiClick = 0;
 }

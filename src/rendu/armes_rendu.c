@@ -273,8 +273,8 @@ static void flail_head_model(V3 c, float s) {            /* yoyo : deux disques 
     box_faces(vsub(c, v3(s * 0.35f, s * 0.35f, e * 2.4f)), vadd(c, v3(s * 0.35f, s * 0.35f, e * 2.4f)));
 }
 /* ficelle de a a b : un seul trait clair, retombant en parabole de fleche sag */
-static void draw_chain(V3 a, V3 b, float sag) {
-    glLineWidth(2);
+static void draw_chain_w(V3 a, V3 b, float sag, float width) {
+    glLineWidth(width);
     glBegin(GL_LINES);
     glColor3f(0.92f, 0.9f, 0.82f);
     for (int s = 0; s < 16; s++) {
@@ -285,27 +285,51 @@ static void draw_chain(V3 a, V3 b, float sag) {
     }
     glEnd();
 }
-/* chaine du joueur distant i (depuis sa main gauche, comme draw_remote_players) pendant son coup, sinon 0 */
+static void draw_chain(V3 a, V3 b, float sag) { draw_chain_w(a, b, sag, 2); }
+/* main gauche du joueur distant i (comme draw_remote_players) */
+static V3 np_flail_hand(int i) {
+    NetPlayer *n = &NP[i];
+    float cy = cosf(n->st.yaw), sy = sinf(n->st.yaw), ox = -0.4f, oz = -0.1f;
+    return vadd(n->disp, v3(ox * cy - oz * sy, np_height(i) - 0.6f, ox * sy + oz * cy));
+}
+/* chaine du joueur distant i pendant son coup, sinon 0 */
 static int np_flail_chain(int i, V3 *hand, V3 *head, float *sag) {
     NetPlayer *n = &NP[i];
     if (!np_present(i) || (n->st.pad & 0x0F) != MK_FLAIL || !n->st.melee) return 0;
-    float cy = cosf(n->st.yaw), sy = sinf(n->st.yaw), ox = -0.4f, oz = -0.1f;
-    *hand = vadd(n->disp, v3(ox * cy - oz * sy, np_height(i) - 0.6f, ox * sy + oz * cy));
+    *hand = np_flail_hand(i);
     *head = flail_head(*hand, n->st.yaw, n->st.pitch, 1 - n->st.melee / 255.0f, flail_range(vlen(np_vel(i))), 0, *hand, sag);
     return 1;
 }
-/* chaines dans le monde (6 a 8 m : profondeur reelle, pas dans le viewmodel), puis halos additifs des tetes */
+/* chaines dans le monde (6 a 8 m : profondeur reelle, pas dans le viewmodel), puis halos additifs des tetes. Traction (appui long) :
+ * une chaine tendue de la main jusqu'a chaque cible accrochee (les miennes, puis celles des autres joueurs : baux EV_FLAIL) */
 static void draw_flails(V3 eye) {
-    V3 heads[MAXP + 1], hand, head;
+    V3 heads[MAXP + 1 + FLAIL_HOOK_MAX + MAXP], hand, head;
     int nh = 0;
     float sag;
-    if (P.meleeKind == MK_FLAIL && P.flailT > 0 && !P.dead && !spectating) {
-        head = flail_my_head(eye, &sag);
-        draw_chain(flail_hand(eye), head, sag);
-        heads[nh++] = head;
+    if (P.meleeKind == MK_FLAIL && !P.dead && !spectating) {
+        if (P.flailPullN > 0) {
+            hand = flail_hand(eye);
+            for (int h = 0; h < P.flailPullN; h++) {
+                V3 c;
+                if (!flail_target(P.flailHk[h], &c)) continue;
+                draw_chain_w(hand, c, 0, 3.5f);           /* chaine tendue : un trait plus epais que le balayage */
+                heads[nh++] = c;
+            }
+        } else if (P.flailT > 0) {
+            head = flail_my_head(eye, &sag);
+            draw_chain(flail_hand(eye), head, sag);
+            heads[nh++] = head;
+        }
     }
     for (int i = 0; dmMode && i < MAXP; i++)
         if (np_flail_chain(i, &hand, &head, &sag)) { draw_chain(hand, head, sag); heads[nh++] = head; }
+    for (int v = 0; dmMode && v < MAXP; v++) {            /* tractions des autres : du lanceur a sa victime */
+        int by = flailLinkBy[v] - 1;
+        if (flailLinkT[v] <= 0 || by < 0 || by >= MAXP || by == myId || !np_present(by) || (v != myId && !np_present(v))) continue;
+        head = v == myId ? pcenter() : np_center(v);
+        draw_chain_w(np_flail_hand(by), head, 0, 3.5f);
+        heads[nh++] = head;
+    }
     if (!nh) return;
     glEnable(GL_LIGHTING);
     for (int k = 0; k < nh; k++) flail_head_model(heads[k], 0.06f);
@@ -324,6 +348,8 @@ static void draw_flails(V3 eye) {
  * Pendant le coup, la tete est dans le monde (draw_flails) : seul le manche reste, releve */
 static void draw_flail_vm(void) {
     float k = P.flailT > 0 ? clampf(1 - P.flailT / FLAIL_ANIM, 0, 1) : 0, lift = P.flailT > 0 ? sinf(PI * k) : 0;
+    int pulling = P.flailPullN > 0;                       /* traction : manche leve, la tete est au bout des chaines (draw_flails) */
+    if (pulling) lift = 0.85f;
     glPushMatrix();
     glTranslatef(-0.9f, -0.22f, -0.3f);
     glRotatef(-25 - 50 * lift, 1, 0, 0);                  /* incline vers l'avant, releve pendant le lancer */
@@ -332,7 +358,7 @@ static void draw_flail_vm(void) {
     box_faces(v3(-0.008f, 0, -0.008f), v3(0.008f, 0.38f, 0.008f));
     glColor3f(0.4f, 0.41f, 0.45f);                        /* bague */
     box_faces(v3(-0.03f, 0.34f, -0.03f), v3(0.03f, 0.4f, 0.03f));
-    if (P.flailT <= 0) {
+    if (P.flailT <= 0 && !pulling) {
         float sx = clampf(-P.swayX * 5, -0.15f, 0.15f) + 0.02f * sinf(gameTime * 2.3f);
         float sz = clampf(P.bob * 3, -0.1f, 0.1f) + 0.02f * cosf(gameTime * 1.7f);
         V3 top = v3(0, 0.4f, 0), hd = v3(-0.12f + sx, 0.12f, sz);

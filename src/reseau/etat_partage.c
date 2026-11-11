@@ -212,6 +212,7 @@ static void net_fx_rocket(V3 pos, V3 vel, unsigned int netId);
 static void net_fx_rocket_end(unsigned int netId, V3 pos);
 static void net_fx_parry(unsigned int netId, V3 pos, V3 vel, float mult, int parries);
 static void net_fx_melee(V3 pos, V3 dir, float sp);
+static void net_fx_flail(int sub, int target);            /* Fleau : EV_FLAIL (traction sur appui long), sub = FLE_*, target = victime */
 static void net_fx_fist(V3 pos, V3 dir, float x, int sub);   /* Poings : EV_MELEE, sub = coup (1..3) | 0x10 punch-jump */
 static void net_fx_slam(V3 pos, float R, float hw, V3 dir, float vh, float vy);
 static void net_fx_coin(int sub, unsigned int netId, V3 pos, V3 vel);
