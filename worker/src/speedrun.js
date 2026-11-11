@@ -1,6 +1,7 @@
 // Classements SPEEDRUN : meilleur temps de chaque joueur par categorie
 //   course:<carte>  course d'une carte CHALLENGE (LA TOILE...), un temps intermediaire par porte
-//   complet         toutes les cartes CHALLENGE a la suite, un temps intermediaire par carte
+//   complet:<N>     toutes les cartes CHALLENGE a la suite (N cartes), un temps intermediaire par carte ; "complet" tout court
+//                   est l'ancien classement a une carte (anciennes versions du jeu), il n'est plus alimente par la derniere
 //   vagues100       mode VAGUES : vague 100 terminee, 0 ou 4 temps intermediaires (vagues de boss 25/50/75/100)
 // Meme base D1 et meme identite que le mode CLASSE (ratings.js : table players, cle verifiee par son empreinte).
 //
@@ -20,7 +21,10 @@ import { auth, all, one, run, stmt } from './ratings.js';
 export const SR = {
   CATS: {
     'course:la_toile': { splits: [13], floorMs: 6975, maxAgeMs: 30 * 60 * 1000 },
-    complet: { splits: [1], floorMs: 6975, maxAgeMs: 2 * 3600 * 1000 },
+    'course:le_stand': { splits: [5], floorMs: 2189, maxAgeMs: 30 * 60 * 1000 },    // precision : cibles de visee, 5 portes
+    'course:le_flux': { splits: [6], floorMs: 2558, maxAgeMs: 30 * 60 * 1000 },     // grappin et cibles, 6 portes
+    'complet:3': { splits: [3], floorMs: 11722, maxAgeMs: 2 * 3600 * 1000 },        // LA TOILE + LE STAND + LE FLUX (6975 + 2189 + 2558)
+    complet: { splits: [1], floorMs: 6975, maxAgeMs: 2 * 3600 * 1000 },             // ancien classement (une carte), garde pour les anciennes versions du jeu
     vagues100: { splits: [0, 4], floorMs: 5 * 60 * 1000, maxAgeMs: 8 * 3600 * 1000 },   // plancher provisoire
   },
   SEG_MIN_MS: 250,        // troncon minimal entre deux temps intermediaires

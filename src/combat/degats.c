@@ -5,14 +5,14 @@
 /* Combat                                                              */
 /* ------------------------------------------------------------------ */
 /* rayon et couleur par type (EN_*) ; nom pour l'ecran de mort et la barre de boss */
-static const float enemyRad[EN_COUNT] = { 0.9f, 0.75f, 0.85f, 0.5f, 1.25f, 0.8f, 0.95f, 1.1f, 3.2f, 4.2f, 3.5f, 3.8f };
+static const float enemyRad[EN_COUNT] = { 0.9f, 0.75f, 0.85f, 0.5f, 1.25f, 0.8f, 0.95f, 1.1f, 0.8f, 0.4f, 3.2f, 4.2f, 3.5f, 3.8f };
 static const float enemyCol[EN_COUNT][3] = {
     { 1.0f, 0.25f, 0.3f }, { 1.0f, 0.6f, 0.15f }, { 0.35f, 1.0f, 0.55f }, { 1.0f, 0.95f, 0.3f }, { 0.55f, 0.6f, 1.0f },
-    { 1.0f, 0.3f, 0.75f }, { 0.3f, 0.9f, 1.0f }, { 0.75f, 0.3f, 1.0f },
+    { 1.0f, 0.3f, 0.75f }, { 0.3f, 0.9f, 1.0f }, { 0.75f, 0.3f, 1.0f }, { 1.0f, 0.3f, 0.2f }, { 1.0f, 0.85f, 0.2f },
     { 1.0f, 0.62f, 0.18f }, { 0.55f, 0.45f, 1.0f }, { 1.0f, 0.3f, 0.45f }, { 0.9f, 0.95f, 1.0f },
 };
 static const char *enemyName[EN_COUNT] = { "DRONE", "RUSHER", "SENTINELLE", "ESSAIM", "BASTION",
-                                           "BOMBE", "CARRE", "MORTIER", "PYRAMIDE", "TESSERACT", "SPHERE", "HEXAEDRE" };
+                                           "BOMBE", "CARRE", "MORTIER", "CIBLE", "MINI CIBLE", "PYRAMIDE", "TESSERACT", "SPHERE", "HEXAEDRE" };
 static float vgBossScale = 1;                             /* boss plus petits dans une salle basse (LE DOJO) */
 static float enemy_radius(int type) {
     return type >= 0 && type < EN_COUNT ? enemyRad[type] * (EN_BOSS(type) ? vgBossScale : 1) : 0.75f;
@@ -79,7 +79,7 @@ static void kill_enemy(int i, int byPlayer) {
     kills++;
     combo++; comboT = 3.0f;
     float mult = (1 + rel_speed(e->vel) / 15.0f) * (1 + 0.25f * (combo - 1));
-    static const int basePts[EN_COUNT] = { 100, 60, 120, 30, 200, 150, 150, 250, 3000, 4000, 5000, 10000 };
+    static const int basePts[EN_COUNT] = { 100, 60, 120, 30, 200, 150, 150, 250, 50, 100, 3000, 4000, 5000, 10000 };
     int pts = (int)(basePts[e->type >= 0 && e->type < EN_COUNT ? e->type : 1] * mult * style_mult());   /* le style multiplie les points */
     style_kill(-1);
     score += pts;

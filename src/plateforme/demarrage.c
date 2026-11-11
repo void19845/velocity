@@ -346,6 +346,7 @@ static int velocity_main(const char *cmd) {
     wc.lpfnWndProc = wndproc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hIcon = LoadIcon(inst, MAKEINTRESOURCE(1));        /* velocity.ico (velocity.rc) : barre de titre, barre des taches, Alt+Tab */
     wc.lpszClassName = "velocity";
     RegisterClassA(&wc);
     RECT r = { 0, 0, winW, winH };
@@ -655,6 +656,23 @@ static int velocity_main(const char *cmd) {
             P.dead = 1; NP[0].alive = 0;
         }
         loadout_apply();
+        gameTime = 3;
+        render(1, TICK);
+        save_bmp(shotPath);
+        return 0;
+    }
+    if (shotMode && strstr(shotPath, "cibles")) {          /* cartes a cibles (--map 6 : LE STAND, --map 7 : LE FLUX) : cibles_stand, cibles_flux,
+                                                            * "_verrou" : on traverse l'anneau cibles debout (message) */
+        race_start_map(curMap);
+        appState = APP_GAME;
+        const MapDef *md = &maps[curMap];
+        raceCount = 0; raceGate = 1; raceT = 11.2f; raceDone = 0; ghostBestN = 0;
+        for (int i = 0; i < MAXE; i++) if (race_is_target(i) && E[i].phase == 0) E[i].alive = 0;   /* la porte 1 est franchie : ses cibles sont tombees */
+        race_targets_tick(0.7f);
+        V3 at = vsub(race_gate(0), v3(0, 0.9f, 0));
+        P.pos = P.prevPos = at; P.vel = v3(0, 0, md->killY > -999 ? 0.0f : -20.0f); P.grounded = 0;
+        race_face(vadd(at, v3(0, 0.9f, 0)), 1);
+        if (strstr(shotPath, "verrou")) { raceLockMsgT = 1.0f; }
         gameTime = 3;
         render(1, TICK);
         save_bmp(shotPath);

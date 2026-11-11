@@ -1066,8 +1066,8 @@ Fichier `src/interface/mise_a_jour.c`, inclus juste avant `interface/config.c`.
 
 ### 3.18 Cartes (`MapDef`) et kill zone
 
-Six cartes, décrites par la table `maps[]` (juste après les fonctions de construction, section « Monde ») : cinq
-cartes de partie et une carte **CHALLENGE** (LA TOILE, mode COURSE seulement, §3.21). Objectifs des modes : §3.22.
+Huit cartes, décrites par la table `maps[]` (juste après les fonctions de construction, section « Monde ») : cinq
+cartes de partie et trois cartes **CHALLENGE** (LA TOILE, LE STAND, LE FLUX : mode COURSE seulement, §3.21). Objectifs des modes : §3.22.
 
 | # | Nom | Fonction | `killY` | Solo | Idée |
 |---|---|---|---|---|---|
@@ -1077,6 +1077,8 @@ cartes de partie et une carte **CHALLENGE** (LA TOILE, mode COURSE seulement, §
 | 3 | LA BOUCLE | `build_map_boucle` | −1000 | oui | anneau de 120 × 60 m, deux voies par ligne droite avec bandes d'accélération à contresens, séparateurs bas, bloc central coupé au milieu, passerelles et toit à 10 m, pads de coin et pads vers le toit |
 | 4 | LE DOJO | `build_map_dojo` | −1000 | oui | salle de 36 × 36 m, plafond à 7 m, 16 piliers, ring surélevé de 0,5 m, **aucune cellule** |
 | 5 | LA TOILE | `build_map_toile` | −10 | non | **CHALLENGE** (`challenge` = 1) : course au grappin entre gratte-ciel (§3.21), jamais en partie |
+| 6 | LE STAND | `build_map_stand` | −1000 (fermée) | non | **CHALLENGE** à cibles de visée : couloir fermé de 20 × 140 m, 5 portes, 14 cibles (§3.21) |
+| 7 | LE FLUX | `build_map_flux` | −10 | non | **CHALLENGE** à cibles : les deux premières avenues de LA TOILE, 6 portes, 15 cibles en l'air (§3.21) |
 
 - **`MapDef`** : `name` (sans accents), `build`, `spawns`/`nspawns` (coordonnées du monde ; l'Arène garde ses
   anciens points via la macro `MS()` = `ms()` à la compilation), `start` (départ solo et position d'attente en LAN),
@@ -1084,8 +1086,8 @@ cartes de partie et une carte **CHALLENGE** (LA TOILE, mode COURSE seulement, §
   caméra du menu (`menuCam`, `menuPitch` ; le spectateur est `specUp` mètres plus haut), `solo`, `music`, couleurs
   `sky` (haut du ciel) et `fog` (horizon et brouillard, utilisées par `draw_sky` et `render`), portes de course
   (`gates`, `ngates`, `startYaw`), `challenge` (1 : carte du mode COURSE seulement), `objScale`, objectifs `zones`,
-  `flags`, `shield`, départs par équipe `teamSpawn` / `nTeamSpawn` (§3.22).
-- **Cartes CHALLENGE** (`challenge` = 1, LA TOILE) : jamais dans la ligne CARTE du menu (`map_step` les saute), ni dans
+  `flags`, `shield`, départs par équipe `teamSpawn` / `nTeamSpawn` (§3.22), cibles de visée `targets` / `ntargets` (CHALLENGE, §3.21).
+- **Cartes CHALLENGE** (`challenge` = 1 : LA TOILE, LE STAND, LE FLUX) : jamais dans la ligne CARTE du menu (`map_step` les saute), ni dans
   la ROTATION, ni en partie hébergée / rapide / classée (`map_pvp`, `rk_map_ok`, `host_setup_rules` reprend l'Arène),
   ni en solo par vagues (`solo` = 0), et `mode_ok` refuse tous les modes ; on n'y va que par le bouton CHALLENGE
   (`race_map`). `map=` de `velocity.ini` qui désigne une carte CHALLENGE (ou une carte retirée) revient à 0.
@@ -1180,8 +1182,8 @@ cartes de partie et une carte **CHALLENGE** (LA TOILE, mode COURSE seulement, §
   (`ACT_RACE`, `pendingArg` = la carte, `race_start_map`), SPEEDRUN COMPLET (`ACT_SPEEDRUN`). Aujourd'hui une seule
   carte CHALLENGE à portes
   (`MapDef.challenge`, `gates` x y z rayon, `ngates`, `startYaw` ; **LA TOILE**, `build_map_toile` : quatre avenues
-  de gratte-ciel au-dessus du vide, 13 portes jusqu'au toit d'arrivée). Pas d'ennemis, pas de vagues. LA TOILE n'est
-  jouable que là (§3.18, « Cartes CHALLENGE »).
+  de gratte-ciel au-dessus du vide, 13 portes jusqu'au toit d'arrivée ; **LE STAND** et **LE FLUX**, cartes à cibles
+  ci-dessous). Pas d'ennemis, pas de vagues. Ces cartes ne sont jouables que là (§3.18, « Cartes CHALLENGE »).
 - `race_start` : décompte `RACE_COUNTDOWN` immobile, puis chrono ; une porte compte quand le segment
   `prevPos → pos` (centre du corps) traverse sa sphère, dans l'ordre. Chute sous `killY` : `race_respawn` à la
   dernière porte passée (le chrono continue, compteur de chutes). **R** ou RECOMMENCER : `race_start`.
@@ -1196,9 +1198,27 @@ cartes de partie et une carte **CHALLENGE** (LA TOILE, mode COURSE seulement, §
   **Balancier** : le grappin rembobine jusqu'à `RACE_ROPE` (18 m, le bas de l'arc tombe à hauteur des portes), puis
   traction × `RACE_SWING_PULL` et la corde ne s'allonge plus ; avancer pousse de `RACE_SWING_PUMP` le long de l'arc.
   Portes de 8 m de rayon, aucun passage obligé sous une passerelle.
+- **Cartes à cibles de visée** (`MapDef.targets` : `x y z, mini, porte, mx my mz, période` ; `ntargets`) :
+  - **LE STAND** (`build_map_stand`) : couloir fermé de 20 × 140 m (pas de vide), bandes d'accélération, quelques obstacles bas, 5 portes dans
+    l'axe, 14 cibles : fixes (porte 1), petites (2), mobiles (3 et 4), petites et mobiles ensemble (5). **LE FLUX** (`build_map_flux`) : les deux
+    premières avenues de LA TOILE (mêmes tours, mêmes points de balancement, mêmes six portes, la dernière est l'arrivée), 15 cibles dans la rue,
+    en l'air : on tire en se balançant.
+  - Une cible est un ennemi **`EN_CIBLE`** (rayon 0,8 m) ou **`EN_MINI`** (0,4 m), à 1 PV, rangé dans `E[]` (donc **toutes les armes** la
+    touchent, comme un drone ; types insérés avant les boss : `EN_BOSS(t)` compare à `EN_PYRA`). Pas d'IA en course (`enemy_tick` ne tourne pas) :
+    `race_targets_tick` pose chaque cible (`race_target_at` : centre + amplitude × sinus de la période, déphasage par indice), `E.phase` = porte
+    qu'elle verrouille, `E.combo` = indice dans la carte + 1. Dessin : octaèdre néon (`vagues_rendu.c`), vif avec un halo pour les cibles de la porte en
+    cours, terne pour les autres ; l'anneau de la porte est **rouge** tant qu'il lui reste des cibles.
+  - **Porte verrouillée** : la porte en cours ne compte que si `race_targets_left(porte) == 0` ; traverser l'anneau cibles debout joue un son et
+    affiche « PORTE VERROUILLEE : ABATS LES CIBLES ». HUD : « CIBLES k / n » sous le chrono, « PORTE OUVERTE ». Pas de pénalité de temps : le temps
+    perdu à viser est la pénalité.
+  - **Munitions** : sur une carte à cibles, chaque arme à jauge du loadout regagne **une munition par seconde** (`race_tick`, `raceAmmoT`) ; sans cela
+    un tir raté (jauge vide, pas de recharge passive) bloquerait la course. Les kills de cibles comptent pour la jauge de style.
+  - Nouvelle carte à cibles : ajouter `build_map_*`, ses `Gates` et `Targets` (une cible doit être visible depuis la porte d'avant : test « cibles »),
+    la ligne de `maps[]` (**après** LA TOILE ; `race_map()` reste la première carte CHALLENGE à portes), puis la catégorie du serveur (§4 « Speedrun »).
 - Affichage : anneaux des 3 prochaines portes (la suivante respire, avec une colonne de lumière ; l'arrivée est
   dorée), flèche au bord de l'écran si la porte est hors champ, chrono, PORTE k / n, écran d'ARRIVEE.
-- Captures : `--shot course.bmp`, `course_depart.bmp`, `course_fin.bmp`. Test : portes libres, lignes droites
+- Captures : `--shot course.bmp`, `course_depart.bmp`, `course_fin.bmp` ; cartes à cibles : `--shot cibles_stand.bmp --map 6`, `cibles_flux.bmp --map 7`,
+  `cibles_stand_verrou.bmp --map 6` (message de porte verrouillée). Test : portes libres, lignes droites
   porte à porte dégagées, porte sautée non comptée, chute → retour à la porte, arrivée, record, fantôme ; et une
   **course jouée par un pilote simple** (regarde la porte, grappin dès que l'aimant trouve un point, lâche dans la
   remontée) : il doit arriver en moins de 120 s (41 s, 1 chute). `RACEDBG=1` trace son trajet dans le fichier de test.
@@ -1615,8 +1635,8 @@ Trois familles de classements, tenus dans la **même base D1 `leaderboard`** que
 
 | Catégorie (jeu) | Clé (serveur) | Temps intermédiaires | Plancher | Ticket valable |
 |---|---|---|---|---|
-| `SR_MAP0 + m` : course de la carte CHALLENGE `m` | `course:<carte>` (`course:la_toile`) | un par porte (13) | 6 975 ms | 30 min |
-| `SR_COMPLET` : toutes les cartes CHALLENGE à la suite | `complet` | un par carte (1 aujourd'hui) | somme des courses | 2 h |
+| `SR_MAP0 + m` : course de la carte CHALLENGE `m` | `course:<carte>` (`course:la_toile`, `course:le_stand`, `course:le_flux`) | un par porte (13, 5, 6) | 6 975 / 2 189 / 2 558 ms | 30 min |
+| `SR_COMPLET` : toutes les cartes CHALLENGE à la suite | `complet:<N>` (`complet:3`) | un par carte (3) | somme des courses (11 722 ms) | 2 h |
 | `SR_VAGUES100` : mode VAGUES, vague 100 terminée | `vagues100` | 0 ou 4 (vagues 25 / 50 / 75 / 100) | 5 min (provisoire) | 8 h |
 
 **Où est le code** : `src/jeu/speedrun.c` (catégories `sr_key` / `sr_label` / `sr_cat_ok`, planchers `sr_floor_ms`,
@@ -1663,8 +1683,11 @@ Limites : pas de rejeu de la course côté serveur, donc un client modifié qui 
 plausible (au-dessus du plancher) qu'il n'a pas fait ; le temps de jeu ne compte pas les décomptes, ce qui laisse
 3 s de marge au contrôle du temps réel.
 
-**Nouvelle carte CHALLENGE** : ajouter sa catégorie `course:<carte>` dans `SR.CATS` (plancher donné par `--test`),
-ajouter son plancher à celui de `complet`, et passer `complet.splits` au nouveau nombre de cartes ; redéployer.
+**Nouvelle carte CHALLENGE** : ajouter sa catégorie `course:<carte>` dans `SR.CATS` (plancher donné par `--test`, ligne « speedrun plancher »),
+ajouter une catégorie `complet:<N+1>` (plancher = somme, `splits: [N+1]`) : **la clé du speedrun complet porte le nombre de cartes** (`sr_key`), donc un
+nouveau parcours repart d'un classement vide au lieu de comparer des temps de parcours différents. L'ancienne catégorie `complet` (une carte) reste
+dans `SR.CATS` pour les anciennes versions du jeu. **Redéployer le worker avant de publier la version** (`cd worker && npx wrangler deploy`) : sinon les
+temps des nouvelles cartes sont refusés (« categorie inconnue »). Le plancher ne tient pas compte des cibles (chemin de porte en porte seulement).
 
 **Affichage** :
 - bouton **CHALLENGE** du menu principal → écran CHALLENGE (`challengeOpen`) : une ligne par catégorie (COURSE de
@@ -1683,7 +1706,7 @@ propre classement. **Chrono global** = somme des temps de course (`sr_full_ms`),
 intermédiaires de mon meilleur run au serveur). Après une arrivée, `SR_NEXT_DELAY` (2 s) puis la carte suivante
 (`sr_full_tick`, appelé par `game_tick`). **R** / RECOMMENCER repart de la première carte. Panneau en haut à gauche
 (`draw_sr_full_panel`), bilan final (`draw_sr_full_end`) avec le temps de chaque carte et le classement `complet`.
-Avec une seule carte CHALLENGE (LA TOILE), le speedrun complet est cette course seule, mais son classement est à part.
+Le speedrun complet enchaîne aujourd'hui LA TOILE, LE STAND et LE FLUX (ordre de `maps[]`).
 
 Tests : lignes `speedrun …` de `run_tests()` (catégories, planchers, ticket puis rapport, ticket remplacé par R,
 réponse record / refus, hors ligne, lecture du classement, speedrun complet sur deux cartes : enchaînement, décompte,

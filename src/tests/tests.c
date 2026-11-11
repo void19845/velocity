@@ -237,6 +237,49 @@ static void egide_test_lan(V3 t, int shield, float yaw) {
 static float test_pitch_to(V3 at) { V3 d = vsub(at, eye_pos()); return asinf(d.y / vlen(d)); }
 
 /* Tests du mouvement sans fenetre : velocity.exe --test resultat.txt */
+/* --- cartes a cibles (LE STAND, LE FLUX) : pilote simple qui court / se balance et tire sur la cible vivante la plus proche de la
+ * porte en cours (rail : le tir part au tick, la cible est touchee a l'endroit ou elle est). Renvoie le temps (s) ou -1 sans arrivee --- */
+static float test_race_pilot(int m, int *hooks, int *falls) {
+    FILE *logSave = botLog; botLog = NULL;
+    race_start_map(m); appState = APP_GAME; hitstop = 0;
+    memset(act, 0, sizeof act); memset(botHeld, 0, sizeof botHeld); memset(botPress, 0, sizeof botPress);
+    raceBest = 0; ghostBestN = 0;
+    int tick = 0; *hooks = 0;
+    float t = 0;
+    for (; t < 150 && !raceDone; t += TICK, tick++) {
+        memset(botHeld, 0, sizeof botHeld);
+        const MapDef *md = &maps[curMap];
+        V3 g = race_gate(raceGate < md->ngates ? raceGate : md->ngates - 1), e = eye_pos(), d = vsub(g, e);
+        float hd = fmaxf(hlen(d), 0.1f);
+        P.yaw = atan2f(d.x, -d.z);
+        P.pitch = clampf(atan2f(d.y, hd) + (md->challenge && md->killY > -999 ? 0.45f : 0), -1.2f, 1.2f);
+        botHeld[A_FWD] = 1;
+        if (P.grounded) botPress[A_JUMP] = 1;
+        int tg = -1;                                      /* cible vivante de la porte en cours, la plus proche */
+        for (int i = 0; i < MAXE; i++)
+            if (race_is_target(i) && E[i].phase == raceGate && (tg < 0 || vlen(vsub(E[i].pos, e)) < vlen(vsub(E[tg].pos, e)))) tg = i;
+        if (tg >= 0 && tick % 6 == 0 && raceCount <= 0) {  /* un tick sur six : on vise la cible et on tire */
+            V3 dt = vsub(E[tg].pos, e);
+            P.yaw = atan2f(dt.x, -dt.z); P.pitch = atan2f(dt.y, fmaxf(hlen(dt), 0.1f));
+            botHeld[A_FIRE] = 1;
+        } else if (md->killY > -999) {                    /* carte aerienne : grappin comme le pilote de LA TOILE */
+            if (P.hook == HOOK_NONE && P.hookCd <= 0 && raceCount <= 0) {
+                V3 at;
+                if (swing_target(e, view_dir(), &at) >= 0) { botPress[A_HOOK] = 1; botHeld[A_HOOK] = 1; (*hooks)++; }
+            } else if (P.hook != HOOK_NONE) {
+                V3 toA = vsub(P.anchor, P.pos), fwd = vmul(v3(d.x, 0, d.z), 1 / hd);
+                float past = -vdot(v3(toA.x, 0, toA.z), fwd);
+                int passed = P.hook == HOOK_ATTACHED && ((past > 1 && P.vel.y > 2) || past > 9);
+                botHeld[A_HOOK] = !passed;
+            }
+        }
+        game_tick(TICK);
+    }
+    botLog = logSave;
+    *falls = raceFalls;
+    return raceDone ? raceT : -1;
+}
+
 static void run_tests(const char *path) {
     botAimTest = 1;
     FILE *f = fopen(path, "w");
@@ -3702,6 +3745,51 @@ static void run_tests(const char *path) {
             raceOn = 0; appState = APP_MENU;
             load_map(0); reset_game();
         }
+        {   /* --- Cartes a cibles : portes et cibles libres et visibles, porte verrouillee tant que ses cibles vivent, pilote tireur --- */
+            for (int m = 0; m < NMAPS; m++) {
+                if (!maps[m].challenge || maps[m].ntargets <= 0) continue;
+                race_start_map(m);
+                const MapDef *md = &maps[m];
+                int solidN = 0, seenN = 0, gateTot = 0, noTarget = 0, aliveN = 0, typeOk = 0;
+                for (int k = 0; k < md->ntargets; k++) {
+                    int g = (int)md->targets[k][4];
+                    float R = md->targets[k][3] > 0.5f ? 0.4f : 0.8f, per = md->targets[k][8];
+                    for (int s = 0; s < 8; s++) {         /* la cible ne traverse aucun solide sur toute sa course */
+                        V3 p = race_target_at(md->targets[k], k, per > 0 ? per * s / 8 : 0);
+                        for (int b = 0; b < nb; b++)
+                            solidN += boxes[b].kind == B_SOLID && p.x > boxes[b].mn.x - R && p.x < boxes[b].mx.x + R &&
+                                      p.y > boxes[b].mn.y - R && p.y < boxes[b].mx.y + R && p.z > boxes[b].mn.z - R && p.z < boxes[b].mx.z + R;
+                    }
+                    V3 from = g ? race_gate(g - 1) : vadd(md->start, v3(0, 1, 0));   /* visible depuis la porte d'avant */
+                    seenN += los(from, race_target_at(md->targets[k], k, 0));
+                }
+                for (int g = 0; g < md->ngates; g++) { gateTot += race_targets_total(g); noTarget += race_targets_total(g) == 0; }
+                for (int i = 0; i < MAXE; i++) { aliveN += race_is_target(i); typeOk += race_is_target(i) && E[i].hp == 1 && enemy_radius(E[i].type) > 0.3f; }
+                /* porte verrouillee : on la traverse cibles debout -> elle ne compte pas ; cibles abattues -> elle compte */
+                raceCount = 0;
+                V3 c = vsub(race_gate(0), v3(0, 0.9f, 0)), prev = md->start, d = vnorm(vsub(c, prev));
+                P.prevPos = vsub(c, vmul(d, 3)); P.pos = vadd(c, vmul(d, 0.5f));
+                race_tick(0.5f);
+                int lockedStay = raceGate == 0, left0 = race_targets_left(0);
+                for (int i = 0; i < MAXE; i++) if (race_is_target(i) && E[i].phase == 0) damage_enemy(i, 10, v3(0, 0, 0));
+                P.prevPos = vsub(c, vmul(d, 3)); P.pos = vadd(c, vmul(d, 0.5f));
+                race_tick(0.5f);
+                int opened = raceGate == 1;
+                fprintf(f, "cibles (%s) : %d cibles (%d/%d vivantes, 1 PV %d), dans un solide %d, visibles depuis la porte d'avant %d, portes sans cible %d, "
+                           "porte 1 verrouillee (%d cibles) %d puis ouverte %d (attendu %d, %d/%d, %d, 0, %d, 0, 1 puis 1)\n",
+                        md->name, md->ntargets, aliveN, md->ntargets, typeOk, solidN, seenN, noTarget, left0, lockedStay, opened,
+                        md->ntargets, md->ntargets, md->ntargets, md->ntargets, md->ntargets);
+                (void)gateTot;
+                int hooks, falls;
+                float tm = test_race_pilot(m, &hooks, &falls);
+                int left = 0;
+                for (int i = 0; i < MAXE; i++) left += race_is_target(i);
+                fprintf(f, "cibles pilotees (%s) : arrivee %d, portes %d / %d, temps %.1f s, chutes %d, grappins %d, cibles restantes %d (attendu 1, %d / %d, < 150 s, 0)\n",
+                        md->name, tm >= 0, raceGate, md->ngates, tm >= 0 ? tm : 150.0f, falls, hooks, left, md->ngates, md->ngates);
+                raceOn = 0; appState = APP_MENU;
+                load_map(0); reset_game();
+            }
+        }
         {   /* --- Speedrun : categories, planchers (recopies dans worker/src/speedrun.js), ticket puis rapport, classement,
              * speedrun complet (enchainement des cartes CHALLENGE, chrono global, record perso) --- */
             char k0[40], k1[40], k2[40];
@@ -3711,11 +3799,14 @@ static void run_tests(const char *path) {
             botMode = 0;                                  /* les bots n'envoient pas de temps : on simule un joueur */
             memcpy(sid, rkId, 33); memcpy(skey, rkKey, 33);
             sr_key(SR_MAP0 + rm, k0, sizeof k0); sr_key(SR_COMPLET, k1, sizeof k1); sr_key(SR_VAGUES100, k2, sizeof k2);
-            fprintf(f, "speedrun categories : %s, %s, %s, carte de partie refusee %d (attendu course:la_toile, complet, vagues100, 1)\n",
+            fprintf(f, "speedrun categories : %s, %s, %s, carte de partie refusee %d (attendu course:la_toile, complet:3, vagues100, 1)\n",
                     k0, k1, k2, !sr_cat_ok(SR_MAP0 + 0));
-            fprintf(f, "speedrun planchers : course %s %d ms, complet %d ms, vague 100 %d ms (attendu 6975, 6975, 300000 : "
+            fprintf(f, "speedrun planchers : course %s %d ms, complet %d ms, vague 100 %d ms (attendu 6975, 11722, 300000 : "
                        "les memes que worker/src/speedrun.js)\n", maps[rm].name, sr_floor_ms(SR_MAP0 + rm), sr_floor_ms(SR_COMPLET),
                     sr_floor_ms(SR_VAGUES100));
+            for (int m = 0; m < NMAPS; m++)
+                if (m != rm && maps[m].challenge && maps[m].ngates > 0)
+                    fprintf(f, "speedrun plancher %s : %d ms (a recopier dans worker/src/speedrun.js)\n", maps[m].name, sr_floor_ms(SR_MAP0 + m));
             /* ticket demande au depart ; temps fini avant le ticket : il part a son arrivee, avec le ticket */
             onlineOn = 1; snprintf(rkId, 33, "%032x", 7); snprintf(rkKey, 33, "%032x", 9);
             rkQN = 0;
@@ -3959,8 +4050,8 @@ static void run_tests(const char *path) {
                     maps[hostMap].name, maps[quickMap].name, maps[race_map()].name, NMAPS - 1, rotN, maps[rm].name);
             fprintf(f, "rotation : %d passages carte -> carte suivante sans le mode en cours ou sans changer (attendu 0) ; "
                        "3 ZONES depuis %s -> %s, FRAGS depuis %s -> %s (attendu %s, %s)\n", rotBad,
-                    maps[NMAPS - 2].name, maps[map_rotate_next(NMAPS - 2, MODE_ZONES)].name,
-                    maps[NMAPS - 2].name, maps[map_rotate_next(NMAPS - 2, MODE_FRAGS)].name, maps[0].name, maps[0].name);
+                    maps[4].name, maps[map_rotate_next(4, MODE_ZONES)].name,
+                    maps[4].name, maps[map_rotate_next(4, MODE_FRAGS)].name, maps[0].name, maps[0].name);
         }
         {   /* --- Objectifs des cartes neon (3 ZONES, DRAPEAU, BOUCLIER, departs par equipe) : chaque point au-dessus d'un sol
              * (rayon vers le bas < 1,5 m, pas un pad), hors des boites, au-dessus du plan de mort ; cartes ouvertes : du sol a

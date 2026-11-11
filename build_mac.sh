@@ -24,6 +24,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleDisplayName</key><string>VELOCITY</string>
     <key>CFBundleIdentifier</key><string>com.velocity.game</string>
     <key>CFBundleExecutable</key><string>velocity</string>
+    <key>CFBundleIconFile</key><string>velocity</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundleVersion</key><string>1</string>
@@ -33,6 +34,9 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </dict>
 </plist>
 EOF
+
+# icone de l'app (Dock, Finder) : velocity.icns, tiree de l'image 64 x 64 du jeu
+cp velocity.icns "$APP/Contents/Resources/velocity.icns"
 
 # reglages graphiques modifiables (graphismes/rendu.ini, textures .bmp) : copies dans le .app
 cp -R graphismes "$APP/Contents/Resources/graphismes"

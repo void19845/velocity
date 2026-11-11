@@ -31,10 +31,10 @@ Le propriétaire est francophone : réponses, commentaires et docs **en françai
   `src/reseau/speedrun_serveur.c` ; point d'entrée `speedrun_begin(cat)` / `speedrun_report(cat, ms)`. Les planchers de
   temps existent en double (`sr_floor_ms` et `SR.CATS`) : nouvelle carte CHALLENGE = nouvelle catégorie dans le worker.
 - Mode équipes 1v1 à 4v4 (implémenté) : **§3.11 de `docs/CODE.md`** ; éclairage, ombres, bloom : **§3.12**
-- Cartes (`MapDef`, 5 cartes néon de ARENE à LE DOJO + LA TOILE en CHALLENGE, kill zone) : **§3.18** ; compétences (PIECE, MARQUE, CHARGE…) :
+- Cartes (`MapDef`, 5 cartes néon de ARENE à LE DOJO + 3 cartes CHALLENGE : LA TOILE, LE STAND, LE FLUX ; kill zone) : **§3.18** ; compétences (PIECE, MARQUE, CHARGE…) :
   `src/combat/competences.c` et `docs/COMPETENCES_MARKSMAN.md`
 - Navigation des bots (graphe auto) : **§3.19** ; jauge de style : **§3.20** ; mode COURSE (bouton CHALLENGE, LA TOILE,
-  fantôme) : **§3.21** ; une carte `challenge = 1` n'est jamais en partie (`map_pvp`, `mode_ok`, rotation, classé, menus)
+  fantôme ; **cartes à cibles de visée LE STAND et LE FLUX**, portes verrouillées) : **§3.21** ; une carte `challenge = 1` n'est jamais en partie (`map_pvp`, `mode_ok`, rotation, classé, menus)
 - Objectifs des modes sur les cartes néon (zones, drapeaux, bouclier, départs par équipe, `objScale`) : **§3.22**
   (LA CITADELLE et L'OASIS, décor maillé, textures pierre / enduit ont été retirés : esthétique néon seulement)
 - Règles de partie, modes (CHRONO, 3 ZONES, DRAPEAU, BOUCLIER), boutique : **§3.23** ;
@@ -111,7 +111,7 @@ Sur Mac : `./build_mac.sh`, puis `Velocity.app/Contents/MacOS/velocity --test te
   Chaque joueur simule son mouvement ; les touches sont validées chez le tireur puis arbitrées
   dans `host_handle()`. Nouvel événement = `EV_*` + `net_fx_*()` émetteur + cas dans
   `apply_event()` (+ `host_handle()` s'il faut arbitrer). **Incrémenter `NET_VER`** dès qu'un
-  paquet ou un événement change (actuellement **20**, `src/reseau/protocole.c`).
+  paquet ou un événement change (actuellement **22**, `src/reseau/protocole.c`).
   Chrono du match : temps réel, calé sur l'heure du worker (`time`), voir « Horloge de match commune » au §4 de
   `docs/CODE.md` (`src/reseau/horloge.c`).
 - **Équité en réseau** : pas d'aide à la visée passive. L'aimant de visée (`aim_assist`) n'existe que comme

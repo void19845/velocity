@@ -138,6 +138,57 @@ static void vg_draw_enemy(Enemy *e) {
         if (lit) glEnable(GL_LIGHTING);
         break;
     }
+    case EN_CIBLE: case EN_MINI: {                        /* cible de visee (CHALLENGE), meme langage que le drone : octaedre aux faces sombres et
+                                                           * aretes vives, coeur qui tourne, anneau (CIBLE seulement) ; celles de la porte a ouvrir sont
+                                                           * vives avec un halo, les autres ternes (e->phase = porte qu'elles verrouillent) */
+        int now = raceOn && e->phase == raceGate;
+        float pulse = 0.75f + 0.25f * sinf(e->t * 6 + (float)nowT * 6), br = now ? 1.0f : 0.5f;
+        V3 cc = e->flash > 0 ? v3(1, 1, 1) : vmul(vlerp(col, v3(1, 1, 1), 0.25f), br);   /* aretes un peu plus claires que le corps */
+        float H = R * 1.25f;
+        glDisable(GL_LIGHTING);
+        glRotatef(e->t * 70, 0, 1, 0);
+        V3 o[6] = { v3(0, H, 0), v3(0, -H, 0), v3(R, 0, 0), v3(0, 0, R), v3(-R, 0, 0), v3(0, 0, -R) };
+        glColor3f(cc.x * 0.22f, cc.y * 0.22f, cc.z * 0.22f);
+        glBegin(GL_TRIANGLES);
+        for (int k = 0; k < 4; k++) {
+            V3 a = o[2 + k], b = o[2 + (k + 1) % 4];
+            glVertex3f(o[0].x, o[0].y, o[0].z); glVertex3f(a.x, a.y, a.z); glVertex3f(b.x, b.y, b.z);
+            glVertex3f(o[1].x, o[1].y, o[1].z); glVertex3f(b.x, b.y, b.z); glVertex3f(a.x, a.y, a.z);
+        }
+        glEnd();
+        glColor3f(cc.x, cc.y, cc.z);
+        glLineWidth(e->type == EN_CIBLE ? 2.5f : 2.0f);
+        glBegin(GL_LINES);
+        for (int k = 0; k < 4; k++) {
+            V3 a = o[2 + k], b = o[2 + (k + 1) % 4];
+            vg_line(o[0], a); vg_line(o[1], a); vg_line(a, b);
+        }
+        glEnd();
+        glLineWidth(1);
+        glRotatef(e->t * 90, 1, 0, 0.4f);
+        float c0 = R * 0.3f;
+        box_faces(v3(-c0, -c0, -c0), v3(c0, c0, c0));       /* coeur lumineux */
+        if (e->type == EN_CIBLE) {
+            glRotatef(45, 0, 1, 0);
+            glLineWidth(2);
+            box_edges(v3(-R * 1.5f, -R * 0.06f, -R * 1.5f), v3(R * 1.5f, R * 0.06f, R * 1.5f));
+            glLineWidth(1);
+        }
+        if (now) {                                        /* halo additif : on voit celles qu'il faut tirer */
+            glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE); glDepthMask(GL_FALSE);
+            glColor4f(col.x, col.y, col.z, 0.28f * pulse);
+            glBegin(GL_TRIANGLES);
+            for (int k = 0; k < 4; k++) {
+                V3 a = vmul(o[2 + k], 1.5f), b = vmul(o[2 + (k + 1) % 4], 1.5f), t0 = vmul(o[0], 1.5f), t1 = vmul(o[1], 1.5f);
+                glVertex3f(t0.x, t0.y, t0.z); glVertex3f(a.x, a.y, a.z); glVertex3f(b.x, b.y, b.z);
+                glVertex3f(t1.x, t1.y, t1.z); glVertex3f(b.x, b.y, b.z); glVertex3f(a.x, a.y, a.z);
+            }
+            glEnd();
+            glDepthMask(GL_TRUE); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+        if (lit) glEnable(GL_LIGHTING);
+        break;
+    }
     case EN_CARRE:                                        /* mini tesseract (cube 4D qui tourne) */
         vg_tesseract(R * 1.15f, e->t * 1.4f, col, lit);
         break;

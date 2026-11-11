@@ -2,6 +2,7 @@
 #ifndef VELOCITY_BUILD
 #define VELOCITY_BUILD 0
 #endif
+1 ICON "velocity.ico"                 /* icone de l'exe et de la fenetre (LoadIcon dans demarrage.c) */
 1 24 "velocity.manifest"
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 1,0,0,VELOCITY_BUILD

@@ -369,6 +369,77 @@ static const float toileGates[][4] = {
     { 0, 32, -36, 8 }, { 0, 30, -6, 8 }, { 0, 36, 24, 8 }, { 24, 34, 60, 8 }, { 58, 36, 40, 8 }, { 60, 42, 6, 8 }, { 60, 56, -40, 8 },
 };
 
+/* LE STAND : course de precision (CHALLENGE). Couloir ferme de 20 x 140 m, cinq portes dans l'axe (z -1), des cibles de visee
+ * (MapDef.targets) devant chacune : une porte ne s'ouvre que cibles abattues ; fixes, petites, puis mobiles. Pas de vide. */
+static void build_map_stand(void) {
+    addbox(-10, -2, -72, 10, 0, 72, 0.14f, 0.16f, 0.30f);             /* sol */
+    addbox(-12, 0, -72, -10, 16, 72, 0.18f, 0.20f, 0.38f);            /* murs */
+    addbox(10, 0, -72, 12, 16, 72, 0.18f, 0.20f, 0.38f);
+    addbox(-12, 0, 72, 12, 16, 74, 0.18f, 0.20f, 0.38f);
+    addbox(-12, 0, -74, 12, 16, -72, 0.18f, 0.20f, 0.38f);
+    for (int k = 0; k < 6; k++) {                                     /* bandeaux neon sur les murs, tous les 24 m */
+        float z = 60 - 24.0f * k;
+        addbox(-10.2f, 4, z - 3, -10, 5, z + 3, 0.2f, 0.9f, 1.0f);      /* plus de 3,4 m : pas pris pour un point de balancement */
+        addbox(10, 4, z - 3, 10.2f, 5, z + 3, 1.0f, 0.3f, 0.75f);
+    }
+    addspeed(-3, 52, 3, 62, 0, 0, -1);                                /* bandes d'acceleration : on arrive vite a chaque stand */
+    addspeed(-3, 24, 3, 32, 0, 0, -1);
+    addspeed(-3, -2, 3, 6, 0, 0, -1);
+    addspeed(-3, -28, 3, -20, 0, 0, -1);
+    addspeed(-3, -52, 3, -44, 0, 0, -1);
+    addbox(-3, 0, 44, 3, 1.1f, 46, 0.30f, 0.26f, 0.12f);              /* quelques obstacles bas a sauter */
+    addbox(-8, 0, 8, -4, 1.1f, 10, 0.30f, 0.26f, 0.12f);
+    addbox(4, 0, -16, 8, 1.1f, -14, 0.30f, 0.26f, 0.12f);
+    addbox(-3, 0, -40, 3, 1.1f, -38, 0.30f, 0.26f, 0.12f);
+}
+static const float standSpawns[][3] = { { 0, 0, 64 }, { -6, 0, 62 }, { 6, 0, 62 } };
+static const float standGates[][4] = {
+    { 0, 2, 40, 5.5f }, { 0, 2, 14, 5.5f }, { 0, 2, -12, 5.5f }, { 0, 2, -38, 5.5f }, { 0, 2, -62, 5.5f },
+};
+/* x y z, mini, porte, mouvement (x y z), periode : cibles fixes (porte 0), petites (1), mobiles (2, 3), tout ensemble (4) */
+static const float standTargets[][9] = {
+    { -6, 4, 34, 0, 0, 0, 0, 0, 0 },     { 6, 2.5f, 36, 0, 0, 0, 0, 0, 0 },
+    { -6, 5, 8, 1, 1, 0, 0, 0, 0 },      { 0, 7, 4, 1, 1, 0, 0, 0, 0 },      { 6, 3, 10, 1, 1, 0, 0, 0, 0 },
+    { 0, 4, -6, 0, 2, 6, 0, 0, 2.6f },   { 0, 6, -2, 0, 2, 0, 3, 0, 2.0f },
+    { 0, 4, -32, 1, 3, 5, 2, 0, 2.6f },  { -3, 5, -28, 1, 3, 5, 0, 3, 2.2f },  { 0, 9, -36, 0, 3, 0, 0, 0, 0 },
+    { 0, 4, -56, 0, 4, 6, 3, 0, 2.2f },  { 0, 6, -52, 0, 4, -6, 0, 0, 2.4f },
+    { -8, 8, -58, 1, 4, 0, 0, 0, 0 },    { 8, 8, -58, 1, 4, 0, 0, 0, 0 },
+};
+
+/* LE FLUX : course au grappin avec cibles (CHALLENGE). Les deux premieres avenues de LA TOILE (memes tours, memes points de
+ * balancement, memes six portes, la derniere est l'arrivee) ; cibles dans la rue, en l'air, fixes puis mobiles. */
+static void build_map_flux(void) {
+    static const float tw[][4] = {
+        { -74, 44, 46, 0 }, { -74, 24, 54, 1 }, { -74, 4, 42, 2 }, { -74, -16, 58, 3 }, { -74, -36, 48, 0 },
+        { -46, 34, 50, 1 }, { -46, 14, 40, 2 }, { -46, -6, 56, 3 }, { -46, -26, 44, 0 },
+        { -48, -74, 52, 1 }, { -28, -74, 46, 2 }, { -8, -74, 56, 3 }, { -38, -50, 40, 0 }, { -20, -50, 48, 1 },
+    };
+    for (int i = 0; i < (int)(sizeof tw / sizeof tw[0]); i++) toile_tower(tw[i][0], tw[i][1], 4, 4, tw[i][2], (int)tw[i][3]);
+    addbox(-66, -12, 58, -54, 30, 72, 0.22f, 0.24f, 0.36f);           /* toit de depart */
+    addbox(-64, 30, 71, -56, 33, 72, 0.9f, 0.75f, 0.2f);
+    addbox(-70, -12, -78, -54, 22, -64, 0.18f, 0.20f, 0.32f);         /* toit de repos au virage */
+    static const float sw[][3] = {
+        { -60, 50, 50 }, { -60, 52, 36 }, { -60, 50, 22 }, { -60, 52, 8 }, { -60, 50, -6 }, { -60, 48, -20 },
+        { -60, 50, -34 }, { -60, 50, -48 }, { -54, 50, -62 },
+        { -42, 48, -62 }, { -28, 48, -62 }, { -16, 46, -62 }, { -2, 48, -58 },
+    };
+    for (int i = 0; i < (int)(sizeof sw / sizeof sw[0]); i++) addswing(sw[i][0], sw[i][1], sw[i][2]);
+    addcell(-62, 22, -70, PICKUP_SMALL);
+}
+static const float fluxSpawns[][3] = { { -60, 30, 64 }, { -62, 22, -70 } };
+static const float fluxGates[][4] = {
+    { -60, 30, 38, 8 }, { -60, 32, 8, 8 }, { -60, 30, -22, 8 }, { -58, 32, -50, 8 }, { -34, 32, -62, 8 }, { -12, 32, -62, 8 },
+};
+static const float fluxTargets[][9] = {
+    { -66, 36, 30, 0, 0, 0, 0, 0, 0 },     { -54, 38, 26, 0, 0, 0, 0, 0, 0 },
+    { -66, 40, 10, 1, 1, 0, 0, 0, 0 },     { -54, 36, 2, 1, 1, 0, 0, 0, 0 },     { -60, 38, 14, 0, 1, 0, 4, 0, 2.0f },
+    { -60, 38, -14, 0, 2, 0, 0, 5, 2.2f }, { -62, 34, -26, 1, 2, 0, 0, 0, 0 },
+    { -58, 38, -44, 1, 3, 4, 3, 0, 2.0f }, { -64, 40, -40, 1, 3, 0, 0, 0, 0 },
+    { -40, 38, -62, 0, 4, 0, 4, 0, 1.8f }, { -30, 36, -58, 1, 4, 0, 0, 0, 0 },
+    { -18, 38, -62, 0, 5, 0, 0, 4, 2.0f }, { -10, 36, -56, 1, 5, 0, 0, 0, 0 },     { -10, 40, -68, 1, 5, 0, 0, 0, 0 },
+    { -4, 36, -62, 0, 5, 0, 4, 0, 1.8f },
+};
+
 /* Arene : points de depart (anciennement dans pick_spawn, agrandis par MAP_S) */
 #define MS(v) ((v) * MAP_S)
 static const float areneSpawns[][3] = {
@@ -401,6 +472,9 @@ typedef struct {
     const float (*flags)[3];                              /* drapeau BLEU puis ROUGE, chez eux (MODE_DRAPEAU) */
     const float *shield;                                  /* bouclier des BLEUS (MODE_BOUCLIER) */
     const float (*teamSpawn)[3]; int nTeamSpawn;          /* departs par equipe : nTeamSpawn BLEUS puis nTeamSpawn ROUGES */
+    /* cibles de visee d'une carte CHALLENGE (src/jeu/course.c) : x y z, 0 = CIBLE (0,8 m) / 1 = MINI (0,4 m), porte qu'elle verrouille
+     * (la porte ne compte que cibles abattues), mouvement mx my mz (amplitude en m) et periode en s (0 : fixe) */
+    const float (*targets)[9]; int ntargets;
 } MapDef;
 #define NSP(a) (int)(sizeof a / sizeof a[0])
 /* --- objectifs des cartes neon (docs/CODE.md 3.23) --- */
@@ -473,6 +547,12 @@ static const MapDef maps[] = {
     { "LA TOILE", build_map_toile, toileSpawns, NSP(toileSpawns), { -60, 30, 64 }, -10,
       30, 50, 20, 60, 5, { -60, 40, 78 }, -0.12f, 6, 0, 5, { 0.02f, 0.02f, 0.09f }, { 0.28f, 0.13f, 0.36f },
       toileGates, NSP(toileGates), 0, 1 },                /* CHALLENGE : course seulement */
+    { "LE STAND", build_map_stand, standSpawns, NSP(standSpawns), { 0, 0, 64 }, -1000,
+      3, 9, 5, 20, 1.0f, { 0, 12, 82 }, -0.15f, 4, 0, 5, { 0.02f, 0.03f, 0.10f }, { 0.12f, 0.20f, 0.36f },
+      standGates, NSP(standGates), 0, 1, 0, NULL, NULL, NULL, NULL, 0, standTargets, NSP(standTargets) },   /* CHALLENGE : precision */
+    { "LE FLUX", build_map_flux, fluxSpawns, NSP(fluxSpawns), { -60, 30, 64 }, -10,
+      30, 50, 20, 60, 5, { -60, 40, 78 }, -0.12f, 6, 0, 5, { 0.02f, 0.05f, 0.08f }, { 0.10f, 0.30f, 0.34f },
+      fluxGates, NSP(fluxGates), 0, 1, 0, NULL, NULL, NULL, NULL, 0, fluxTargets, NSP(fluxTargets) },       /* CHALLENGE : grappin et cibles */
 };
 #define NMAPS NSP(maps)
 static int curMap;                                        /* carte chargee */

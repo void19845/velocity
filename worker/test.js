@@ -289,7 +289,24 @@ check('speedrun : second joueur plus rapide -> rang 1', [sb.state, sb.rank], ['r
 [, sb] = await sr('/speedrun/start', { ...S2, cat: toile }, now);
 [st, sb] = await sr('/speedrun/report', { ...S2, cat: toile, run: sb.run, ms: 5000, splits: splitsOf(5000, gates) }, now + 60000);
 check('speedrun : sous le plancher', [st, sb.err], [400, 'sous le plancher']);
-check('speedrun : planchers (course, complet = somme des courses)', [SR.CATS[toile].floorMs, SR.CATS.complet.floorMs], [6975, 6975]);
+check('speedrun : planchers (course, complet:3 = somme des trois courses)',
+  [SR.CATS[toile].floorMs, SR.CATS['course:le_stand'].floorMs, SR.CATS['course:le_flux'].floorMs, SR.CATS['complet:3'].floorMs],
+  [6975, 2189, 2558, 6975 + 2189 + 2558]);
+for (const cat of ['course:le_stand', 'course:le_flux']) {   // cartes a cibles : meme regles que LA TOILE
+  const n = SR.CATS[cat].splits[0];
+  [, sb] = await sr('/speedrun/start', { ...S3, cat }, now);
+  [st, sb] = await sr('/speedrun/report', { ...S3, cat, run: sb.run, ms: 30000, splits: splitsOf(30000, n) }, now + 31000);
+  check(`speedrun : ${cat} record, rang 1`, [st, sb.state, sb.rank], [200, 'record', 1]);
+  [, sb] = await sr('/speedrun/start', { ...S3, cat }, now);
+  [st, sb] = await sr('/speedrun/report', { ...S3, cat, run: sb.run, ms: 2000, splits: splitsOf(2000, n) }, now + 31000);
+  check(`speedrun : ${cat} sous le plancher`, [st, sb.err], [400, 'sous le plancher']);
+  [, sb] = await sr('/speedrun/start', { ...S3, cat }, now);
+  [st, sb] = await sr('/speedrun/report', { ...S3, cat, run: sb.run, ms: 30000, splits: splitsOf(30000, n + 1) }, now + 31000);
+  check(`speedrun : ${cat} mauvais nombre de temps intermediaires`, [st, sb.err], [400, 'temps intermediaires']);
+}
+[, sb] = await sr('/speedrun/start', { ...S3, cat: 'complet:3' }, now);
+[st, sb] = await sr('/speedrun/report', { ...S3, cat: 'complet:3', run: sb.run, ms: 60000, splits: [20000, 40000, 60000] }, now + 61000);
+check('speedrun : complet:3 (trois cartes) record, rang 1', [st, sb.state, sb.rank], [200, 'record', 1]);
 check('speedrun : temps intermediaires', [
   runError(toile, 40000, splitsOf(40000, gates - 1)),
   runError(toile, 40000, [...splitsOf(39000, gates - 1), 40000].reverse()),

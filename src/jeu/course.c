@@ -9,6 +9,10 @@
 /* intermediaires et son fantome (position 30 fois par seconde) sont   */
 /* gardes a cote de velocity.ini (un fichier par carte, race_file).    */
 /* Chaque arrivee est envoyee au classement de la carte (speedrun).    */
+/* Cartes a cibles (MapDef.targets) : des ennemis CIBLE / MINI a 1 PV, sur  */
+/* lesquels toute arme porte ; une porte ne compte que si ses cibles sont  */
+/* abattues (course_locked), elles peuvent bouger (sinus). Les armes       */
+/* regagnent une munition par seconde (sans cela, un tir rate bloquerait). */
 /* Speedrun complet (toutes les cartes CHALLENGE) : src/jeu/speedrun.c */
 /* Affichage : src/interface/course_hud.c.                             */
 /* ------------------------------------------------------------------ */
@@ -26,6 +30,7 @@ static float ghostCur[RACE_GMAX][4], ghostBest[RACE_GMAX][4];   /* x y z yaw */
 static int ghostCurN, ghostBestN;
 static void race_save(void);
 static void race_load(void);
+static float raceTgT, raceLockMsgT, raceAmmoT;            /* temps des cibles mobiles ; message "verrouillee" ; prochaine munition rendue */
 
 static int race_map(void) {                               /* premiere carte CHALLENGE (a portes) : LA TOILE */
     for (int m = 0; m < NMAPS; m++) if (maps[m].challenge && maps[m].ngates > 0) return m;
@@ -37,12 +42,53 @@ static void race_face(V3 from, int gate) {                /* regarder vers la po
     V3 d = vsub(race_gate(gate), from);
     P.yaw = atan2f(d.x, -d.z); P.pitch = 0;
 }
+/* cibles de la carte : memes champs que MapDef.targets ; la position d'une cible mobile a l'instant t */
+static V3 race_target_at(const float *t, int idx, float time) {
+    V3 p = v3(t[0], t[1], t[2]);
+    if (t[8] > 0) { float s = sinf(time * 2 * PI / t[8] + idx * 1.7f); p = vadd(p, v3(t[5] * s, t[6] * s, t[7] * s)); }
+    return p;
+}
+static void race_targets_spawn(void) {
+    const MapDef *md = &maps[curMap];
+    for (int k = 0; k < md->ntargets; k++) {
+        const float *t = md->targets[k];
+        int i = spawn_enemy_at(t[3] > 0.5f ? EN_MINI : EN_CIBLE, race_target_at(t, k, 0), 0);
+        if (i < 0) continue;
+        E[i].hp = E[i].maxHp = 1; E[i].elite = 0; E[i].phase = (int)t[4]; E[i].combo = k + 1;   /* combo : indice dans la carte (+1) */
+        E[i].vel = v3(0, 0, 0); E[i].t = (float)k;
+    }
+}
+static int race_is_target(int i) { return E[i].alive && (E[i].type == EN_CIBLE || E[i].type == EN_MINI); }
+static int race_targets_left(int gate) {                  /* cibles encore debout qui verrouillent cette porte */
+    int n = 0;
+    for (int i = 0; i < MAXE; i++) n += race_is_target(i) && E[i].phase == gate;
+    return n;
+}
+static int race_targets_total(int gate) {
+    const MapDef *md = &maps[curMap];
+    int n = 0;
+    for (int k = 0; k < md->ntargets; k++) n += (int)md->targets[k][4] == gate;
+    return n;
+}
+static void race_targets_tick(float dt) {
+    const MapDef *md = &maps[curMap];
+    raceTgT += dt;
+    for (int i = 0; i < MAXE; i++) {
+        if (!race_is_target(i)) continue;
+        const float *t = md->targets[E[i].combo - 1];
+        V3 p = race_target_at(t, E[i].combo - 1, raceTgT);
+        E[i].vel = vmul(vsub(p, E[i].pos), dt > 1e-5f ? 1 / dt : 0);
+        E[i].pos = p; E[i].t += dt;
+    }
+}
 static void race_start_map(int m) {                     /* depart de la course de la carte m (une carte a portes) */
     if (m < 0 || m >= NMAPS || !maps[m].ngates) m = race_map();
     if (curMap != m) load_map(m);
     if (raceLoaded != m) { raceBest = 0; ghostBestN = 0; race_load(); raceLoaded = m; }
     reset_game();
     memset(E, 0, sizeof E);
+    raceTgT = raceLockMsgT = raceAmmoT = 0;
+    race_targets_spawn();
     styleTopRank = 0;
     raceOn = 1; raceGate = 0; raceDone = 0; raceFalls = 0; raceNewBest = 0;
     raceT = 0; raceCount = RACE_COUNTDOWN; raceDeltaT = 0; raceGateFlash = 0; raceGhostAcc = 0; ghostCurN = 0;
@@ -83,6 +129,18 @@ static void race_tick(float dt) {
     }
     if (raceDeltaT > 0) raceDeltaT -= dt;
     if (raceGateFlash > 0) raceGateFlash -= dt;
+    if (raceLockMsgT > 0) raceLockMsgT -= dt;
+    if (maps[curMap].ntargets > 0) {
+        race_targets_tick(dt);
+        raceAmmoT += dt;
+        if (raceAmmoT >= 1.0f && !raceDone) {             /* une munition par seconde a chaque arme a jauge du loadout */
+            raceAmmoT = 0;
+            for (int s = 0; s < 2; s++) {
+                int w = P.loadout[s];
+                if (ammoDef[w].gauge > 0 && P.ammo[w] < wp_max(w)) P.ammo[w]++;
+            }
+        }
+    }
     if (raceDone) return;
     raceT += dt;
     raceGhostAcc += dt;
@@ -93,7 +151,12 @@ static void race_tick(float dt) {
     }
     const MapDef *md = &maps[curMap];
     V3 a = vadd(P.prevPos, v3(0, 0.9f, 0)), b = vadd(P.pos, v3(0, 0.9f, 0));
-    if (raceGate < md->ngates && race_cross(a, b, race_gate(raceGate), md->gates[raceGate][3])) {
+    int locked = raceGate < md->ngates && md->ntargets > 0 && race_targets_left(raceGate) > 0;
+    if (locked && race_cross(a, b, race_gate(raceGate), md->gates[raceGate][3]) && raceLockMsgT <= 0) {
+        raceLockMsgT = 1.2f;                              /* on a passe l'anneau sans avoir abattu ses cibles */
+        play(S_HURT, 0.5f, 1.6f);
+    }
+    if (!locked && raceGate < md->ngates && race_cross(a, b, race_gate(raceGate), md->gates[raceGate][3])) {
         raceSplit[raceGate] = raceT;
         if (raceBest > 0) { raceDelta = raceT - raceBestSplit[raceGate]; raceDeltaT = 2.0f; }
         raceGateFlash = 0.5f;

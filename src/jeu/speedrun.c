@@ -5,7 +5,7 @@
 /* Classements de temps, tenus par le serveur (worker/src/speedrun.js) */
 /* avec l'identite du mode classe (ranked_id / ranked_key) :           */
 /*   SR_MAP0 + m   course de la carte CHALLENGE m ("course:la_toile")  */
-/*   SR_COMPLET    toutes les cartes CHALLENGE a la suite ("complet")  */
+/*   SR_COMPLET    toutes les cartes CHALLENGE a la suite ("complet:N") */
 /*   SR_VAGUES100  mode VAGUES jusqu'a la vague 100 ("vagues100")      */
 /* Un run : speedrun_begin (ticket) puis speedrun_report (temps), voir */
 /* src/reseau/speedrun_serveur.c. Speedrun complet : chrono global =   */
@@ -64,7 +64,7 @@ static void map_slug(int m, char *out, int n) {           /* "LA TOILE" -> "la_t
 }
 static void sr_key(int cat, char *out, int n) {           /* nom de la categorie au serveur */
     char slug[32];
-    if (cat == SR_COMPLET) snprintf(out, n, "complet");
+    if (cat == SR_COMPLET) { sr_maps_init(); snprintf(out, n, "complet:%d", srMapN); }   /* le nombre de cartes : un nouveau parcours = un nouveau classement */
     else if (cat == SR_VAGUES100) snprintf(out, n, "vagues100");
     else { map_slug(cat - SR_MAP0, slug, sizeof slug); snprintf(out, n, "course:%s", slug); }
 }

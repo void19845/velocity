@@ -98,8 +98,10 @@ static void draw_race_world(void) {
         float r = md->gates[i][3];
         V3 n = vnorm(vsub(c, prev)), u = vnorm(vcross(n, fabsf(n.y) > 0.9f ? v3(1, 0, 0) : v3(0, 1, 0))), v = vcross(n, u);
         int next = i == raceGate, fin = i == md->ngates - 1;
+        int shut = md->ntargets > 0 && race_targets_left(i) > 0;   /* cibles encore debout : l'anneau est ferme (rouge) */
         float pulse = 0.75f + 0.25f * sinf((float)nowT * 6), a = next ? 0.95f : 0.35f;
         float col[3] = { fin ? 1.0f : 0.3f, fin ? 0.8f : 0.85f, fin ? 0.25f : 1.0f };
+        if (shut) { col[0] = 1.0f; col[1] = 0.25f; col[2] = 0.25f; }
         for (int ring = 0; ring < (next ? 3 : 1); ring++) {   /* la porte suivante : trois anneaux qui respirent */
             float rr = r * (1 - ring * 0.08f) * (next ? pulse * 0.1f + 0.95f : 1);
             glLineWidth(next ? 5.0f - ring : 2.5f);
@@ -266,6 +268,14 @@ static void draw_race_hud(void) {
         race_time_str(tb, sizeof tb, raceBest);
         snprintf(buf, sizeof buf, "RECORD %s", tb);
         text(0, cx + 140, 40, buf, 1, 0.8f, 0.3f, 0.85f);
+    }
+    if (md->ntargets > 0 && !raceDone && raceGate < md->ngates) {   /* cibles de la porte en cours */
+        int left = race_targets_left(raceGate), tot = race_targets_total(raceGate);
+        if (tot > 0) {
+            snprintf(buf, sizeof buf, left ? "CIBLES %d / %d" : "PORTE OUVERTE", tot - left, tot);
+            if (left) text_c(1, cx, 152, buf, 1, 0.45f, 0.35f, 0.95f); else text_c(1, cx, 152, buf, 0.4f, 1, 0.5f, 0.95f);
+        }
+        if (raceLockMsgT > 0) text_c(1, cx, cy + 90, "PORTE VERROUILLEE : ABATS LES CIBLES", 1, 0.4f, 0.3f, clampf(raceLockMsgT, 0, 1));
     }
     if (raceFalls) { snprintf(buf, sizeof buf, "chutes %d", raceFalls); text(0, cx + 140, 62, buf, 0.8f, 0.5f, 0.5f, 0.8f); }
     if (raceDeltaT > 0 && raceBest > 0 && !raceDone) {    /* ecart au record a la porte */

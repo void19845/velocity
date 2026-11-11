@@ -80,8 +80,9 @@ typedef struct {
 enum { HOOK_NONE, HOOK_FLYING, HOOK_ATTACHED };
 static Player P;
 
-/* ennemis : drone et kamikaze de toujours ; sentinelle, essaim et bastion du mode VAGUES ; les quatre boss */
-enum { EN_DRONE, EN_RUSHER, EN_SNIPER, EN_SWARM, EN_BASTION, EN_BOMBE, EN_CARRE, EN_MORTIER, EN_PYRA, EN_TESS, EN_BALL, EN_HEXA, EN_COUNT };
+/* ennemis : drone et kamikaze de toujours ; sentinelle, essaim et bastion du mode VAGUES ; CIBLE et MINI (cibles de visee des
+ * cartes CHALLENGE, 1 PV, jamais en vague) ; les quatre boss (toujours a la fin : EN_BOSS compare a EN_PYRA) */
+enum { EN_DRONE, EN_RUSHER, EN_SNIPER, EN_SWARM, EN_BASTION, EN_BOMBE, EN_CARRE, EN_MORTIER, EN_CIBLE, EN_MINI, EN_PYRA, EN_TESS, EN_BALL, EN_HEXA, EN_COUNT };
 #define EN_BOSS(t) ((t) >= EN_PYRA)
 typedef struct {
     V3 pos, vel; float hp, fireT, t, flash; int type, alive;

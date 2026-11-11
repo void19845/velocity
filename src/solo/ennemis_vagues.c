@@ -8,7 +8,7 @@
 /* ------------------------------------------------------------------ */
 /* PV de base par type (les boss ont les leurs, src/solo/boss.c). Les PV montent un peu en fin de partie
  * (vgHpMul, VG_HP_MAX) ; les degats, eux, ne montent jamais (VG_*_DMG). */
-static const float enemyHp[EN_COUNT] = { 100, 50, 80, 25, 300, 40, 150, 220, VG_BOSS_PYRA_HP, VG_BOSS_TESS_HP, VG_BOSS_BOULE_HP, VG_BOSS_HEXA_HP };
+static const float enemyHp[EN_COUNT] = { 100, 50, 80, 25, 300, 40, 150, 220, 1, 1, VG_BOSS_PYRA_HP, VG_BOSS_TESS_HP, VG_BOSS_BOULE_HP, VG_BOSS_HEXA_HP };
 static float vgHpMul = 1, vgEliteP;                       /* fixes par src/solo/vagues.c au debut de chaque vague */
 static void boss_tick(int i, float dt);                   /* src/solo/boss.c */
 static int vg_lure(V3 *at);                               /* src/solo/ameliorations.c : leurre MIRAGE qui attire (APPAT) */

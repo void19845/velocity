@@ -735,3 +735,24 @@ longtemps que le joueur maintient** ». Détail technique : `docs/CODE.md` (« Y
 ## VAGUES : bombe, carré et mortier
 
 Trois nouveaux ennemis (détail dans `docs/CODE.md` §3.5) : la **BOMBE** (kamikaze rapide qui s'arrête, tique 2 s puis explose sur 5 m), le **CARRÉ** (mini tesseract : les autres ennemis encaissent ×0,1 tant qu'il vit) et le **MORTIER** (orbe lente à pulsation, explosion de 8 m). Ils arrivent aux vagues 12, 18 et 28.
+
+## CHALLENGE : LE STAND et LE FLUX (cartes à cibles de visée)
+
+- Deux nouvelles courses de vitesse dans l'écran CHALLENGE, chacune avec son classement en ligne : **LE STAND** (couloir fermé, 5 portes, 14 cibles fixes,
+  petites puis mobiles) et **LE FLUX** (les deux premières avenues de LA TOILE, 6 portes, 15 cibles en l'air : on tire en se balançant).
+- **Skill check de visée** : une porte reste **fermée (anneau rouge)** tant que ses cibles ne sont pas abattues ; « CIBLES k / n » s'affiche sous le chrono.
+  Toutes les armes du loadout touchent les cibles (octaèdres néon de 0,8 m ou 0,4 m, 1 PV). Pas de pénalité : le temps perdu à viser compte.
+- Les armes à jauge regagnent **une munition par seconde** sur ces cartes (un tir raté ne bloque pas la course).
+- Le **SPEEDRUN COMPLET** enchaîne maintenant trois cartes ; son classement est `complet:3` (un classement neuf : l'ancien à une carte ne mélange pas
+  ses temps). **Le worker doit être redéployé** (`cd worker && npx wrangler deploy`) avant la publication, sinon les nouveaux temps sont refusés.
+- Code : `src/jeu/course.c` (cibles, verrou, munitions), `src/monde/carte.c` (`build_map_stand`, `build_map_flux`, `MapDef.targets`), `EN_CIBLE` / `EN_MINI`
+  (`src/combat/degats.c`, `src/rendu/vagues_rendu.c`), `worker/src/speedrun.js`. Détail : `docs/CODE.md` §3.21 et §4 « Speedrun ».
+- Vérifié : build sans warning, `--test` (lignes « cibles » : cibles libres et visibles, porte verrouillée puis ouverte, pilote tireur qui finit LE STAND
+  en 38,6 s et LE FLUX en 27,0 s), `node test.js`, captures `cibles_stand` / `cibles_flux` / `cibles_stand_verrou` / `challenge`, match bot contre bot.
+  Pas encore joué en vrai : le placement et la vitesse des cibles mobiles se régleront en jouant (`standTargets`, `fluxTargets` dans `carte.c`).
+
+## Icône du jeu
+
+- Le jeu a une icône (arme bleue) : barre de titre, barre des tâches et exe Windows (`velocity.ico` dans `velocity.rc`, `LoadIcon` dans `demarrage.c`, aussi
+  sur la fenêtre du second écran) ; app macOS (`velocity.icns` copié par `build_mac.sh`, clé `CFBundleIconFile`). Source : image 64 × 64 du propriétaire,
+  agrandie sans lissage pour les grandes tailles. Pas vérifié sur Mac.

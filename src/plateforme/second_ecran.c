@@ -52,6 +52,7 @@ static int map_update(int want) {                         /* ouvre, deplace ou f
         wc.lpfnWndProc = map_wndproc;
         wc.hInstance = GetModuleHandleA(NULL);
         wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hIcon = LoadIcon(wc.hInstance, MAKEINTRESOURCE(1));
         wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
         wc.lpszClassName = "velocity_carte";
         RegisterClassA(&wc);

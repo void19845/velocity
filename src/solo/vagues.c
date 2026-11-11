@@ -120,7 +120,7 @@ static void vg_wave_start(int w) {
 
 /* --- credits --- */
 static void vg_credit_kill(int i) {
-    static const int base[EN_COUNT] = { 10, 6, 14, 3, 25, 12, 20, 30, 400, 600, 800, 1200 };
+    static const int base[EN_COUNT] = { 10, 6, 14, 3, 25, 12, 20, 30, 0, 0, 400, 600, 800, 1200 };
     Enemy *e = &E[i];
     if (e->summoned == 2) return;                         /* fantome du PRISME */
     float c = (float)base[e->type];
