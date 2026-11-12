@@ -7,7 +7,7 @@
  * un seul net_hit par joueur et par tir. Dispersion divisee par 2 en slide, un plomb qui touche une piece
  * la fait eclater (souffle de 3 m, ni degats ni recul sur soi).
  * Recul : la VITESSE ACTUELLE du tireur est AJOUTEE a sa vitesse a l'oppose de la visee (sg_push_speed : SG_KNOCK_RATIO m/s par m/s, sans
- * plafond), au sol comme en l'air ; la cible recoit une poussee forcee (push_start, SG_KNOCK_T s) dans le sens du tir, x la part de plombs
+ * plafond), au sol comme en l'air ; la cible subit le meme recul (vitesse ajoutee, knock_apply) dans le sens du tir, x la part de plombs
  * qui l'ont touchee. Immobile : pas de recul.
  * En l'air, un residu de vitesse (sg_recoil) garde le saut au recul. RICOCHET ouvert : chaque plomb rebondit
  * (RIC_PELLET_CAP rebonds au plus, SG_RANGE par segment, degats selon la distance totale parcourue). */
@@ -191,7 +191,7 @@ static void sg_coin_burst(int ci, int depth, SgAcc *A) {
 }
 
 /* saut au recul : residu de vitesse de 7 m/s a l'oppose de la visee, en l'air ; peut freiner, ou pousser jusqu'a un seuil, jamais
- * au-dela de la vitesse qu'on avait deja (9 m/s vertical, 16 m/s horizontal). S'ajoute a la poussee forcee (push_start). */
+ * au-dela de la vitesse qu'on avait deja (9 m/s vertical, 16 m/s horizontal). La vitesse actuelle s'ajoute ensuite (fire_shotgun). */
 static void sg_recoil(V3 d) {
     V3 v0 = P.vel, v = vadd(P.vel, vmul(d, -SG_RECOIL));
     if (v.y > v0.y && v.y > fmaxf(v0.y, SG_RECOIL_VMAX)) v.y = fmaxf(v0.y, SG_RECOIL_VMAX);

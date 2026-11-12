@@ -452,8 +452,8 @@ chaque compétence en contre une autre, chaque flèche se coupe par sa constante
 - **SHOTGUN** (ex-Éventail, `src/armes/shotgun.c`, fiche `06_shotgun.md`) : `SG_PELLET_DMG` 20 ; la **vitesse actuelle du tireur est AJOUTÉE à sa vitesse**
   (`P.vel += -visée × sg_push_speed`, après le résidu `sg_recoil`) à l'opposé de la visée : `sg_push_speed` = `SG_KNOCK_RATIO` m/s par m/s de vitesse 3D juste
   avant le tir, **sans plafond** (`SG_KNOCK_MAX` 0 = aucun, réglable), plancher `SG_KNOCK_MIN` 0, au sol comme en
-  l'air : tir dans le sens de la course → vitesse annulée, tir à contre-sens → vitesse doublée, immobile → aucun recul ; la victime LAN reçoit une **poussée forcée**
-  (`push_start(v, t)`, `P.pushV` / `P.pushT`, un déplacement en plus pendant `SG_KNOCK_T` = 0,10 s, `P.vel` intacte) dans le sens du tir × part de plombs touchés
+  l'air : tir dans le sens de la course → vitesse annulée, tir à contre-sens → vitesse doublée, immobile → aucun recul ; la victime LAN subit **le même recul**
+  (vitesse ajoutée par `knock_apply`, comme toutes les armes) dans le sens du tir × part de plombs touchés
   (`knock_apply`, `protocole.c` : seul `W_SHOTGUN` est une poussée, les autres armes ajoutent une vitesse). Le résidu de vitesse en l'air
   (`sg_recoil`, 7 m/s, indépendant de la vitesse) garde le saut au recul, même depuis l'arrêt. Les plafonds PvP ne changent pas.
 - **Élan** (`elan.c`) : 4 munitions (`ammoDef`), `kin_brake` enlève toute la vitesse horizontale du tireur (`KIN_BRAKE_ALL`).
@@ -1858,7 +1858,7 @@ plafonné à 0,1 s) ou pendant le `hitstop`, la simulation ralentit mais pas le 
 | `COIN_VS_RIC` | 1 | PIÈCE ⇒ RICOCHET (lecture par défaut) : un tir en rebond qui touche une pièce adverse revient sur son tireur |
 | `SG_PELLET_DMG` | 20 | SHOTGUN : dégâts PvE par plomb (8 avant ; 200 à bout portant). PvP : × `PVP_SCALE` puis plafond `PVP_HIT_CAP` |
 | `SG_PELLET_KNOCK` | 1,0 | SHOTGUN : recul PvE par plomb sur un ennemi (0,6 avant) |
-| `SG_KNOCK_RATIO` / `SG_KNOCK_MIN` / `SG_KNOCK_MAX` / `SG_KNOCK_T` | 1,0 / 0 / 0 (aucun plafond) / 0,10 s | SHOTGUN : poussée forcée du tireur **proportionnelle à sa vitesse actuelle** (m/s de poussée par m/s de vitesse, plancher, plafond, durée ; sens opposé au tir, sol comme air) et de la cible (sens du tir, × part de plombs touchés) : 50 m/s → 5 m, immobile → rien |
+| `SG_KNOCK_RATIO` / `SG_KNOCK_MIN` / `SG_KNOCK_MAX` | 1,0 / 0 / 0 (aucun plafond) | SHOTGUN : vitesse ajoutée au tireur, **égale à sa vitesse actuelle** (m/s par m/s, plancher, plafond ; sens opposé à la visée, sol comme air) et à la cible (même recul, sens du tir, × part de plombs touchés) : immobile → rien |
 | `SG_RECOIL` | 7 m/s | SHOTGUN : résidu de vitesse du tireur en l'air (saut au recul), inchangé |
 | `KIN_BRAKE_ALL` / `KIN_BRAKE_VERT` | 1 / 0 | Élan : le tir enlève TOUTE la vitesse horizontale du tireur (0 = l'ancien freinage de 15 m/s au plus) ; `KIN_BRAKE_VERT` 1 enlèverait aussi la vitesse verticale (le tireur se figerait en l'air, non retenu par défaut) ; munitions 4 au départ et au plus (3 / 6 avant) |
 | `TESLA_BOLT_RANGE` / `TESLA_BOLT_CONE` / `TESLA_BOLT_MIN` / `TESLA_BOLT_DMG` | 45 m / 0,985 / 20 / 130 | Tesla × ALL IN ONE : portée, cône (cos ~10°), batterie minimale, dégâts PvE à pleine batterie (× batterie / 100) |

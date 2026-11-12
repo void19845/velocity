@@ -4636,7 +4636,7 @@ static void run_tests(const char *path) {
                            "(attendu 1, 5, 6, 5)\n", nev, act, own, remote);
                 dmMode = 0; memset(NP, 0, sizeof NP);
 
-                SK_LAB(SK_COIN, 2);                        /* EV_HIT W_SHOTGUN : poussee forcee de la victime, vitesse intacte ; autre arme : vitesse ajoutee */
+                SK_LAB(SK_COIN, 2);                        /* EV_HIT W_SHOTGUN : vitesse ajoutee a la victime, comme les autres armes */
                 P.pos = P.prevPos = v3(0, SKY, 100); P.grounded = 1; P.vel = v3(0, 0, 0);
                 NetEvent hv = ev_new(EV_HIT);
                 hv.from = 1; hv.target = (unsigned char)myId; hv.sub = W_SHOTGUN; vf(hv.f + 1, v3(0, 0, 50));
@@ -4645,8 +4645,8 @@ static void run_tests(const char *path) {
                 P.pushT = 0;
                 hv.sub = W_ROCKET; vf(hv.f + 1, v3(0, 0, 10));
                 apply_event(&hv);
-                fprintf(f, "shotgun recul recu : EV_HIT 50 m/s -> poussee %.2f s, vitesse %.1f (attendu %.2f, 0.0) ; EV_HIT roquette 10 m/s -> vitesse %.1f, "
-                           "poussee %.2f (attendu 10.0, 0.00)\n", pt0, vs0, SG_KNOCK_T, vlen(P.vel), P.pushT);
+                fprintf(f, "shotgun recul recu : EV_HIT 50 m/s -> poussee %.2f s, vitesse %.1f (attendu 0.00, 50.0 : vitesse ajoutee comme au tireur) ; EV_HIT roquette 10 m/s -> vitesse %.1f, "
+                           "poussee %.2f (attendu 10.0, 0.00)\n", pt0, vs0, vlen(P.vel), P.pushT);
                 P.vel = v3(0, 0, 0); P.pushT = 0;
             }
             nowT = nt0;

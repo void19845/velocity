@@ -143,8 +143,8 @@ enum { SK_COIN, SK_MARK, SK_CHARGE, SK_RICOCHET, SK_ALLIN, SK_DECOY, SK_AIM, SK_
 #define SG_STREAK_MIN     3       /* plombs touches pour compter dans la chaine */
 #define SG_PELLET_KNOCK   1.0f    /* recul PvE par plomb sur un ennemi (0.6 avant) : ~10 m/s a bout portant, environ 5 m pour un drone */
 /* Recul : la VITESSE ACTUELLE du tireur (vitesse 3D juste avant le tir) est AJOUTEE a sa vitesse, a l'oppose de la visee : SG_KNOCK_RATIO m/s
- * par m/s, au sol comme en l'air ; immobile -> rien ; AUCUN PLAFOND (choix du proprietaire). Un joueur touche recoit une poussee forcee
- * de meme valeur dans le sens du tir (pendant SG_KNOCK_T s), x la part de plombs qui l'ont touche. */
+ * par m/s, au sol comme en l'air ; immobile -> rien ; AUCUN PLAFOND (choix du proprietaire). Un joueur touche subit le meme recul
+ * (vitesse ajoutee, meme valeur) dans le sens du tir, x la part de plombs qui l'ont touche. */
 #define SG_KNOCK_RATIO   1.0f     /* m/s de poussee par m/s de vitesse du tireur ("de meme vitesse") */
 #define SG_KNOCK_MIN     0.0f     /* plancher de la poussee (m/s) : 0 = proportionnelle pure, un tireur immobile ne recule pas */
 #define SG_KNOCK_MAX     0.0f     /* plafond de la poussee (m/s) : 0 = AUCUN plafond (choix du proprietaire) ; ex. 60 pour borner a 6 m */

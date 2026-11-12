@@ -3,7 +3,7 @@
 > **Patch d'équilibrage (7 nov.)** — renommé SHOTGUN (`src/armes/shotgun.c`). Ce qui change par rapport au texte ci-dessous : **20 dégâts par
 > plomb** (8 avant ; 200 à bout portant en solo ; en PvP `PVP_SCALE` 0,7 et `PVP_HIT_CAP` 60 inchangés, la hausse étend la portée du kill en 2 tirs
 > de ~4 m à ~14 m) ; **recul** = la **vitesse actuelle du tireur est ajoutée à sa vitesse** (`SG_KNOCK_RATIO` 1 m/s par m/s, **sans plafond** : `SG_KNOCK_MAX` 0 ;
-> immobile → rien), **au sol comme en l'air**, dans le sens opposé à la visée ; la cible reçoit une poussée forcée (`SG_KNOCK_T` 0,10 s)
+> immobile → rien), **au sol comme en l'air**, dans le sens opposé à la visée ; la cible subit le même recul (vitesse ajoutée)
 > dans le sens du tir dans le sens du tir (× part de plombs touchés) ; le résidu de 7 m/s en l'air (saut au recul) reste, même depuis l'arrêt ; `SG_PELLET_KNOCK` 1,0 (0,6 avant) pour les ennemis. Pendant la fenêtre RICOCHET chaque plomb rebondit (6 rebonds au plus). Réseau :
 > `NET_VER` 21. Les chiffres et les tests des sections suivantes sont ceux d'avant le patch.
 

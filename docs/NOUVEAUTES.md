@@ -760,6 +760,6 @@ Trois nouveaux ennemis (détail dans `docs/CODE.md` §3.5) : la **BOMBE** (kamik
 ## SHOTGUN : vitesse ajoutée au recul, fin de vague sous la boutique
 
 - Recul du SHOTGUN : la vitesse actuelle du tireur est ajoutée à sa vitesse, à l'opposé de la visée (au lieu d'une poussée forcée qui laissait
-  `P.vel` intacte). Tir dans le sens de la course : vitesse annulée ; à contre-sens : doublée ; immobile : aucun recul. La cible garde la poussée
-  forcée de `SG_KNOCK_T`. Même règle pour la salve du SHOTGUN hybride (`boutique_hybrides.c`).
+  `P.vel` intacte). Tir dans le sens de la course : vitesse annulée ; à contre-sens : doublée ; immobile : aucun recul. La cible touchée subit le même recul
+  (vitesse ajoutée, `knock_apply`). Même règle pour la salve du SHOTGUN hybride (`boutique_hybrides.c`).
 - VAGUES : le message « VAGUE N TERMINEE » n'est plus dessiné par-dessus la boutique ni les écrans de vagues (`hud.c`).

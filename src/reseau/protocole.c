@@ -646,10 +646,9 @@ static void mine_apply(const NetEvent *ev) {
 }
 /* --- fin Ventouse : reception --- */
 
-/* recul recu par la victime : une vitesse ajoutee, sauf pour le SHOTGUN, dont le "recul" est une poussee forcee (vitesse proportionnelle
- * a celle du tireur, pendant SG_KNOCK_T s, push_start) qui laisse la vitesse du joueur intacte */
+/* recul recu par la victime : une vitesse ajoutee, pour toutes les armes (SHOTGUN compris : meme recul que le tireur) */
 static void knock_apply(V3 kn, int w) {
-    if (w == W_SHOTGUN) { push_start(kn, SG_KNOCK_T); return; }
+    (void)w;
     P.vel = vadd(P.vel, kn);
     if (kn.y > 2) P.grounded = 0;
 }
