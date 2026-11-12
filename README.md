@@ -1,6 +1,6 @@
 # VELOCITY - binaires
 
-Construits automatiquement depuis `stable` (485750d), build 10. Ne pas modifier cette branche a la main.
+Construits automatiquement depuis `stable` (bd3e13f), build 11. Ne pas modifier cette branche a la main.
 
 - Windows : `Velocity-Windows.zip` (`velocity.exe` + dossier `graphismes`, a extraire ensemble)
   ou `velocity.exe` seul (textures generees, reglages graphiques par defaut)
