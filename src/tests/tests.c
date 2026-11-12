@@ -4642,7 +4642,7 @@ static void run_tests(const char *path) {
                 hv.from = 1; hv.target = (unsigned char)myId; hv.sub = W_SHOTGUN; vf(hv.f + 1, v3(0, 0, 50));
                 apply_event(&hv);
                 float pt0 = P.pushT, vs0 = vlen(P.vel);
-                P.pushT = 0;
+                P.pushT = 0; P.vel = v3(0, 0, 0);
                 hv.sub = W_ROCKET; vf(hv.f + 1, v3(0, 0, 10));
                 apply_event(&hv);
                 fprintf(f, "shotgun recul recu : EV_HIT 50 m/s -> poussee %.2f s, vitesse %.1f (attendu 0.00, 50.0 : vitesse ajoutee comme au tireur) ; EV_HIT roquette 10 m/s -> vitesse %.1f, "
