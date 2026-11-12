@@ -1051,7 +1051,7 @@ static void vagues_tests(FILE *f) {
             float h1 = E[e1].hp, h2 = E[e2].hp;
             vgSrc = P.weapon; fire_weapon(); vgSrc = -1;
             dm[k] = h1 - E[e1].hp; d2[k == 0 ? 0 : 1] = h2 - E[e2].hp; rays[k] = hyStat[1];
-            if (k == 0) fprintf(f, "CANON SCIE : rails %d, recul du Shotgun %.1f m/s (pushT %.2f), delai %.2f s (attendu 8, 12.0, 0.10, 0.90 ou un peu moins : la chaine de tirs accelere)\n",
+            if (k == 0) fprintf(f, "CANON SCIE : rails %d, recul du Shotgun %.1f m/s (pushT %.2f), delai %.2f s (attendu 8, 12.0, 0.00 : vitesse ajoutee, pas de poussee, 0.90 ou un peu moins : la chaine de tirs accelere)\n",
                                 rays[0], sgLastPush, P.pushT, P.fireCd);
         }
         fprintf(f, "CANON SCIE : degats cible 1 = %.0f, cible 2 derriere = %.0f (traversee) (attendu 400 a 600 chacune : 8 rails a 50, tete a x1.5)\n", dm[0], d2[0]);
