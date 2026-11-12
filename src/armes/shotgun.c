@@ -6,9 +6,9 @@
  * recalcule les memes directions a partir de la graine d'EV_SHOT). Les degats sont agreges par cible :
  * un seul net_hit par joueur et par tir. Dispersion divisee par 2 en slide, un plomb qui touche une piece
  * la fait eclater (souffle de 3 m, ni degats ni recul sur soi).
- * Recul : le tireur recoit une poussee forcee PROPORTIONNELLE A SA VITESSE ACTUELLE (sg_push_speed : SG_KNOCK_RATIO m/s par m/s, sans
- * plafond) pendant SG_KNOCK_T s dans le sens oppose au tir, au sol comme en l'air (push_start : un deplacement en plus, sa vitesse
- * ne change pas) ; la cible recoit la meme dans le sens du tir, x la part de plombs qui l'ont touchee. Immobile : pas de recul.
+ * Recul : la VITESSE ACTUELLE du tireur est AJOUTEE a sa vitesse a l'oppose de la visee (sg_push_speed : SG_KNOCK_RATIO m/s par m/s, sans
+ * plafond), au sol comme en l'air ; la cible recoit une poussee forcee (push_start, SG_KNOCK_T s) dans le sens du tir, x la part de plombs
+ * qui l'ont touchee. Immobile : pas de recul.
  * En l'air, un residu de vitesse (sg_recoil) garde le saut au recul. RICOCHET ouvert : chaque plomb rebondit
  * (RIC_PELLET_CAP rebonds au plus, SG_RANGE par segment, degats selon la distance totale parcourue). */
 static unsigned int sgCounter;                            /* compteur de graines */
@@ -304,8 +304,8 @@ static void fire_shotgun(void) {
     shot_result(hit);
     sgShots++; sgPelletSum += pellets; sgStreakShots += hit; sgBurstSum += sgBursts; sgPellRicSum += sgPellRic;
     if (botMode) netlog("tir pompe : %d plomb(s), %d eclat(s), %s", pellets, sgBursts, hit ? "touche" : "rate");
-    if (push > 0 && !fr) push_start(vmul(d, -push), SG_KNOCK_T); /* poussee du tireur : proportionnelle a sa vitesse, sens oppose au tir, sol et air */
     if (!P.grounded && !fr) sg_recoil(d);                        /* en l'air : le residu de vitesse (saut au recul) */
+    if (push > 0 && !fr) P.vel = vadd(P.vel, vmul(d, -push));    /* recul du tireur : sa vitesse actuelle AJOUTEE a l'oppose de la visee (vraie vitesse), sol et air */
 
     V3 m = muzzle(), col = sg_tint(shotStreak / (float)STREAK_MAX);   /* effets locaux : traceurs, etincelles, son */
     for (int s = 0; s < nSeg; s++) {

@@ -189,8 +189,8 @@ static void hy_canon(void) {
     shotHeads = 0;
     float push = sg_push_speed(vlen(P.vel));              /* recul du Shotgun : proportionnel a la vitesse, au sol comme en l'air */
     sgLastPush = push;
-    if (push > 0) push_start(vmul(d, -push), SG_KNOCK_T);
     if (!P.grounded) sg_recoil(d);
+    if (push > 0) P.vel = vadd(P.vel, vmul(d, -push));    /* vitesse actuelle ajoutee a l'oppose de la visee */
     P.fireCd = HY_CAN_CD / streak_rate();
     P.recoil = 1.6f; shake += 0.12f; muzzleT = 0.09f;
     play(S_RAIL, 0.7f, 1.2f); play(S_SG_FIRE, 0.7f, 1.1f);

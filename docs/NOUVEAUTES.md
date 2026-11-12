@@ -756,3 +756,10 @@ Trois nouveaux ennemis (détail dans `docs/CODE.md` §3.5) : la **BOMBE** (kamik
 - Le jeu a une icône (arme bleue) : barre de titre, barre des tâches et exe Windows (`velocity.ico` dans `velocity.rc`, `LoadIcon` dans `demarrage.c`, aussi
   sur la fenêtre du second écran) ; app macOS (`velocity.icns` copié par `build_mac.sh`, clé `CFBundleIconFile`). Source : image 64 × 64 du propriétaire,
   agrandie sans lissage pour les grandes tailles. Pas vérifié sur Mac.
+
+## SHOTGUN : vitesse ajoutée au recul, fin de vague sous la boutique
+
+- Recul du SHOTGUN : la vitesse actuelle du tireur est ajoutée à sa vitesse, à l'opposé de la visée (au lieu d'une poussée forcée qui laissait
+  `P.vel` intacte). Tir dans le sens de la course : vitesse annulée ; à contre-sens : doublée ; immobile : aucun recul. La cible garde la poussée
+  forcée de `SG_KNOCK_T`. Même règle pour la salve du SHOTGUN hybride (`boutique_hybrides.c`).
+- VAGUES : le message « VAGUE N TERMINEE » n'est plus dessiné par-dessus la boutique ni les écrans de vagues (`hud.c`).

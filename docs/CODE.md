@@ -449,11 +449,11 @@ chaque compétence en contre une autre, chaque flèche se coupe par sa constante
 
 #### SHOTGUN, Élan, Tesla, scie, Yoyo : ce que change le patch d'équilibrage (fiches : `docs/armes/`)
 
-- **SHOTGUN** (ex-Éventail, `src/armes/shotgun.c`, fiche `06_shotgun.md`) : `SG_PELLET_DMG` 20 ; le tireur reçoit une **poussée forcée**
-  (`push_start(v, t)`, `P.pushV` / `P.pushT`, appliquée dans `player_tick` comme un déplacement en plus : collisions respectées, `P.vel`
-  intacte) **proportionnelle à la vitesse actuelle du tireur** (`sg_push_speed` : `SG_KNOCK_RATIO` m/s de poussée par m/s de vitesse 3D juste
-  avant le tir, **sans plafond** (`SG_KNOCK_MAX` 0 = aucun, réglable), plancher `SG_KNOCK_MIN` 0) pendant `SG_KNOCK_T` (0,10 s) à l'opposé du tir, au sol comme en
-  l'air : 50 m/s → 5 m, 30 m/s → 3 m, immobile → aucun recul ; la victime LAN reçoit la même dans le sens du tir × part de plombs touchés
+- **SHOTGUN** (ex-Éventail, `src/armes/shotgun.c`, fiche `06_shotgun.md`) : `SG_PELLET_DMG` 20 ; la **vitesse actuelle du tireur est AJOUTÉE à sa vitesse**
+  (`P.vel += -visée × sg_push_speed`, après le résidu `sg_recoil`) à l'opposé de la visée : `sg_push_speed` = `SG_KNOCK_RATIO` m/s par m/s de vitesse 3D juste
+  avant le tir, **sans plafond** (`SG_KNOCK_MAX` 0 = aucun, réglable), plancher `SG_KNOCK_MIN` 0, au sol comme en
+  l'air : tir dans le sens de la course → vitesse annulée, tir à contre-sens → vitesse doublée, immobile → aucun recul ; la victime LAN reçoit une **poussée forcée**
+  (`push_start(v, t)`, `P.pushV` / `P.pushT`, un déplacement en plus pendant `SG_KNOCK_T` = 0,10 s, `P.vel` intacte) dans le sens du tir × part de plombs touchés
   (`knock_apply`, `protocole.c` : seul `W_SHOTGUN` est une poussée, les autres armes ajoutent une vitesse). Le résidu de vitesse en l'air
   (`sg_recoil`, 7 m/s, indépendant de la vitesse) garde le saut au recul, même depuis l'arrêt. Les plafonds PvP ne changent pas.
 - **Élan** (`elan.c`) : 4 munitions (`ammoDef`), `kin_brake` enlève toute la vitesse horizontale du tireur (`KIN_BRAKE_ALL`).

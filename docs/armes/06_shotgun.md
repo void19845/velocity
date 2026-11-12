@@ -2,9 +2,9 @@
 
 > **Patch d'équilibrage (7 nov.)** — renommé SHOTGUN (`src/armes/shotgun.c`). Ce qui change par rapport au texte ci-dessous : **20 dégâts par
 > plomb** (8 avant ; 200 à bout portant en solo ; en PvP `PVP_SCALE` 0,7 et `PVP_HIT_CAP` 60 inchangés, la hausse étend la portée du kill en 2 tirs
-> de ~4 m à ~14 m) ; **recul** = poussée forcée **proportionnelle à la vitesse actuelle du tireur** (`SG_KNOCK_RATIO` 1 m/s par m/s, **sans plafond** : `SG_KNOCK_MAX` 0,
-> pendant `SG_KNOCK_T` 0,10 s : 50 m/s → 5 m, immobile → rien) sur le tireur, **au sol comme en l'air**, dans le sens opposé au tir, et la même sur
-> la cible dans le sens du tir (× part de plombs touchés) ; le résidu de 7 m/s en l'air (saut au recul) reste, même depuis l'arrêt ; `SG_PELLET_KNOCK` 1,0 (0,6 avant) pour les ennemis. Pendant la fenêtre RICOCHET chaque plomb rebondit (6 rebonds au plus). Réseau :
+> de ~4 m à ~14 m) ; **recul** = la **vitesse actuelle du tireur est ajoutée à sa vitesse** (`SG_KNOCK_RATIO` 1 m/s par m/s, **sans plafond** : `SG_KNOCK_MAX` 0 ;
+> immobile → rien), **au sol comme en l'air**, dans le sens opposé à la visée ; la cible reçoit une poussée forcée (`SG_KNOCK_T` 0,10 s)
+> dans le sens du tir dans le sens du tir (× part de plombs touchés) ; le résidu de 7 m/s en l'air (saut au recul) reste, même depuis l'arrêt ; `SG_PELLET_KNOCK` 1,0 (0,6 avant) pour les ennemis. Pendant la fenêtre RICOCHET chaque plomb rebondit (6 rebonds au plus). Réseau :
 > `NET_VER` 21. Les chiffres et les tests des sections suivantes sont ceux d'avant le patch.
 
 > Fiche de design, **rien n'est implémenté**. Source : [`../IDEES_ARMES_CARTES.md`](../IDEES_ARMES_CARTES.md) § 1.2, § 1.5 et § 3.1. Interfaces figées : [`PLAN.md`](PLAN.md) § 3. Loadout, `P.ammo[]` et `P.ammoGauge[]` (jauges de points), points donnés par la mêlée, cellules de 100 et 150 points, et bascule à vide : fiche `00_infra_loadout_munitions.md` (référencée ici, jamais redéfinie).

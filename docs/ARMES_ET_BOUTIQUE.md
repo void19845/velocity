@@ -54,8 +54,8 @@ et one-shot.
   (4,5 degres de demi-angle), divise par 2 en slide.
 - 20 degats par plomb (8 avant le patch) : degats pleins jusqu'a 10 m, puis decroissance lineaire jusqu'a x0,3 a 30 m ; portee 60 m.
   Le plafond PvP de 60 PV par touche et le x0,7 sont inchanges : pas de one-shot, le kill en 2 tirs passe de ~4 m a ~14 m.
-- Recul du tireur proportionnel a sa vitesse juste avant le tir : 1 m/s de poussee par m/s (`SG_KNOCK_RATIO`), plafond 60 m/s (`SG_KNOCK_MAX`),
-  pendant 0,10 s, dans le sens inverse du tir, au sol comme en l'air ; a l'arret il n'y a aucun recul (`SG_KNOCK_MIN`, 0 par defaut, pour un
+- Recul du tireur : sa vitesse actuelle (juste avant le tir) est AJOUTEE a sa vitesse, dans le sens inverse de la visee : 1 m/s par m/s (`SG_KNOCK_RATIO`),
+  sans plafond (`SG_KNOCK_MAX` 0), au sol comme en l'air ; a l'arret il n'y a aucun recul (`SG_KNOCK_MIN`, 0 par defaut, pour un
   minimum). En PvP la cible recoit la meme poussee dans le sens du tir, multipliee par la part de plombs qui la touchent ; les ennemis du mode
   Vagues gardent une vitesse fixe (`SG_PELLET_KNOCK`). Le saut au recul marche toujours (residu de 7 m/s en l'air).
 - Un plomb qui touche une piece la fait eclater (souffle 3 m, 45 degats, recul 8, eclate les pieces voisines jusqu'a 3 de profondeur).

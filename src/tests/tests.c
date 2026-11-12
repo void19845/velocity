@@ -1001,34 +1001,25 @@ static void run_tests(const char *path) {
             for (int k = 0; k < 5; k++) {
                 reset_game();
                 P.pos = P.prevPos = v3(-20, 8, 40); P.grounded = 0; P.yaw = 0; P.pitch = 0;
-                P.vel = v3(0, 0, -spd[k]); P.ammo[WP_SHOTGUN] = 6;
+                P.vel = v3(0, 0, -spd[k]); P.ammo[WP_SHOTGUN] = 6; P.grounded = 1;
                 fire_shotgun(); hitstop = 0;
                 push[k] = sgLastPush;
-                okDir += spd[k] <= 0 ? P.pushT <= 0 : (P.pushT > 0 && P.pushV.z > 0 && fabsf(vlen(P.pushV) - push[k]) < 0.01f);   /* a l'oppose du tir */
+                okDir += P.pushT <= 0 && fabsf(P.vel.z - (-spd[k] + push[k])) < 0.01f;   /* vitesse ajoutee a l'oppose du tir (sol : 0 m/s de residu) */
             }
             fprintf(f, "shotgun poussee proportionnelle a la vitesse : a 0 / 10 / 20 / 50 / 100 m/s -> %.1f / %.1f / %.1f / %.1f / %.1f m/s "
                        "(attendu %.0f / %.0f / %.0f / %.0f / %.0f : x%.1f, AUCUN plafond (SG_KNOCK_MAX %.0f)), sens oppose au tir et aucune poussee a l'arret : %d / 5 (attendu 5)\n",
                     push[0], push[1], push[2], push[3], push[4], SG_KNOCK_RATIO * 0, SG_KNOCK_RATIO * 10, SG_KNOCK_RATIO * 20, SG_KNOCK_RATIO * 50,
                     SG_KNOCK_RATIO * 100, SG_KNOCK_RATIO, SG_KNOCK_MAX, okDir);
 
-            float zz[2], yy[2];                            /* deplacement ajoute par la poussee : avec le tir, moins un essai temoin sans tirer */
-            for (int pass = 0; pass < 2; pass++) {         /* sol : 30 m/s vers l'avant, tir devant */
-                reset_game();
-                P.pos = P.prevPos = v3(-20, 0, 60); P.grounded = 1; P.yaw = 0; P.pitch = 0; P.vel = v3(0, 0, -30); P.ammo[WP_SHOTGUN] = 6;
-                if (pass) { fire_shotgun(); hitstop = 0; }
-                for (int i = 0; i < 14; i++) player_tick(TICK, 0, 0);   /* 0,12 s : la poussee dure SG_KNOCK_T = 0,10 s */
-                zz[pass] = P.pos.z;
-            }
-            for (int pass = 0; pass < 2; pass++) {         /* air : chute a -20 m/s, tir vers le bas (le residu de 7 m/s s'ajoute) */
-                reset_game();
-                P.pos = P.prevPos = v3(-20, 30, 40); P.grounded = 0; P.yaw = 0; P.pitch = -PI / 2; P.vel = v3(0, -20, 0); P.ammo[WP_SHOTGUN] = 6;
-                if (pass) { fire_shotgun(); hitstop = 0; }
-                for (int i = 0; i < 14; i++) player_tick(TICK, 0, 0);
-                yy[pass] = P.pos.y;
-            }
-            fprintf(f, "shotgun poussee du tireur : au sol a 30 m/s, tir devant, recul ajoute %.2f m vers l'arriere ; en l'air a -20 m/s, tir vers le bas, "
-                       "poussee ajoutee %.2f m vers le haut (attendu %.1f = 30 m/s x %.2f s ; ~%.1f = 20 m/s x %.2f s + residu de 7 m/s)\n",
-                    zz[1] - zz[0], yy[1] - yy[0], 30 * SG_KNOCK_RATIO * SG_KNOCK_T, SG_KNOCK_T, 20 * SG_KNOCK_RATIO * SG_KNOCK_T + 0.8f, SG_KNOCK_T);
+            float zv, yv;                                  /* vitesse apres le tir : la vitesse actuelle est AJOUTEE a l'oppose de la visee */
+            reset_game();                                  /* sol : 30 m/s vers l'avant, tir devant : la vitesse est annulee */
+            P.pos = P.prevPos = v3(-20, 0, 60); P.grounded = 1; P.yaw = 0; P.pitch = 0; P.vel = v3(0, 0, -30); P.ammo[WP_SHOTGUN] = 6;
+            fire_shotgun(); hitstop = 0; zv = P.vel.z;
+            reset_game();                                  /* air : chute a -20 m/s, tir vers le bas (le residu de 7 m/s s'ajoute) */
+            P.pos = P.prevPos = v3(-20, 30, 40); P.grounded = 0; P.yaw = 0; P.pitch = -PI / 2; P.vel = v3(0, -20, 0); P.ammo[WP_SHOTGUN] = 6;
+            fire_shotgun(); hitstop = 0; yv = P.vel.y;
+            fprintf(f, "shotgun vitesse ajoutee : au sol a 30 m/s, tir devant, vz %.2f ; en l'air a -20 m/s, tir vers le bas, vy %.2f "
+                       "(attendu 0.00 ; 7.00 = -20 + residu de 7 + 20 ajoutes vers le haut)\n", zv, yv);
         }
 
         reset_game();                                      /* 9-10. recul en l'air, plafonds, au sol */
@@ -1040,7 +1031,7 @@ static void run_tests(const char *path) {
         P.vel = v3(0, 0, -20); P.yaw = PI; P.pitch = 0; fire_shotgun(); rv[3] = hlen(P.vel);   /* tir arriere apres un dash */
         P.grounded = 1; P.vel = v3(3, 0, -5); P.pitch = -PI / 2; fire_shotgun();
         fprintf(f, "shotgun recul : vy %.1f depuis 0, %.1f depuis 8.4, %.1f en chute a -10, vitesse %.1f (tir arriere a 20), "
-                   "au sol (%.1f %.1f %.1f) (attendu 7.0, 9.0, -3.0, 20.0, (3.0 0.0 -5.0))\n",
+                   "au sol (%.1f %.1f %.1f) (attendu 7.0, 17.4, 7.0, 40.0, (3.0 5.8 -5.0) : residu de recul puis vitesse actuelle ajoutee)\n",
                 rv[0], rv[1], rv[2], rv[3], P.vel.x, P.vel.y, P.vel.z);
         hitstop = 0;
 

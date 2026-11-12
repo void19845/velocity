@@ -900,7 +900,7 @@ static void draw_hud(void) {
     draw_modes_hud();                                     /* modes : objectifs, temps, pieces */
     draw_shop();                                          /* boutique (mort) et arme de depart */
     vg_draw_hud(cx, cy);                                  /* VAGUES : boss, entre-deux, boutique, selecteur, vague 100 */
-    if (msgT > 0) text_c(2, cx, cy - 120, msg, 1, 1, 1, clampf(msgT, 0, 1));
+    if (msgT > 0 && !vg_menu_open()) text_c(2, cx, cy - 120, msg, 1, 1, 1, clampf(msgT, 0, 1));   /* VAGUES : "VAGUE N TERMINEE" ne passe pas par-dessus la boutique */
 
     if (dmMode && matchOver) {
         winner_text(buf, sizeof buf);
